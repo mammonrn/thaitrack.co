@@ -5,25 +5,38 @@ import Link from "next/link";
 
 import type { TrackingResult, TrackingStatus } from "@/lib/carriers/types";
 import {
-  EMPTY_INPUT_MESSAGE,
+  EMPTY_INPUT_ERROR,
+  formatPostmark,
   formatThaiDateTime,
   requestTracking,
+  type UserFacingError,
 } from "@/lib/tracking-view";
 
-/** สีของป้ายสถานะ — คุมโทนน้ำเงิน-ขาวเป็นหลัก ใช้สีอื่นเฉพาะตอนสำเร็จ/มีปัญหา */
-const STATUS_BADGE_CLASS: Record<TrackingStatus, string> = {
-  pending: "bg-slate-100 text-slate-700 ring-slate-200",
-  in_transit: "bg-blue-50 text-blue-700 ring-blue-200",
-  out_for_delivery: "bg-blue-100 text-blue-800 ring-blue-300",
-  delivered: "bg-emerald-50 text-emerald-700 ring-emerald-200",
-  exception: "bg-rose-50 text-rose-700 ring-rose-200",
+/**
+ * สีของข้อความสถานะ — ส่วนที่เหลือของหน้าอยู่ในโทนหมึกน้ำเงินทั้งหมด
+ * ใช้สีต่างเฉพาะสองกรณีที่ผู้ใช้ต้องรู้ทันทีว่าจบดีหรือมีปัญหา
+ */
+const STATUS_TEXT_CLASS: Record<TrackingStatus, string> = {
+  pending: "text-ink",
+  in_transit: "text-ink",
+  out_for_delivery: "text-ink",
+  delivered: "text-ok",
+  exception: "text-seal",
 };
+
+const CARRIERS = [
+  "ไปรษณีย์ไทย",
+  "Flash Express",
+  "Kerry Express",
+  "J&T Express",
+  "SPX Express",
+];
 
 export default function Home() {
   const [trackingNumber, setTrackingNumber] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<TrackingResult | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [error, setError] = useState<UserFacingError | null>(null);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -31,19 +44,19 @@ export default function Home() {
 
     if (trackingNumber.trim() === "") {
       setResult(null);
-      setErrorMessage(EMPTY_INPUT_MESSAGE);
+      setError(EMPTY_INPUT_ERROR);
       return;
     }
 
     setIsLoading(true);
     setResult(null);
-    setErrorMessage(null);
+    setError(null);
 
     const outcome = await requestTracking(trackingNumber);
     if (outcome.ok) {
       setResult(outcome.result);
     } else {
-      setErrorMessage(outcome.message);
+      setError(outcome.error);
     }
 
     setIsLoading(false);
@@ -53,67 +66,41 @@ export default function Home() {
   const eventsNewestFirst = result ? [...result.events].reverse() : [];
 
   return (
-    <div className="flex flex-1 flex-col bg-white text-slate-900">
-      {/* Header */}
-      <header className="sticky top-0 z-10 border-b border-slate-200 bg-white/90 backdrop-blur">
-        <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between px-4 sm:h-16 sm:px-6">
-          <Link href="#" className="flex items-center gap-2">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-white sm:h-9 sm:w-9">
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="h-5 w-5"
-                aria-hidden="true"
-              >
-                <path d="M21 8 12 3 3 8v8l9 5 9-5V8Z" />
-                <path d="m3 8 9 5 9-5" />
-                <path d="M12 13v8" />
-              </svg>
-            </span>
-            <span className="text-lg font-bold tracking-tight sm:text-xl">
+    <div className="flex flex-1 flex-col">
+      <header className="sticky top-0 z-10 border-b border-line bg-paper/90 backdrop-blur">
+        <div className="mx-auto flex h-14 w-full max-w-3xl items-center justify-between px-4 sm:h-16 sm:px-6">
+          <Link href="#" className="flex items-center gap-2.5">
+            <BrandMark className="h-8 w-8 text-ink sm:h-9 sm:w-9" />
+            <span className="font-display text-lg font-bold tracking-tight text-ink sm:text-xl">
               พัสดุไทย
-              <span className="text-blue-600">.com</span>
+              <span className="font-medium text-faint">.com</span>
             </span>
           </Link>
 
           <button
             type="button"
-            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-medium text-slate-600 transition hover:bg-blue-50 hover:text-blue-700"
-            aria-label="เข้าสู่ระบบ"
+            className="rounded-lg px-3 py-2 text-sm font-medium text-faint transition-colors hover:bg-ink/5 hover:text-ink"
           >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="h-5 w-5"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="8" r="4" />
-              <path d="M4 21a8 8 0 0 1 16 0" />
-            </svg>
-            <span className="hidden sm:inline">เข้าสู่ระบบ</span>
+            เข้าสู่ระบบ
           </button>
         </div>
       </header>
 
       <main className="flex-1">
-        {/* Hero */}
-        <section className="bg-gradient-to-b from-blue-50 to-white px-4 py-12 sm:px-6 sm:py-20">
-          <div className="mx-auto w-full max-w-2xl text-center">
-            <h1 className="text-2xl font-bold leading-snug tracking-tight sm:text-4xl">
-              ติดตามพัสดุทุกขนส่งในที่เดียว
+        {/* Hero — ช่องกรอกคือพระเอกเพียงอย่างเดียวของโซนนี้ */}
+        <section className="px-4 pt-10 pb-8 sm:px-6 sm:pt-16 sm:pb-12">
+          <div className="mx-auto w-full max-w-xl text-center">
+            <h1 className="font-display text-[28px] font-bold leading-tight tracking-tight text-ink sm:text-[42px]">
+              พัสดุถึงไหนแล้ว
             </h1>
+            <p className="mx-auto mt-2.5 max-w-md text-sm leading-relaxed text-faint sm:mt-3 sm:text-base">
+              พิมพ์เลขพัสดุครั้งเดียว เราไล่ถามให้ทุกขนส่ง
+              ไม่ต้องจำว่าส่งมาจากเจ้าไหน
+            </p>
 
             <form
               onSubmit={handleSubmit}
-              className="mt-6 flex flex-col gap-3 sm:mt-8 sm:flex-row sm:gap-2"
+              className="mt-6 flex flex-col gap-2.5 sm:mt-8 sm:flex-row"
             >
               <label htmlFor="tracking-number" className="sr-only">
                 เลขพัสดุ
@@ -123,111 +110,79 @@ export default function Home() {
                 type="text"
                 inputMode="text"
                 autoComplete="off"
+                autoCapitalize="characters"
+                spellCheck={false}
                 value={trackingNumber}
                 onChange={(event) => setTrackingNumber(event.target.value)}
-                placeholder="กรอกเลขพัสดุของคุณ"
-                className="h-14 w-full rounded-xl border border-slate-300 bg-white px-4 text-base text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 sm:h-16 sm:px-5 sm:text-lg"
+                placeholder="เช่น EE000000000TH"
+                className="h-14 w-full rounded-xl border border-line-strong bg-white px-4 text-center font-body text-base text-body outline-none transition-colors placeholder:text-faint/70 hover:border-ink/30 focus:border-ink sm:h-15 sm:px-5 sm:text-left sm:text-lg"
               />
               <button
                 type="submit"
                 disabled={isLoading}
-                className="flex h-14 w-full shrink-0 items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 text-base font-semibold text-white shadow-sm transition hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-300 active:bg-blue-800 disabled:cursor-not-allowed disabled:bg-blue-400 sm:h-16 sm:w-auto sm:px-10 sm:text-lg"
+                className="h-14 shrink-0 rounded-xl bg-ink px-8 font-display text-base font-semibold text-white transition-colors hover:bg-ink-strong disabled:cursor-not-allowed disabled:bg-ink/45 sm:h-15 sm:text-lg"
               >
-                {isLoading && (
-                  <svg
-                    viewBox="0 0 24 24"
-                    className="h-5 w-5 animate-spin"
-                    aria-hidden="true"
-                  >
-                    <circle
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="3"
-                      fill="none"
-                      className="opacity-25"
-                    />
-                    <path
-                      d="M12 2a10 10 0 0 1 10 10"
-                      stroke="currentColor"
-                      strokeWidth="3"
-                      strokeLinecap="round"
-                      fill="none"
-                    />
-                  </svg>
-                )}
-                {isLoading ? "กำลังค้นหา..." : "ติดตาม"}
+                {isLoading ? "กำลังค้นหา…" : "ค้นหาพัสดุ"}
               </button>
             </form>
 
-            <p className="mt-3 text-xs leading-relaxed text-slate-500 sm:mt-4 sm:text-sm">
-              รองรับ ไปรษณีย์ไทย, Flash Express, Kerry Express, J&amp;T Express,
-              SPX Express และอื่นๆ
+            <p className="mt-4 text-xs leading-relaxed text-faint sm:mt-5 sm:text-sm">
+              {CARRIERS.join(" · ")} และอื่นๆ
             </p>
           </div>
         </section>
 
-        {/* ผลการติดตามพัสดุ */}
+        {/* ผลการค้นหา */}
         <section
-          className="mx-auto w-full max-w-2xl px-4 py-8 sm:px-6 sm:py-12"
+          className="mx-auto w-full max-w-xl px-4 pb-12 sm:px-6 sm:pb-16"
           aria-live="polite"
           aria-busy={isLoading}
         >
-          {errorMessage && (
-            <div className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-800 sm:p-5">
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="mt-0.5 h-5 w-5 shrink-0"
-                aria-hidden="true"
-              >
-                <circle cx="12" cy="12" r="9" />
-                <path d="M12 8v5" />
-                <path d="M12 16h.01" />
-              </svg>
-              <p className="text-sm leading-relaxed sm:text-base">
-                {errorMessage}
+          {isLoading && (
+            <div className="flex flex-col items-center gap-4 py-6">
+              <Postmark spinning />
+              <p className="text-sm text-faint">กำลังถามขนส่งอยู่…</p>
+            </div>
+          )}
+
+          {!isLoading && error && (
+            <div className="animate-rise rounded-xl border border-line border-l-[3px] border-l-seal bg-white p-5 sm:p-6">
+              <p className="font-display text-base font-semibold text-ink sm:text-lg">
+                {error.title}
+              </p>
+              <p className="mt-1.5 text-sm leading-relaxed text-faint">
+                {error.detail}
               </p>
             </div>
           )}
 
-          {result && (
-            <div className="overflow-hidden rounded-2xl border border-slate-200 shadow-sm">
-              {/* สรุปสถานะปัจจุบัน */}
-              <div className="border-b border-slate-200 bg-gradient-to-b from-blue-50 to-white p-5 sm:p-6">
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 sm:text-sm">
-                  <span className="font-medium text-slate-700">
-                    {result.carrierName}
-                  </span>
-                  <span className="font-mono tracking-wide">
+          {!isLoading && result && (
+            <article className="animate-rise overflow-hidden rounded-xl border border-line bg-white">
+              {/* หัวการ์ด: ตราประทับ + สถานะปัจจุบัน */}
+              {/* จอแคบวางตราประทับไว้บรรทัดบน เพื่อให้ข้อความสถานะยาวๆ ได้ความกว้างเต็มการ์ด */}
+              <div className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:gap-6 sm:p-6">
+                <Postmark postmark={formatPostmark(result.lastUpdated)} />
+                <div className="min-w-0 flex-1">
+                  <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-faint sm:text-xs">
                     {result.trackingNumber}
-                  </span>
-                </div>
-
-                <div className="mt-3">
-                  <span
-                    className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ring-1 ring-inset sm:text-sm ${STATUS_BADGE_CLASS[result.status]}`}
+                  </p>
+                  <p
+                    className={`mt-1 font-display text-xl font-semibold leading-snug sm:text-2xl ${STATUS_TEXT_CLASS[result.status]}`}
                   >
                     {result.statusText}
-                  </span>
-                </div>
-
-                {result.lastUpdated && (
-                  <p className="mt-3 text-xs text-slate-500 sm:text-sm">
-                    อัปเดตล่าสุด {formatThaiDateTime(result.lastUpdated)} น.
                   </p>
-                )}
+                  <p className="mt-1.5 text-xs text-faint sm:text-sm">
+                    {result.carrierName}
+                    {result.lastUpdated &&
+                      ` · อัปเดต ${formatThaiDateTime(result.lastUpdated)} น.`}
+                  </p>
+                </div>
               </div>
 
-              {/* timeline ล่าสุดอยู่บนสุด */}
-              <div className="bg-white p-5 sm:p-6">
+              {/* timeline — ส่วนที่ต้องเงียบ ปล่อยให้ตราประทับเป็นจุดเดียวที่เด่น */}
+              <div className="border-t border-line p-5 sm:p-6">
                 {eventsNewestFirst.length === 0 ? (
-                  <p className="text-sm text-slate-500">
+                  <p className="text-sm text-faint">
                     ยังไม่มีความเคลื่อนไหวของพัสดุชิ้นนี้
                   </p>
                 ) : (
@@ -239,18 +194,19 @@ export default function Home() {
                       return (
                         <li
                           key={`${item.time}-${index}`}
-                          className="relative flex gap-4 pb-6 last:pb-0"
+                          className="relative flex gap-4 pb-5 last:pb-0"
                         >
-                          {/* เส้นเชื่อมจุด — ไม่ลากเลยรายการสุดท้าย */}
                           {!isLast && (
                             <span
-                              className="absolute left-[7px] top-5 h-full w-px bg-slate-200"
+                              className="absolute left-[5px] top-4 h-full w-px bg-line"
                               aria-hidden="true"
                             />
                           )}
                           <span
-                            className={`relative mt-1.5 h-[15px] w-[15px] shrink-0 rounded-full ring-4 ring-white ${
-                              isLatest ? "bg-blue-600" : "bg-slate-300"
+                            className={`relative mt-1.5 h-[11px] w-[11px] shrink-0 rounded-full ${
+                              isLatest
+                                ? "bg-ink"
+                                : "border border-line bg-paper"
                             }`}
                             aria-hidden="true"
                           />
@@ -258,20 +214,16 @@ export default function Home() {
                             <p
                               className={`text-sm leading-snug sm:text-base ${
                                 isLatest
-                                  ? "font-semibold text-slate-900"
-                                  : "text-slate-700"
+                                  ? "font-medium text-body"
+                                  : "text-faint"
                               }`}
                             >
                               {item.description}
                             </p>
-                            <p className="mt-1 text-xs text-slate-500 sm:text-sm">
+                            <p className="mt-1 text-xs text-faint sm:text-sm">
                               {formatThaiDateTime(item.time)} น.
+                              {item.location && ` · ${item.location}`}
                             </p>
-                            {item.location && (
-                              <p className="mt-0.5 text-xs text-slate-500 sm:text-sm">
-                                {item.location}
-                              </p>
-                            )}
                           </div>
                         </li>
                       );
@@ -279,25 +231,124 @@ export default function Home() {
                   </ol>
                 )}
               </div>
-            </div>
+            </article>
           )}
         </section>
       </main>
 
-      {/* Footer */}
-      <footer className="mt-auto border-t border-slate-200 bg-white">
-        <nav className="mx-auto flex w-full max-w-5xl items-center justify-center gap-6 px-4 py-6 text-sm font-medium text-slate-600 sm:gap-10 sm:px-6">
-          <Link href="#" className="transition hover:text-blue-700">
+      <footer className="mt-auto border-t border-line">
+        <nav className="mx-auto flex w-full max-w-3xl items-center justify-center gap-7 px-4 py-6 text-sm text-faint sm:gap-10 sm:px-6">
+          <Link href="#" className="transition-colors hover:text-ink">
             ติดตาม
           </Link>
-          <Link href="#" className="transition hover:text-blue-700">
+          <Link href="#" className="transition-colors hover:text-ink">
             ประวัติ
           </Link>
-          <Link href="#" className="transition hover:text-blue-700">
+          <Link href="#" className="transition-colors hover:text-ink">
             รหัสไปรษณีย์
           </Link>
         </nav>
       </footer>
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * Signature element — ตราประทับไปรษณีย์
+ *
+ * ใช้ motif เดียวกันสองจังหวะ: หมุนตอนกำลังค้นหา และ "ประทับ" ลงตอนได้ผล
+ * แอนิเมชันทั้งหมดถูกปิดอัตโนมัติเมื่อผู้ใช้ตั้ง prefers-reduced-motion
+ * (กติกาอยู่ใน app/globals.css)
+ * ------------------------------------------------------------------ */
+
+function Postmark({
+  postmark,
+  spinning = false,
+}: {
+  postmark?: { date: string; time: string } | null;
+  spinning?: boolean;
+}) {
+  return (
+    <span
+      className={`relative grid h-16 w-16 shrink-0 place-items-center sm:h-[88px] sm:w-[88px] ${
+        spinning ? "" : "animate-seal-press"
+      }`}
+      aria-hidden="true"
+    >
+      <svg
+        viewBox="0 0 100 100"
+        className={`absolute inset-0 h-full w-full text-seal ${
+          spinning ? "animate-seal-turn" : ""
+        }`}
+        fill="none"
+        stroke="currentColor"
+      >
+        {/* วงนอกเป็นเส้นประ — เวลาหมุนจะเห็นการเคลื่อนไหวชัดกว่าวงทึบ */}
+        <circle cx="50" cy="50" r="47" strokeWidth="2.5" strokeDasharray="5 6" />
+      </svg>
+
+      <svg
+        viewBox="0 0 100 100"
+        className="absolute inset-0 h-full w-full text-seal"
+        fill="none"
+        stroke="currentColor"
+      >
+        <circle cx="50" cy="50" r="38" strokeWidth="1.5" opacity="0.8" />
+        {/* เส้นคลื่นแบบตราลบแสตมป์ */}
+        <path
+          d="M24 33 q7 -5 14 0 t14 0 t14 0 t14 0"
+          strokeWidth="1.5"
+          opacity="0.55"
+        />
+        <path
+          d="M24 67 q7 -5 14 0 t14 0 t14 0 t14 0"
+          strokeWidth="1.5"
+          opacity="0.55"
+        />
+      </svg>
+
+      {postmark && (
+        <span className="relative flex flex-col items-center leading-none text-seal">
+          <span className="font-display text-[13px] font-semibold sm:text-[15px]">
+            {postmark.date}
+          </span>
+          <span className="mt-1 font-mono text-[10px] tracking-tight sm:text-[11px]">
+            {postmark.time}
+          </span>
+        </span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * โลโก้ — ซองจดหมายที่ถูกประทับตราแล้วที่มุมขวาล่าง
+ *
+ * วงตราใช้ fill สีกระดาษเพื่อกลบเส้นซองที่อยู่ข้างใต้ ให้อ่านเป็นสองชั้นจริง
+ * จึงต้องวางบนพื้น --color-paper เท่านั้น (ถ้าย้ายไปวางบนพื้นสีอื่น ต้องแก้ fill ตาม)
+ * นิ่งเสมอ ไม่มีแอนิเมชัน — ปล่อยให้ตราประทับในการ์ดผลลัพธ์เป็นจุดเดียวที่เคลื่อนไหว
+ */
+function BrandMark({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 32 32"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="1.5" y="7" width="24" height="17" rx="2.5" />
+      <path d="M2.4 8.2 L13.5 16.8 L24.6 8.2" />
+      <circle
+        cx="24.5"
+        cy="23.5"
+        r="6.2"
+        fill="var(--color-paper)"
+        strokeDasharray="2.4 2.6"
+      />
+    </svg>
   );
 }
