@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { thailandPost } from "@/lib/carriers/thailand-post";
+import { resolveTracking } from "@/lib/carriers/resolve";
 import { CarrierError, type TrackingErrorCode } from "@/lib/carriers/types";
 
 /** ต้องรันบน Node.js runtime เพราะอ่าน process.env ที่เก็บ API key */
@@ -51,8 +51,9 @@ export async function POST(request: Request) {
   }
 
   try {
-    const data = await thailandPost.track(trackingNumber);
-    return NextResponse.json({ ok: true as const, data });
+    const { result, fromCache } = await resolveTracking(trackingNumber);
+    // fromCache ไว้ debug ว่าผลนี้มาจาก cache หรือเพิ่งยิง API จริง
+    return NextResponse.json({ ok: true as const, data: result, fromCache });
   } catch (error) {
     if (error instanceof CarrierError) {
       // log รายละเอียดไว้ฝั่ง server เท่านั้น (message อาจมีข้อมูลระบบ) ส่วน client ได้แค่ userMessage

@@ -357,7 +357,9 @@ async function requestTracking(
 export async function track(trackingNumber: string): Promise<TrackingResult> {
   const barcode = normalizeTrackingNumber(trackingNumber ?? "");
 
-  if (!/^[A-Z0-9]{8,20}$/.test(barcode)) {
+  // ใช้ช่วงความยาวกว้างเท่ากับ adapter อื่น เพื่อให้เลขของขนส่งเจ้าอื่นถูกส่งมาถามจริง
+  // แล้วได้ not_found กลับไป (resolveTracking อาศัย not_found เป็นสัญญาณให้ fallback)
+  if (!/^[A-Z0-9]{6,40}$/.test(barcode)) {
     throw new CarrierError(
       "invalid_tracking_number",
       "รูปแบบเลขพัสดุไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง",
