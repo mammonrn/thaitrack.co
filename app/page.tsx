@@ -3,13 +3,54 @@
 import { useState } from "react";
 import Link from "next/link";
 
+import type { TrackingResult, TrackingStatus } from "@/lib/carriers/types";
+import {
+  EMPTY_INPUT_MESSAGE,
+  formatThaiDateTime,
+  requestTracking,
+} from "@/lib/tracking-view";
+
+/** สีของป้ายสถานะ — คุมโทนน้ำเงิน-ขาวเป็นหลัก ใช้สีอื่นเฉพาะตอนสำเร็จ/มีปัญหา */
+const STATUS_BADGE_CLASS: Record<TrackingStatus, string> = {
+  pending: "bg-slate-100 text-slate-700 ring-slate-200",
+  in_transit: "bg-blue-50 text-blue-700 ring-blue-200",
+  out_for_delivery: "bg-blue-100 text-blue-800 ring-blue-300",
+  delivered: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+  exception: "bg-rose-50 text-rose-700 ring-rose-200",
+};
+
 export default function Home() {
   const [trackingNumber, setTrackingNumber] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [result, setResult] = useState<TrackingResult | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    // TODO: เรียก API ติดตามพัสดุด้วยค่า trackingNumber
+    if (isLoading) return;
+
+    if (trackingNumber.trim() === "") {
+      setResult(null);
+      setErrorMessage(EMPTY_INPUT_MESSAGE);
+      return;
+    }
+
+    setIsLoading(true);
+    setResult(null);
+    setErrorMessage(null);
+
+    const outcome = await requestTracking(trackingNumber);
+    if (outcome.ok) {
+      setResult(outcome.result);
+    } else {
+      setErrorMessage(outcome.message);
+    }
+
+    setIsLoading(false);
   }
+
+  // timeline โชว์จากล่าสุดไปเก่าสุด (API ส่งมาเรียงจากเก่าไปใหม่)
+  const eventsNewestFirst = result ? [...result.events].reverse() : [];
 
   return (
     <div className="flex flex-1 flex-col bg-white text-slate-900">
@@ -89,9 +130,34 @@ export default function Home() {
               />
               <button
                 type="submit"
-                className="h-14 w-full shrink-0 rounded-xl bg-blue-600 px-6 text-base font-semibold text-white shadow-sm transition hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-300 active:bg-blue-800 sm:h-16 sm:w-auto sm:px-10 sm:text-lg"
+                disabled={isLoading}
+                className="flex h-14 w-full shrink-0 items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 text-base font-semibold text-white shadow-sm transition hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-300 active:bg-blue-800 disabled:cursor-not-allowed disabled:bg-blue-400 sm:h-16 sm:w-auto sm:px-10 sm:text-lg"
               >
-                ติดตาม
+                {isLoading && (
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="h-5 w-5 animate-spin"
+                    aria-hidden="true"
+                  >
+                    <circle
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="3"
+                      fill="none"
+                      className="opacity-25"
+                    />
+                    <path
+                      d="M12 2a10 10 0 0 1 10 10"
+                      stroke="currentColor"
+                      strokeWidth="3"
+                      strokeLinecap="round"
+                      fill="none"
+                    />
+                  </svg>
+                )}
+                {isLoading ? "กำลังค้นหา..." : "ติดตาม"}
               </button>
             </form>
 
@@ -102,9 +168,119 @@ export default function Home() {
           </div>
         </section>
 
-        {/* พื้นที่ผลลัพธ์ */}
-        <section className="mx-auto w-full max-w-2xl px-4 py-8 sm:px-6 sm:py-12">
-          {/* TODO: แสดงผลการติดตามพัสดุ */}
+        {/* ผลการติดตามพัสดุ */}
+        <section
+          className="mx-auto w-full max-w-2xl px-4 py-8 sm:px-6 sm:py-12"
+          aria-live="polite"
+          aria-busy={isLoading}
+        >
+          {errorMessage && (
+            <div className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-800 sm:p-5">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="mt-0.5 h-5 w-5 shrink-0"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 8v5" />
+                <path d="M12 16h.01" />
+              </svg>
+              <p className="text-sm leading-relaxed sm:text-base">
+                {errorMessage}
+              </p>
+            </div>
+          )}
+
+          {result && (
+            <div className="overflow-hidden rounded-2xl border border-slate-200 shadow-sm">
+              {/* สรุปสถานะปัจจุบัน */}
+              <div className="border-b border-slate-200 bg-gradient-to-b from-blue-50 to-white p-5 sm:p-6">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 sm:text-sm">
+                  <span className="font-medium text-slate-700">
+                    {result.carrierName}
+                  </span>
+                  <span className="font-mono tracking-wide">
+                    {result.trackingNumber}
+                  </span>
+                </div>
+
+                <div className="mt-3">
+                  <span
+                    className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ring-1 ring-inset sm:text-sm ${STATUS_BADGE_CLASS[result.status]}`}
+                  >
+                    {result.statusText}
+                  </span>
+                </div>
+
+                {result.lastUpdated && (
+                  <p className="mt-3 text-xs text-slate-500 sm:text-sm">
+                    อัปเดตล่าสุด {formatThaiDateTime(result.lastUpdated)} น.
+                  </p>
+                )}
+              </div>
+
+              {/* timeline ล่าสุดอยู่บนสุด */}
+              <div className="bg-white p-5 sm:p-6">
+                {eventsNewestFirst.length === 0 ? (
+                  <p className="text-sm text-slate-500">
+                    ยังไม่มีความเคลื่อนไหวของพัสดุชิ้นนี้
+                  </p>
+                ) : (
+                  <ol>
+                    {eventsNewestFirst.map((item, index) => {
+                      const isLatest = index === 0;
+                      const isLast = index === eventsNewestFirst.length - 1;
+
+                      return (
+                        <li
+                          key={`${item.time}-${index}`}
+                          className="relative flex gap-4 pb-6 last:pb-0"
+                        >
+                          {/* เส้นเชื่อมจุด — ไม่ลากเลยรายการสุดท้าย */}
+                          {!isLast && (
+                            <span
+                              className="absolute left-[7px] top-5 h-full w-px bg-slate-200"
+                              aria-hidden="true"
+                            />
+                          )}
+                          <span
+                            className={`relative mt-1.5 h-[15px] w-[15px] shrink-0 rounded-full ring-4 ring-white ${
+                              isLatest ? "bg-blue-600" : "bg-slate-300"
+                            }`}
+                            aria-hidden="true"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p
+                              className={`text-sm leading-snug sm:text-base ${
+                                isLatest
+                                  ? "font-semibold text-slate-900"
+                                  : "text-slate-700"
+                              }`}
+                            >
+                              {item.description}
+                            </p>
+                            <p className="mt-1 text-xs text-slate-500 sm:text-sm">
+                              {formatThaiDateTime(item.time)} น.
+                            </p>
+                            {item.location && (
+                              <p className="mt-0.5 text-xs text-slate-500 sm:text-sm">
+                                {item.location}
+                              </p>
+                            )}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                )}
+              </div>
+            </div>
+          )}
         </section>
       </main>
 
