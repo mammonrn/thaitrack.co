@@ -120,7 +120,7 @@ export default function Home() {
               <button
                 type="submit"
                 disabled={isLoading}
-                className="h-14 shrink-0 rounded-xl bg-ink px-8 font-display text-base font-semibold text-white transition-colors hover:bg-ink-strong disabled:cursor-not-allowed disabled:bg-ink/45 sm:h-15 sm:text-lg"
+                className="h-14 shrink-0 rounded-xl bg-ink px-8 font-display text-base font-semibold text-white transition-colors hover:bg-ink-strong disabled:cursor-not-allowed disabled:bg-ink-busy sm:h-15 sm:text-lg"
               >
                 {isLoading ? "กำลังค้นหา…" : "ค้นหาพัสดุ"}
               </button>
@@ -133,8 +133,9 @@ export default function Home() {
         </section>
 
         {/* ผลการค้นหา */}
+        {/* จอใหญ่ให้การ์ดผลลัพธ์กว้างกว่า hero เล็กน้อย ไม่ให้ดูลอยกลางจอโล่งๆ */}
         <section
-          className="mx-auto w-full max-w-xl px-4 pb-12 sm:px-6 sm:pb-16"
+          className="mx-auto w-full max-w-xl px-4 pb-12 sm:max-w-2xl sm:px-6 sm:pb-16"
           aria-live="polite"
           aria-busy={isLoading}
         >
@@ -294,14 +295,15 @@ function Postmark({
         stroke="currentColor"
       >
         <circle cx="50" cy="50" r="38" strokeWidth="1.5" opacity="0.8" />
-        {/* เส้นคลื่นแบบตราลบแสตมป์ */}
+        {/* เส้นคลื่นแบบตราลบแสตมป์ — ดันออกห่างจากบรรทัดวันที่/เวลาที่อยู่ตรงกลาง
+            และหดความยาวลงให้อยู่ในวงในพอดีทุกจุด */}
         <path
-          d="M24 33 q7 -5 14 0 t14 0 t14 0 t14 0"
+          d="M26 29 q6 -4 12 0 t12 0 t12 0 t12 0"
           strokeWidth="1.5"
           opacity="0.55"
         />
         <path
-          d="M24 67 q7 -5 14 0 t14 0 t14 0 t14 0"
+          d="M26 73 q6 -4 12 0 t12 0 t12 0 t12 0"
           strokeWidth="1.5"
           opacity="0.55"
         />
