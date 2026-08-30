@@ -63,7 +63,7 @@ const BAD_REQUEST_CODES = new Set(["A0400", "A0410"]);
  * รูปแบบข้อมูลที่ Track123 ส่งกลับมา (เอาเฉพาะฟิลด์ที่ใช้)
  * ------------------------------------------------------------------ */
 
-interface Track123Event {
+export interface Track123Event {
   address?: string | null;
   eventTime?: string | null;
   eventTimeZeroUTC?: string | null;
@@ -72,14 +72,14 @@ interface Track123Event {
   eventDetailTranslation?: string | null;
 }
 
-interface Track123LogisticsInfo {
+export interface Track123LogisticsInfo {
   courierCode?: string | null;
   courierNameEN?: string | null;
   courierNameCN?: string | null;
   trackingDetails?: Track123Event[] | null;
 }
 
-interface Track123Accepted {
+export interface Track123Accepted {
   trackNo?: string | null;
   trackingStatus?: string | null;
   transitStatus?: string | null;
@@ -254,8 +254,10 @@ function parseTrack123Date(event: Track123Event): {
 function toEvent(
   event: Track123Event,
 ): { event: TrackingEvent; timestamp: number } | null {
-  const description =
+  const rawDescription =
     event.eventDetailTranslation?.trim() || event.eventDetail?.trim();
+  const description =
+    rawDescription === undefined ? undefined : cleanEventText(rawDescription);
   const { iso, timestamp } = parseTrack123Date(event);
 
   // ไม่มีทั้งคำบรรยายและเวลา ถือว่าไม่มีสาระพอจะแสดง
@@ -271,6 +273,69 @@ function toEvent(
   };
 }
 
+/* ------------------------------------------------------------------ *
+ * ทำความสะอาดข้อความเหตุการณ์
+ *
+ * ขนส่งบางเจ้า (พบกับ Flash Express) ส่งรหัสภายในปนมากับข้อความที่ตั้งใจให้คนอ่าน
+ * ผู้ใช้ทั่วไปไม่ควรเห็นรหัสพวกนี้ เช่น
+ *   "DELIVERY_TICKET_CREATION_SCAN,พัสดุของคุณกำลังจัดส่งโดยแฟลช"
+ *   "ถูกส่งต่อพัสดุจากสาขา08 NO4_HUB-เชียงราย"
+ * ------------------------------------------------------------------ */
+
+/**
+ * รหัส event ภายในที่นำหน้าข้อความแล้วคั่นด้วยจุลภาค
+ *
+ * บังคับให้เป็นตัวพิมพ์ใหญ่/ตัวเลข/ขีดล่างล้วน และยาวอย่างน้อย 4 ตัว เพื่อไม่ให้
+ * ไปตัดคำย่อสั้นๆ ที่เป็นเนื้อหาจริง (เช่น "USA, ...") ข้อความภาษาไทยไม่มีทาง
+ * ขึ้นต้นด้วยรูปแบบนี้อยู่แล้ว
+ */
+const EVENT_CODE_PREFIX = /^[A-Z][A-Z0-9_]{3,}\s*,\s*/;
+
+/**
+ * รหัสสาขาภายในที่แทรกกลางประโยค เช่น "08 NO4_HUB-" ใน "สาขา08 NO4_HUB-เชียงราย"
+ *
+ * สัญญาณที่ชี้ชัดคือรูปแบบ ตัวพิมพ์ใหญ่_ตัวพิมพ์ใหญ่ ตามด้วยขีด ซึ่งไม่ปรากฏใน
+ * ข้อความภาษาไทยปกติ ส่วนเลขนำหน้ามีบ้างไม่มีบ้างจึงเขียนเป็นทางเลือก
+ */
+const INTERNAL_BRANCH_CODE = /\d*\s*[A-Z][A-Z0-9]*_[A-Z0-9]+-/g;
+
+/** ตัดรหัสภายในของขนส่งออก ให้เหลือแต่ข้อความที่คนอ่านรู้เรื่อง */
+export function cleanEventText(raw: string): string {
+  const cleaned = raw
+    .replace(EVENT_CODE_PREFIX, "")
+    .replace(INTERNAL_BRANCH_CODE, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  // ถ้าทำความสะอาดแล้วไม่เหลืออะไรเลย แปลว่าข้อความทั้งก้อนเป็นรหัส
+  // คืนของเดิมดีกว่าปล่อยให้ว่าง ผู้ใช้จะได้ยังเห็นว่ามีเหตุการณ์เกิดขึ้น
+  return cleaned === "" ? raw.trim() : cleaned;
+}
+
+/* ------------------------------------------------------------------ *
+ * อ่านสถานะจากข้อความเหตุการณ์
+ * ------------------------------------------------------------------ */
+
+/** คำที่บอกว่าการนำจ่ายมีปัญหา ต้องตรวจก่อนคำว่าสำเร็จเสมอ */
+const FAILURE_WORDS =
+  /ไม่สำเร็จ|ไม่สามารถ|ตีกลับ|ส่งคืน|ปฏิเสธ|เสียหาย|สูญหาย|failed|unsuccessful|returned|refused/i;
+
+/** คำที่บอกว่าผู้รับได้รับพัสดุแล้วจริง */
+const DELIVERED_WORDS =
+  /เซ็นรับ|รับพัสดุเรียบร้อย|นำจ่ายสำเร็จ|จัดส่งสำเร็จ|ส่งสำเร็จ|ได้รับพัสดุแล้ว|delivered|signed/i;
+
+/**
+ * เดาสถานะจากข้อความเหตุการณ์ คืน null เมื่อไม่มั่นใจ
+ *
+ * ต้องตรวจคำที่บอกความล้มเหลวก่อน เพราะข้อความอย่าง "ไม่สามารถเซ็นรับพัสดุ"
+ * มีคำว่า "เซ็นรับ" อยู่ด้วย ถ้าตรวจสลับลำดับจะอ่านเป็นส่งสำเร็จ
+ */
+function statusFromEventText(text: string): TrackingStatus | null {
+  if (FAILURE_WORDS.test(text)) return "exception";
+  if (DELIVERED_WORDS.test(text)) return "delivered";
+  return null;
+}
+
 /** รวมเหตุการณ์จากขนส่งต้นทางและขนส่งช่วงสุดท้าย แล้วตัดรายการซ้ำออก */
 function collectEvents(accepted: Track123Accepted): Track123Event[] {
   return [
@@ -279,7 +344,12 @@ function collectEvents(accepted: Track123Accepted): Track123Event[] {
   ].filter((event): event is Track123Event => event !== null && event !== undefined);
 }
 
-function toTrackingResult(
+/**
+ * แปลงข้อมูลดิบจาก Track123 เป็นรูปแบบกลาง
+ *
+ * export ไว้เพื่อให้เทสต์เรียกตรงได้โดยไม่ต้องยิง API จริง
+ */
+export function toTrackingResult(
   trackingNumber: string,
   accepted: Track123Accepted,
 ): TrackingResult {
@@ -300,8 +370,22 @@ function toTrackingResult(
         (Number.isFinite(b.timestamp) ? b.timestamp : -Infinity),
     );
 
+  const events = pairs.map((pair) => pair.event);
+  const latest = pairs.at(-1);
+
   const transitStatus = accepted.transitStatus?.trim() ?? "";
-  const status = TRANSIT_STATUS_MAP[transitStatus] ?? "pending";
+  const headlineStatus = TRANSIT_STATUS_MAP[transitStatus] ?? "pending";
+
+  // transitStatus ตามหลังไทม์ไลน์ได้ พบกับ Flash Express ที่นำจ่ายไม่สำเร็จรอบแรก
+  // แล้วสำเร็จรอบถัดมา แต่ transitStatus ยังค้างเป็น ABNORMAL อยู่ ผลคือหัวการ์ด
+  // ขึ้น "มีปัญหาในการนำจ่าย" ทั้งที่เหตุการณ์บนสุดบอกว่าเซ็นรับเรียบร้อยแล้ว
+  //
+  // เหตุการณ์ล่าสุดคือข้อมูลที่ใหม่ที่สุดเสมอ ถ้าอ่านออกชัดเจนจึงให้ถือตามนั้น
+  // ถ้าอ่านไม่ออก (คืน null) ค่อยกลับไปใช้ transitStatus ตามเดิม
+  const status =
+    (latest === undefined
+      ? null
+      : statusFromEventText(latest.event.description)) ?? headlineStatus;
 
   // ชื่อขนส่งจริงที่ Track123 ตรวจจับได้ (เช่น Flash Express) ไม่ใช่ชื่อ Track123 เอง
   const detectedName =
@@ -312,9 +396,6 @@ function toTrackingResult(
   const detectedCode =
     accepted.lastMileInfo?.courierCode?.trim() ||
     accepted.localLogisticsInfo?.courierCode?.trim();
-
-  const events = pairs.map((pair) => pair.event);
-  const latest = pairs.at(-1);
 
   return {
     trackingNumber,
