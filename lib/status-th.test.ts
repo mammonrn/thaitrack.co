@@ -11,6 +11,7 @@ import { test } from "node:test";
 import {
   parseStatusText,
   translatePlace,
+  translatePlaceDetailed,
   translateStatusText,
 } from "./status-th.ts";
 
@@ -139,4 +140,112 @@ test("ประเทศที่ไม่รู้จัก → คงชื่
     translateStatusText("[Delivered] [Narnia]Parcel has been delivered"),
     "ส่งถึงแล้ว (Narnia)",
   );
+});
+
+/* ---------------- เคสที่เคยหลุดไปแสดงผิดบนหน้าเว็บจริง ---------------- */
+
+test("บรรทัดที่เคยโผล่เป็นอังกฤษเต็ม หรือไทยชนอังกฤษ ต้องแปลจบทั้งประโยค", () => {
+  const cases: [string, string][] = [
+    // เคยแสดงเป็นอังกฤษเต็มบรรทัด
+    [
+      "[Delivery Driver Assigned] Delivery driver has been assigned",
+      "มอบหมายพนักงานนำจ่ายแล้ว",
+    ],
+    // เคยแสดงเป็นอังกฤษเต็มบรรทัด เพราะมีชื่อสถานที่ไทยอยู่ในประโยคอังกฤษ
+    [
+      "[Enter Last Mile Hub] Parcel has arrived at station :ACRAI-B - เมืองเชียงราย",
+      "ถึงสาขา ACRAI-B - เมืองเชียงราย",
+    ],
+    // เคยแสดงเป็น "ออกจากstation" (ไทยชนอังกฤษ ไม่มีวรรค)
+    ["[Departed Station] Parcel has departed station", "ออกจากสาขา"],
+    // เคยแสดงเป็น "ถึงstation :NORC-B SPX Express"
+    [
+      "[Arrived At Station] Parcel has arrived at station :NORC-B SPX Express",
+      "ถึงสาขา NORC-B SPX Express",
+    ],
+    // เคยแสดงเป็น "ถึงstation:Kongjing"
+    [
+      "[Arrived At Station] Parcel has arrived at station:Kongjing",
+      "ถึงสาขา Kongjing",
+    ],
+    // เคยแสดงเป็น "ออกจากthe origin port: SHENZHEN"
+    [
+      "[Departed] Parcel has departed from the origin port: SHENZHEN",
+      "ออกจากท่าต้นทาง SHENZHEN",
+    ],
+  ];
+
+  for (const [input, expected] of cases) {
+    assert.equal(translateStatusText(input), expected, `แปลผิดที่: ${input}`);
+  }
+});
+
+test("ผลลัพธ์ต้องไม่มีคำนามทั่วไปภาษาอังกฤษค้างอยู่", () => {
+  const generic = /\b(?:station|hub|port|cent(?:er|re)|warehouse|depot|facility|branch)\b/i;
+
+  const inputs = [
+    "[Delivery Driver Assigned] Delivery driver has been assigned",
+    "[Enter Last Mile Hub] Parcel has arrived at station :ACRAI-B - เมืองเชียงราย",
+    "[Departed Station] Parcel has departed station",
+    "[Arrived At Station] Parcel has arrived at station :NORC-B SPX Express",
+    "[Arrived At Station] Parcel has arrived at station:Kongjing",
+    "[Departed] Parcel has departed from the origin port: SHENZHEN",
+    "[Transit Warehouse Outbound] [China]Parcel has departed from :Shenzhen sorting centre",
+  ];
+
+  for (const input of inputs) {
+    const out = translateStatusText(input);
+    assert.equal(generic.test(out), false, `ยังมีคำอังกฤษค้าง: ${input} → ${out}`);
+  }
+});
+
+test("ผลลัพธ์ต้องมีช่องว่างคั่นเสมอตรงรอยต่อไทยกับละติน", () => {
+  const clash = /[\u0E00-\u0E7F][A-Za-z0-9]|[A-Za-z0-9][\u0E00-\u0E7F]/;
+
+  const inputs = [
+    "[Enter Last Mile Hub] Parcel has arrived at station :ACRAI-B - เมืองเชียงราย",
+    "[Arrived At Station] Parcel has arrived at station:Kongjing",
+    "[Departed] Parcel has departed from the origin port: SHENZHEN",
+    "[Transit Warehouse Inbound] [China]Parcel has arrived at :Shenzhen sorting centre",
+  ];
+
+  for (const input of inputs) {
+    const out = translateStatusText(input);
+    assert.equal(clash.test(out), false, `ไทยชนละติน: ${input} → ${out}`);
+  }
+});
+
+test("แปลชื่อสถานที่ไม่จบ → fallback ทั้งประโยค ไม่แปลครึ่งเดียว", () => {
+  // "depot" ไม่มีคำแปล และ tag ก็ไม่รู้จัก → ต้องคืนต้นฉบับทั้งบรรทัด
+  const input = "[Some New Tag] Parcel has arrived at :Chonburi depot";
+  assert.equal(translateStatusText(input), input);
+
+  // ถ้ารู้จัก tag ให้ถอยไปใช้คำแปลของ tag แทนการแปลครึ่งประโยค
+  assert.equal(
+    translateStatusText("[In Transit] Parcel has arrived at :Chonburi depot"),
+    "อยู่ระหว่างขนส่ง",
+  );
+});
+
+test("translatePlaceDetailed บอกได้ว่าแปลจบหรือไม่", () => {
+  assert.deepEqual(translatePlaceDetailed("station :ACRAI-B - เมืองเชียงราย"), {
+    text: "สาขา ACRAI-B - เมืองเชียงราย",
+    complete: true,
+  });
+  assert.deepEqual(translatePlaceDetailed("station:Kongjing"), {
+    text: "สาขา Kongjing",
+    complete: true,
+  });
+  assert.deepEqual(translatePlaceDetailed("the origin port: SHENZHEN"), {
+    text: "ท่าต้นทาง SHENZHEN",
+    complete: true,
+  });
+  // คำนามที่ยังไม่รู้จัก → complete = false เพื่อบังคับให้ fallback
+  assert.equal(translatePlaceDetailed("Chonburi depot").complete, false);
+});
+
+test("คำที่ขึ้นต้นเหมือนคำนามทั่วไป แต่เป็นชื่อเฉพาะ ต้องไม่ถูกตัด", () => {
+  // "Portland" ขึ้นต้นด้วย "port" — \b กันไม่ให้กลายเป็น "ท่า land"
+  assert.equal(translatePlace("Portland"), "Portland");
+  assert.equal(translatePlace("Centerville"), "Centerville");
 });
