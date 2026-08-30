@@ -48,7 +48,6 @@ function takeCallbackError(): UserFacingError | null {
  */
 export default function AuthButton() {
   const [user, setUser] = useState<User | null>(null);
-  const [isReady, setIsReady] = useState(false);
   const [isWorking, setIsWorking] = useState(false);
   const [error, setError] = useState<UserFacingError | null>(null);
 
@@ -79,7 +78,6 @@ export default function AuthButton() {
         subscription = supabase.auth.onAuthStateChange((_event, session) => {
           if (!isActive) return;
           setUser(session?.user ?? null);
-          setIsReady(true);
         }).data.subscription;
 
         const { data } = await supabase.auth.getUser();
@@ -94,7 +92,6 @@ export default function AuthButton() {
 
       setUser(currentUser);
       if (callbackError !== null) setError(callbackError);
-      setIsReady(true);
     }
 
     void initialize();
@@ -121,11 +118,11 @@ export default function AuthButton() {
     setIsWorking(false);
   }, []);
 
-  const label = !isReady
-    ? "กำลังตรวจสอบ"
-    : user === null
-      ? "เข้าสู่ระบบ"
-      : "ออกจากระบบ";
+  // ตั้งต้นเป็น "เข้าสู่ระบบ" เสมอ ไม่ใช่สถานะกำลังโหลด เพราะหน้านี้ถูก prerender
+  // เป็น HTML static ตอน build ถ้าตั้งต้นเป็นปุ่มที่กดไม่ได้ HTML ที่ถูกส่งออกไป
+  // (และที่ crawler กับ curl เห็น) จะเป็นปุ่มที่กดไม่ได้ตลอด และถ้า JS โหลดไม่สำเร็จ
+  // ผู้ใช้จะเจอปุ่มค้างโดยไม่มีทางออก สถานะที่พบบ่อยที่สุดคือยังไม่ล็อกอินอยู่แล้ว
+  const label = user === null ? "เข้าสู่ระบบ" : "ออกจากระบบ";
 
   return (
     <div className="relative">
@@ -139,7 +136,7 @@ export default function AuthButton() {
         <button
           type="button"
           onClick={() => runAction(user === null ? signInWithGoogle : signOut)}
-          disabled={!isReady || isWorking}
+          disabled={isWorking}
           className={BUTTON_CLASS}
         >
           {isWorking ? "กำลังดำเนินการ" : label}

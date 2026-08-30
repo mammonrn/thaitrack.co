@@ -1,36 +1,66 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# พัสดุไทย.com
 
-## Getting Started
+เว็บติดตามพัสดุรวมหลายขนส่งในที่เดียว พิมพ์เลขพัสดุครั้งเดียวแล้วระบบไล่ถามให้ทุกเจ้า
 
-First, run the development server:
+สร้างด้วย [Next.js](https://nextjs.org) (App Router)
+
+## เริ่มพัฒนา
 
 ```bash
+cp .env.example .env.local   # แล้วใส่ค่าจริงในไฟล์
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+เปิด http://localhost:3000
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## ตรวจก่อน commit
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run lint
+npx tsc --noEmit
+npm run build
+```
 
-## Learn More
+## ตัวแปรสภาพแวดล้อม
 
-To learn more about Next.js, take a look at the following resources:
+ดูรายการทั้งหมดพร้อมคำอธิบายใน `.env.example`
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+ตัวแปรที่ขึ้นต้นด้วย `NEXT_PUBLIC_` **ถูกฝังลงไฟล์ JS ตอน `npm run build`** ไม่ได้อ่านตอน
+runtime ถ้าเพิ่มหรือแก้ค่าเหล่านี้ต้อง build ใหม่เสมอ การ restart เฉยๆ ไม่มีผล
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Deploy หลัง Nginx
 
-## Deploy on Vercel
+session ของ Supabase ถูกเก็บใน cookie ที่ใหญ่กว่าปกติมาก (JWT + ข้อมูลผู้ใช้จาก Google
+รวมแล้วประมาณ 4–6 KB ถูกหั่นเป็นหลายก้อน ก้อนละไม่เกิน 3180 bytes) ตอนเข้าสู่ระบบสำเร็จ
+`/auth/callback` จะตอบกลับมาพร้อม `Set-Cookie` หลายอันรวมกันเกิน 4 KB
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+ค่าเริ่มต้นของ Nginx (`proxy_buffer_size` 4k) เล็กเกินกว่าจะรับ response header ขนาดนั้น
+ผลคือ Nginx ตอบ **502 Bad Gateway ทันที** และ log ของแอพจะไม่มี error อะไรเลย เพราะฝั่งแอพ
+ตอบถูกต้อง แต่ Nginx เป็นฝ่ายปฏิเสธเอง (ใน `/var/log/nginx/error.log` จะเห็นข้อความ
+`upstream sent too big header`)
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+ต้องขยาย buffer ใน server block:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_http_version 1.1;
+
+    proxy_set_header Host              $host;
+    proxy_set_header X-Forwarded-Host  $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Real-IP         $remote_addr;
+
+    # จำเป็นสำหรับ cookie ของ Supabase ค่าเริ่มต้น 4k เล็กเกินไปทำให้เกิด 502
+    proxy_buffer_size       16k;
+    proxy_buffers        8  16k;
+    proxy_busy_buffers_size 32k;
+}
+```
+
+`X-Forwarded-Host` กับ `X-Forwarded-Proto` จำเป็นด้วย ไม่งั้น `/auth/callback` จะ redirect
+ผู้ใช้กลับไปที่อยู่ภายในของเครื่องแทนที่จะเป็นโดเมนจริง
+
+ทุกการเรียก Supabase ตั้งเพดานเวลาไว้ที่ 8 วินาที (`lib/supabase/fetch.ts`) เพื่อไม่ให้
+request ค้างรอจนโดน reverse proxy ตัดแล้วกลายเป็น 502/504 โดยไม่มีร่องรอยใน log

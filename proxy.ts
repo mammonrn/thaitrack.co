@@ -14,6 +14,7 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 import { readSupabaseEnv } from "@/lib/supabase/env";
+import { createTimeoutFetch } from "@/lib/supabase/fetch";
 
 export async function proxy(request: NextRequest) {
   const result = readSupabaseEnv();
@@ -24,6 +25,7 @@ export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(result.env.url, result.env.anonKey, {
+    global: { fetch: createTimeoutFetch() },
     cookies: {
       getAll() {
         return request.cookies.getAll();

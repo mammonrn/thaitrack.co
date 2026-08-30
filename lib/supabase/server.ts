@@ -10,6 +10,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 
 import { readSupabaseEnv, SupabaseConfigError } from "./env";
+import { createTimeoutFetch } from "./fetch";
 
 /**
  * cookies() ของ Next 15 ขึ้นไปเป็น async function จึงต้อง await
@@ -22,6 +23,7 @@ export async function createServerSupabaseClient(): Promise<SupabaseClient> {
   const cookieStore = await cookies();
 
   return createServerClient(result.env.url, result.env.anonKey, {
+    global: { fetch: createTimeoutFetch() },
     cookies: {
       getAll() {
         return cookieStore.getAll();
