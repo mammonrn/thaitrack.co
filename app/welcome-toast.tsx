@@ -37,7 +37,8 @@ export default function WelcomeToast({
       // status ไม่ขัดจังหวะสิ่งที่ screen reader กำลังอ่านอยู่ ต่างจาก alert
       role="status"
       aria-live="polite"
-      className="fixed inset-x-4 bottom-4 z-30 animate-rise sm:inset-x-auto sm:right-6 sm:bottom-6 sm:w-80"
+      // ยกให้พ้นแถบเมนูล่างจอ (สูง ~56px + safe area) ไม่งั้นแถบเมนูจะบังทับ
+      className="fixed inset-x-4 bottom-[calc(4.75rem+env(safe-area-inset-bottom))] z-30 animate-rise sm:inset-x-auto sm:right-6 sm:bottom-6 sm:w-80"
     >
       <div className="flex items-start gap-3 rounded-2xl border border-line-strong bg-white p-3.5 shadow-xl">
         {/* ตราประทับเล็กๆ ให้เข้ากับธีมเอกสารไปรษณีย์ */}

@@ -5,10 +5,11 @@ import { useEffect, useRef, useState } from "react";
 import { NICKNAME_MAX_LENGTH } from "@/lib/saved-trackings";
 
 interface SaveTrackingDialogProps {
-  open: boolean;
   trackingNumber: string;
   /** ชื่อเล่นเดิม ถ้าเลขนี้เคยบันทึกไว้แล้ว */
   defaultNickname: string;
+  /** true เมื่อเป็นการแก้รายการที่บันทึกไว้แล้ว ใช้เปลี่ยนถ้อยคำในกล่อง */
+  isEditing: boolean;
   onConfirm: (nickname: string) => void;
   onCancel: () => void;
 }
@@ -22,28 +23,20 @@ const CONFIRM_VALUE = "confirm";
  * trap, ปิดด้วย Escape และคืนโฟกัสกลับปุ่มเดิมมาให้ครบโดยไม่ต้องเขียน JS เอง
  */
 export default function SaveTrackingDialog({
-  open,
   trackingNumber,
   defaultNickname,
+  isEditing,
   onConfirm,
   onCancel,
 }: SaveTrackingDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [nickname, setNickname] = useState(defaultNickname);
 
+  // mount เฉพาะตอนเปิด (ดู save-tracking-button.tsx) ค่าเริ่มต้นจึงสดใหม่เสมอ
   useEffect(() => {
     const dialog = dialogRef.current;
-    if (dialog === null) return;
-
-    if (open && !dialog.open) {
-      // ค่าเดิมค้างจากการเปิดครั้งก่อน ต้องล้างก่อนเสมอ
-      dialog.returnValue = "";
-      setNickname(defaultNickname);
-      dialog.showModal();
-    } else if (!open && dialog.open) {
-      dialog.close();
-    }
-  }, [open, defaultNickname]);
+    if (dialog !== null && !dialog.open) dialog.showModal();
+  }, []);
 
   function handleClose() {
     if (dialogRef.current?.returnValue === CONFIRM_VALUE) onConfirm(nickname);
@@ -67,7 +60,7 @@ export default function SaveTrackingDialog({
           id="save-dialog-title"
           className="font-display text-lg font-bold tracking-tight text-ink"
         >
-          บันทึกพัสดุนี้ไว้
+          {isEditing ? "แก้ชื่อที่บันทึกไว้" : "บันทึกพัสดุนี้ไว้"}
         </h2>
         <p className="mt-2 font-mono text-xs uppercase tracking-[0.12em] text-faint">
           {trackingNumber}
@@ -88,7 +81,7 @@ export default function SaveTrackingDialog({
             value={nickname}
             onChange={(event) => setNickname(event.target.value)}
             maxLength={NICKNAME_MAX_LENGTH}
-            placeholder="เช่น รองเท้าที่สั่งให้แม่"
+            placeholder="เช่น เคสมือถือ"
             className="mt-1.5 h-12 w-full rounded-xl border border-line-strong bg-white px-3.5 text-base text-body outline-none transition-colors placeholder:text-faint/70 hover:border-ink/30 focus:border-ink"
           />
           <p className="mt-1.5 text-xs text-faint">

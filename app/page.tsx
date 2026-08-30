@@ -9,6 +9,8 @@ import ScanButton from "./scan-button";
 import SaveTrackingButton from "./save-tracking-button";
 
 import type { TrackingResult, TrackingStatus } from "@/lib/carriers/types";
+import { translateStatusText } from "@/lib/status-th";
+import { groupEventsByLocation } from "@/lib/timeline-groups";
 import {
   EMPTY_INPUT_ERROR,
   formatPostmark,
@@ -123,7 +125,10 @@ export default function Home() {
   }, []);
 
   // timeline โชว์จากล่าสุดไปเก่าสุด (API ส่งมาเรียงจากเก่าไปใหม่)
-  const eventsNewestFirst = result ? [...result.events].reverse() : [];
+  // แล้วรวมเหตุการณ์ที่เกิดที่เดียวกันติดกันเข้าเป็นกลุ่ม
+  const timelineGroups = groupEventsByLocation(
+    result === null ? [] : [...result.events].reverse(),
+  );
 
   return (
     <div className="flex flex-1 flex-col">
@@ -221,11 +226,20 @@ export default function Home() {
 
           {!isLoading && result && (
             <article className="animate-rise overflow-hidden rounded-xl border border-line bg-white">
-              {/* หัวการ์ด: ตราประทับ + สถานะปัจจุบัน */}
-              {/* จอแคบวางตราประทับไว้บรรทัดบน เพื่อให้ข้อความสถานะยาวๆ ได้ความกว้างเต็มการ์ด */}
-              <div className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:gap-6 sm:p-6">
-                <Postmark postmark={formatPostmark(result.lastUpdated)} />
-                <div className="min-w-0 flex-1">
+              {/* หัวการ์ด: ตราประทับ + สถานะปัจจุบัน + ปุ่มบันทึก
+                  จอแคบให้ตราประทับกับปุ่มบันทึกอยู่แถวบน แล้วข้อความสถานะตกลงมา
+                  แถวล่างเต็มความกว้าง (order-* สลับลำดับให้จอกว้างเรียงเป็นแถวเดียว)
+                  ปุ่มบันทึกอยู่บนสุดเพื่อให้เห็นทันทีโดยไม่ต้องเลื่อนผ่านไทม์ไลน์ */}
+              <div className="flex flex-wrap items-center gap-3 p-5 sm:flex-nowrap sm:gap-6 sm:p-6">
+                <div className="order-1">
+                  <Postmark postmark={formatPostmark(result.lastUpdated)} />
+                </div>
+
+                <div className="order-2 ml-auto sm:order-3 sm:ml-0">
+                  <SaveTrackingButton trackingNumber={result.trackingNumber} />
+                </div>
+
+                <div className="order-3 min-w-0 basis-full sm:order-2 sm:flex-1 sm:basis-auto">
                   <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-faint sm:text-xs">
                     {result.trackingNumber}
                   </p>
@@ -242,60 +256,81 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* timeline — ส่วนที่ต้องเงียบ ปล่อยให้ตราประทับเป็นจุดเดียวที่เด่น */}
+              {/* ไทม์ไลน์ — จัดกลุ่มตามสถานที่ ให้กวาดตาหาว่า "ตอนนี้อยู่ไหน" ได้เร็ว
+                  ส่วนนี้ต้องเงียบ ปล่อยให้ตราประทับเป็นจุดเดียวที่เด่น (ดู DESIGN.md) */}
               <div className="border-t border-line p-5 sm:p-6">
-                {eventsNewestFirst.length === 0 ? (
+                {timelineGroups.length === 0 ? (
                   <p className="text-sm text-faint">
                     ยังไม่มีความเคลื่อนไหวของพัสดุชิ้นนี้
                   </p>
                 ) : (
-                  <ol>
-                    {eventsNewestFirst.map((item, index) => {
-                      const isLatest = index === 0;
-                      const isLast = index === eventsNewestFirst.length - 1;
-
-                      return (
-                        <li
-                          key={`${item.time}-${index}`}
-                          className="relative flex gap-4 pb-5 last:pb-0"
-                        >
-                          {!isLast && (
-                            <span
-                              className="absolute left-[5px] top-4 h-full w-px bg-line"
-                              aria-hidden="true"
-                            />
-                          )}
+                  <ol className="flex flex-col gap-6">
+                    {timelineGroups.map((group, groupIndex) => (
+                      <li key={`${group.location ?? "ไม่ระบุ"}-${groupIndex}`}>
+                        {/* หัวกลุ่มสถานที่ — เส้นบางกับตัวอักษรเล็ก เลียนหัวข้อ
+                            ในแบบฟอร์มไปรษณีย์ ไม่แย่งสายตาไปจากตราประทับ */}
+                        <div className="flex items-center gap-2.5">
+                          <PlaceMark className="h-3.5 w-3.5 shrink-0 text-faint" />
+                          {/* ไม่ใส่ uppercase เพราะจะไปเปลี่ยนรูปชื่อสถานที่ที่ขนส่ง
+                              ส่งมา ("Shenzhen Bao'an International Airport" กลายเป็น
+                              ตะโกนทั้งบรรทัด) ชื่อสถานที่ต้องคงตามต้นฉบับ */}
+                          <h3 className="min-w-0 truncate text-xs font-semibold tracking-[0.04em] text-faint">
+                            {group.location ?? "ไม่ระบุสถานที่"}
+                          </h3>
                           <span
-                            className={`relative mt-1.5 h-[11px] w-[11px] shrink-0 rounded-full ${
-                              isLatest
-                                ? "bg-ink"
-                                : "border border-line bg-paper"
-                            }`}
+                            className="h-px flex-1 bg-line"
                             aria-hidden="true"
                           />
-                          <div className="min-w-0 flex-1">
-                            <p
-                              className={`text-sm leading-snug sm:text-base ${
-                                isLatest
-                                  ? "font-medium text-body"
-                                  : "text-faint"
-                              }`}
-                            >
-                              {item.description}
-                            </p>
-                            <p className="mt-1 text-xs text-faint sm:text-sm">
-                              {formatThaiDateTime(item.time)} น.
-                              {item.location && ` · ${item.location}`}
-                            </p>
-                          </div>
-                        </li>
-                      );
-                    })}
+                        </div>
+
+                        <ol className="mt-3 pl-1">
+                          {group.events.map((item, eventIndex) => {
+                            const isLatest = groupIndex === 0 && eventIndex === 0;
+                            const isLastInGroup =
+                              eventIndex === group.events.length - 1;
+
+                            return (
+                              <li
+                                key={`${item.time}-${eventIndex}`}
+                                className="relative flex gap-4 pb-4 last:pb-0"
+                              >
+                                {!isLastInGroup && (
+                                  <span
+                                    className="absolute left-[5px] top-4 h-full w-px bg-line"
+                                    aria-hidden="true"
+                                  />
+                                )}
+                                <span
+                                  className={`relative mt-1.5 h-[11px] w-[11px] shrink-0 rounded-full ${
+                                    isLatest
+                                      ? "bg-ink"
+                                      : "border border-line bg-paper"
+                                  }`}
+                                  aria-hidden="true"
+                                />
+                                <div className="min-w-0 flex-1">
+                                  <p
+                                    className={`text-sm leading-snug sm:text-base ${
+                                      isLatest
+                                        ? "font-medium text-body"
+                                        : "text-faint"
+                                    }`}
+                                  >
+                                    {translateStatusText(item.description)}
+                                  </p>
+                                  <p className="mt-1 text-xs text-faint sm:text-sm">
+                                    {formatThaiDateTime(item.time)} น.
+                                  </p>
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ol>
+                      </li>
+                    ))}
                   </ol>
                 )}
               </div>
-
-              <SaveTrackingButton trackingNumber={result.trackingNumber} />
             </article>
           )}
         </section>
@@ -381,6 +416,25 @@ function Postmark({
  * จึงต้องวางบนพื้น --color-paper เท่านั้น (ถ้าย้ายไปวางบนพื้นสีอื่น ต้องแก้ fill ตาม)
  * นิ่งเสมอ ไม่มีแอนิเมชัน — ปล่อยให้ตราประทับในการ์ดผลลัพธ์เป็นจุดเดียวที่เคลื่อนไหว
  */
+/** หมุดเล็กหน้าหัวกลุ่มสถานที่ในไทม์ไลน์ */
+function PlaceMark({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 21c4-4.4 6-7.6 6-10a6 6 0 1 0-12 0c0 2.4 2 5.6 6 10z" />
+      <circle cx="12" cy="11" r="2.3" />
+    </svg>
+  );
+}
+
 function BrandMark({ className }: { className?: string }) {
   return (
     <svg
