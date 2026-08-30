@@ -211,3 +211,219 @@ test("ไปรษณีย์ไทยพังด้วยสาเหตุ�
 
   assert.deepEqual(fallback.calls, []);
 });
+
+/* ------------------------------------------------------------------ *
+ * เดาขนส่งจาก prefix ก่อน แทนที่จะเสีย call ให้การตรวจจับอัตโนมัติเดาผิด
+ * ------------------------------------------------------------------ */
+
+/** เลขทรง Shopee Xpress ที่ prefix บอกขนส่งได้แน่ๆ */
+const uniqueShopeeNumber = () => `SPXTH${(counter += 1)}0000000`;
+
+test("เลขขึ้นต้น SPXTH → ยิง shopee-xpress-th ตรงๆ ไม่ผ่าน auto-detect (ยิงครั้งเดียว)", async () => {
+  const fallback = makeTrack123({ succeedsForCourier: "shopee-xpress-th" });
+
+  const { result } = await resolveTracking(uniqueShopeeNumber(), {
+    primary: primaryAlwaysNotFound,
+    fallback,
+  });
+
+  assert.equal(result.carrierName, "Shopee Xpress");
+  // เดิมเคสนี้กิน 2 call (auto-detect เดาผิด แล้วค่อยลองซ้ำ) ตอนนี้เหลือ 1
+  assert.deepEqual(fallback.calls, ["shopee-xpress-th"]);
+});
+
+test("prefix รู้จักแต่ยิงแล้วไม่เจอ → ยังลอง auto-detect ต่อ แต่ไม่ถามเจ้าเดิมซ้ำ", async () => {
+  const fallback = makeTrack123({ codes: ["shopee-xpress-th", "kerry-th"] });
+
+  await assert.rejects(
+    resolveTracking(uniqueShopeeNumber(), {
+      primary: primaryAlwaysNotFound,
+      fallback,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof CarrierError);
+      assert.equal(error.code, "not_found");
+      return true;
+    },
+  );
+
+  // shopee-xpress-th ต้องโผล่ครั้งเดียว ไม่ถูกไล่ซ้ำในขั้นลองรายชื่อ
+  assert.deepEqual(fallback.calls, [
+    "shopee-xpress-th",
+    "auto-detect",
+    "kerry-th",
+  ]);
+});
+
+test("prefix รู้จัก แต่ auto-detect เป็นฝ่ายเจอ → หยุดที่ 2 call", async () => {
+  const fallback = makeTrack123({ autoDetectSucceeds: true });
+
+  const { result } = await resolveTracking(uniqueShopeeNumber(), {
+    primary: primaryAlwaysNotFound,
+    fallback,
+  });
+
+  assert.equal(result.carrierName, "Flash Express");
+  assert.deepEqual(fallback.calls, ["shopee-xpress-th", "auto-detect"]);
+});
+
+test("prefix ไม่รู้จัก → ลำดับเดิมทุกอย่าง เริ่มที่ auto-detect", async () => {
+  const fallback = makeTrack123({ succeedsForCourier: "shopee-xpress-th" });
+
+  await resolveTracking(uniqueTrackingNumber(), {
+    primary: primaryAlwaysNotFound,
+    fallback,
+  });
+
+  assert.deepEqual(fallback.calls, ["auto-detect", "shopee-xpress-th"]);
+});
+
+/* ------------------------------------------------------------------ *
+ * รวมคำขอซ้ำที่กำลังรอผลอยู่ ไม่ให้ยิง API ซ้ำ
+ * ------------------------------------------------------------------ */
+
+/** promise ที่เราสั่งให้จบเองได้ ใช้ตรึงคำขอแรกไว้ระหว่างยิงคำขอที่สอง */
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** ไปรษณีย์ไทยที่ค้างอยู่จนกว่าจะสั่งให้จบ ไว้จำลองช่วงที่คำขอ "กำลังบิน" */
+function makeSlowPrimary(gate: Promise<void>): CarrierAdapter & {
+  calls: string[];
+} {
+  const calls: string[] = [];
+  return {
+    carrierCode: "thailand-post",
+    carrierName: "ไปรษณีย์ไทย",
+    calls,
+    async track(trackingNumber) {
+      calls.push(trackingNumber);
+      await gate;
+      return makeResult(trackingNumber, "ไปรษณีย์ไทย");
+    },
+  };
+}
+
+/** Track123 ที่ต้องไม่ถูกแตะเลยในเทสต์ชุดนี้ */
+const fallbackNeverUsed: CarrierAdapter = {
+  carrierCode: "track123",
+  carrierName: "Track123",
+  track: () => {
+    throw new Error("ไม่ควรถูกเรียก");
+  },
+};
+
+test("เลขเดียวกันถูกค้นพร้อมกัน → ยิงจริงครั้งเดียว อีกคนเกาะผลเดียวกัน", async () => {
+  const trackingNumber = uniqueTrackingNumber();
+  const gate = deferred<void>();
+  const primary = makeSlowPrimary(gate.promise);
+
+  // คำขอที่สองเข้ามาระหว่างที่คำขอแรกยังไม่ได้คำตอบ — cache ช่วยไม่ได้เพราะ
+  // ผลยังไม่ถูกบันทึก ถ้าไม่มีการรวมคำขอ ตรงนี้จะยิง API สองครั้ง
+  const first = resolveTracking(trackingNumber, {
+    primary,
+    fallback: fallbackNeverUsed,
+  });
+  const second = resolveTracking(trackingNumber, {
+    primary,
+    fallback: fallbackNeverUsed,
+  });
+
+  gate.resolve();
+  const [a, b] = await Promise.all([first, second]);
+
+  assert.deepEqual(primary.calls, [trackingNumber], "ต้องยิงแค่ครั้งเดียว");
+  assert.equal(a.shared, false, "คนแรกเป็นคนเปิดคำขอ");
+  assert.equal(b.shared, true, "คนที่สองไปเกาะคำขอเดิม");
+  assert.equal(a.result, b.result, "ต้องเป็นผลก้อนเดียวกัน");
+});
+
+test("คนละเลขที่ค้นพร้อมกัน → ต่างคนต่างยิง ไม่ถูกจับรวมผิดคน", async () => {
+  const gate = deferred<void>();
+  const primary = makeSlowPrimary(gate.promise);
+  const first = uniqueTrackingNumber();
+  const second = uniqueTrackingNumber();
+
+  const runs = Promise.all([
+    resolveTracking(first, { primary, fallback: fallbackNeverUsed }),
+    resolveTracking(second, { primary, fallback: fallbackNeverUsed }),
+  ]);
+
+  gate.resolve();
+  const [a, b] = await runs;
+
+  assert.deepEqual(primary.calls, [first, second]);
+  assert.equal(a.result.trackingNumber, first);
+  assert.equal(b.result.trackingNumber, second);
+  assert.equal(a.shared, false);
+  assert.equal(b.shared, false);
+});
+
+test("คำขอที่เกาะอยู่ได้ error ก้อนเดียวกัน ไม่ยิงซ้ำเพื่อไปเจอ error เดิม", async () => {
+  const trackingNumber = uniqueTrackingNumber();
+  const gate = deferred<void>();
+  const calls: string[] = [];
+
+  const primary: CarrierAdapter = {
+    carrierCode: "thailand-post",
+    carrierName: "ไปรษณีย์ไทย",
+    async track(value) {
+      calls.push(value);
+      await gate.promise;
+      throw new CarrierError("rate_limited", "คิวค้นหาหนาแน่น");
+    },
+  };
+
+  const first = resolveTracking(trackingNumber, {
+    primary,
+    fallback: fallbackNeverUsed,
+  });
+  const second = resolveTracking(trackingNumber, {
+    primary,
+    fallback: fallbackNeverUsed,
+  });
+
+  gate.resolve();
+
+  const [firstError, secondError] = await Promise.all([
+    first.catch((error: unknown) => error),
+    second.catch((error: unknown) => error),
+  ]);
+
+  assert.equal(calls.length, 1);
+  assert.equal(firstError, secondError, "ต้องเป็น error ก้อนเดียวกัน");
+  assert.ok(firstError instanceof CarrierError);
+  assert.equal(firstError.code, "rate_limited");
+});
+
+test("คำขอแรกจบแล้ว → รอบถัดไปต้องได้ยิงใหม่ ไม่ค้างคำตอบเดิมไว้", async () => {
+  const trackingNumber = uniqueTrackingNumber();
+  const gate = deferred<void>();
+  const primary = makeSlowPrimary(gate.promise);
+
+  gate.resolve();
+  await resolveTracking(trackingNumber, {
+    primary,
+    fallback: fallbackNeverUsed,
+  });
+
+  // skipCache เพื่อให้ผ่าน cache ไปถึงชั้นรวมคำขอจริงๆ
+  const again = await resolveTracking(trackingNumber, {
+    primary,
+    fallback: fallbackNeverUsed,
+    skipCache: true,
+  });
+
+  assert.equal(primary.calls.length, 2);
+  assert.equal(again.shared, false);
+});

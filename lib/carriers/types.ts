@@ -104,15 +104,23 @@ export class CarrierError extends Error {
   readonly code: TrackingErrorCode;
   /** ข้อความภาษาไทยที่แสดงให้ผู้ใช้เห็นได้ */
   readonly userMessage: string;
+  /**
+   * code ดิบที่ระบบขนส่งตอบกลับมา เช่น "A0706" ของ Track123
+   *
+   * มีไว้ให้ log ฝั่งเซิร์ฟเวอร์อ้างถึงสาเหตุที่แท้จริงได้ตรงๆ โดยไม่ต้องไปแกะ
+   * จาก debugMessage — ห้ามส่งค่านี้กลับไปหา client
+   */
+  readonly upstreamCode?: string;
 
   constructor(
     code: TrackingErrorCode,
     userMessage: string,
-    options?: { cause?: unknown; debugMessage?: string },
+    options?: { cause?: unknown; debugMessage?: string; upstreamCode?: string },
   ) {
     super(options?.debugMessage ?? userMessage, { cause: options?.cause });
     this.name = "CarrierError";
     this.code = code;
     this.userMessage = userMessage;
+    this.upstreamCode = options?.upstreamCode;
   }
 }

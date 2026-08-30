@@ -6,11 +6,15 @@
  * ใช้ endpoint Instant Tracking (query-realtime) เพราะยิงเลขเดียวได้จบในครั้งเดียว
  * ไม่ต้อง register เลขไว้ก่อน และตรวจจับขนส่งให้อัตโนมัติเมื่อไม่ได้ระบุ courierCode
  *
- * ข้อจำกัดของ endpoint นี้ตามเอกสาร: กิน quota 1 หน่วยต่อครั้ง และยิงได้ 1 ครั้ง/วินาที
+ * ข้อจำกัดของ endpoint นี้: กิน quota 1 หน่วยต่อครั้ง และยิงได้ 5 ครั้ง/วินาที
+ * เกินแล้วจะได้ code A0706 กลับมา ทุกการยิงจากไฟล์นี้จึงต้องผ่าน callTrack123()
+ * ใน ./track123-gateway ซึ่งคุมคิว ลองใหม่เมื่อชนลิมิต และเขียน log ให้ครบ
+ * — ห้ามเรียก postJson() ตรงๆ จากที่อื่นโดยข้ามประตูนั้น
  *
  * API key อ่านจาก process.env.TRACK123_API_KEY เท่านั้น — ห้าม hardcode
  */
 
+import { callTrack123 } from "./track123-gateway";
 import {
   CarrierError,
   TRACKING_STATUS_TEXT,
@@ -158,20 +162,26 @@ function toCarrierError(
 ): CarrierError {
   const code = payload?.code?.trim() ?? "";
   const detail = `HTTP ${httpStatus}, code=${code || "-"}: ${payload?.msg ?? "ไม่มีข้อความตอบกลับ"}`;
+  // ติด code ดิบไปกับ error ทุกตัวที่มี เพื่อให้ log ของ gateway ชี้สาเหตุได้ตรงๆ
+  // ว่าเป็น A0706 (ยิงถี่) หรือ B0210 (quota หมด) ซึ่งแก้คนละทางกัน
+  const upstreamCode = code === "" ? undefined : code;
 
   if (httpStatus === 401 || httpStatus === 403 || AUTH_CODES.has(code)) {
     return new CarrierError(
       "auth_failed",
       "ระบบเชื่อมต่อ Track123 ไม่ผ่านการยืนยันตัวตน กรุณาแจ้งผู้ดูแลระบบ",
-      { debugMessage: `เรียก Track123 ไม่ผ่านสิทธิ์ (${detail})` },
+      { debugMessage: `เรียก Track123 ไม่ผ่านสิทธิ์ (${detail})`, upstreamCode },
     );
   }
 
   if (httpStatus === 429 || RATE_LIMIT_CODES.has(code)) {
     return new CarrierError(
       "rate_limited",
-      "มีการค้นหาถี่เกินไป กรุณารอสักครู่แล้วลองใหม่",
-      { debugMessage: `Track123 จำกัดอัตราการเรียกหรือ quota หมด (${detail})` },
+      "คิวค้นหาหนาแน่น ระบบลองใหม่ให้อัตโนมัติแล้วแต่ยังไม่สำเร็จ",
+      {
+        debugMessage: `Track123 จำกัดอัตราการเรียกหรือ quota หมด (${detail})`,
+        upstreamCode,
+      },
     );
   }
 
@@ -179,14 +189,14 @@ function toCarrierError(
     return new CarrierError(
       "invalid_tracking_number",
       "รูปแบบเลขพัสดุไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง",
-      { debugMessage: `Track123 ปฏิเสธพารามิเตอร์ (${detail})` },
+      { debugMessage: `Track123 ปฏิเสธพารามิเตอร์ (${detail})`, upstreamCode },
     );
   }
 
   return new CarrierError(
     "upstream_error",
     "ระบบ Track123 ขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้ง",
-    { debugMessage: `เรียก Track123 ไม่สำเร็จ (${detail})` },
+    { debugMessage: `เรียก Track123 ไม่สำเร็จ (${detail})`, upstreamCode },
   );
 }
 
@@ -442,39 +452,43 @@ async function query(
   trackNo: string,
   courierCode?: string,
 ): Promise<TrackingResult> {
-  const response = await postJson("/track/query-realtime", {
-    trackNo,
-    ...(courierCode === undefined ? {} : { courierCode }),
-    lang: "th",
+  // ทุกอย่างในนี้ถูกห่อด้วย callTrack123 เพื่อให้ผ่านคิวและถูก log เสมอ
+  // รวมถึงรอบที่ถูกลองใหม่หลังชนลิมิตด้วย (gateway เข้าคิวใหม่ให้ทุกรอบ)
+  return callTrack123({ trackNo, courierCode }, async () => {
+    const response = await postJson("/track/query-realtime", {
+      trackNo,
+      ...(courierCode === undefined ? {} : { courierCode }),
+      lang: "th",
+    });
+
+    const payload = await readJson<Track123Response>(response);
+
+    if (!response.ok || payload?.code !== SUCCESS_CODE) {
+      throw toCarrierError(response.status, payload);
+    }
+
+    const accepted = payload.data?.accepted;
+
+    if (
+      !accepted ||
+      accepted.transitStatus?.trim() === NO_RECORD_TRANSIT_STATUS ||
+      accepted.trackingStatus?.trim() === NO_RECORD_QUERY_STATUS
+    ) {
+      throw new CarrierError(
+        "not_found",
+        "ไม่พบข้อมูลเลขพัสดุนี้ กรุณาตรวจสอบเลขพัสดุอีกครั้ง",
+        {
+          debugMessage: `Track123 ไม่มีข้อมูลของเลข ${trackNo}${
+            courierCode === undefined
+              ? " (ตรวจจับขนส่งอัตโนมัติ)"
+              : ` เมื่อระบุขนส่งเป็น ${courierCode}`
+          }`,
+        },
+      );
+    }
+
+    return toTrackingResult(trackNo, accepted);
   });
-
-  const payload = await readJson<Track123Response>(response);
-
-  if (!response.ok || payload?.code !== SUCCESS_CODE) {
-    throw toCarrierError(response.status, payload);
-  }
-
-  const accepted = payload.data?.accepted;
-
-  if (
-    !accepted ||
-    accepted.transitStatus?.trim() === NO_RECORD_TRANSIT_STATUS ||
-    accepted.trackingStatus?.trim() === NO_RECORD_QUERY_STATUS
-  ) {
-    throw new CarrierError(
-      "not_found",
-      "ไม่พบข้อมูลเลขพัสดุนี้ กรุณาตรวจสอบเลขพัสดุอีกครั้ง",
-      {
-        debugMessage: `Track123 ไม่มีข้อมูลของเลข ${trackNo}${
-          courierCode === undefined
-            ? " (ตรวจจับขนส่งอัตโนมัติ)"
-            : ` เมื่อระบุขนส่งเป็น ${courierCode}`
-        }`,
-      },
-    );
-  }
-
-  return toTrackingResult(trackNo, accepted);
 }
 
 /**
