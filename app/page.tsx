@@ -13,6 +13,9 @@ import { translateStatusText } from "@/lib/status-th";
 import { groupEventsByLocation } from "@/lib/timeline-groups";
 import {
   EMPTY_INPUT_ERROR,
+  QUEUED_MESSAGE,
+  QUEUED_NOTICE_AFTER_MS,
+  SEARCHING_MESSAGE,
   formatPostmark,
   formatThaiDateTime,
   requestTracking,
@@ -44,6 +47,19 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<TrackingResult | null>(null);
   const [error, setError] = useState<UserFacingError | null>(null);
+  // รอนานเกินปกติ = คำขอน่าจะติดคิวฝั่งเซิร์ฟเวอร์อยู่ (หรือกำลังถูกลองใหม่ให้)
+  // ยังไม่ใช่ความล้มเหลว จึงแค่เปลี่ยนถ้อยคำระหว่างรอ ไม่ขึ้นเป็น error
+  const [isQueued, setIsQueued] = useState(false);
+
+  // ตั้งนาฬิกาไว้เฉยๆ แล้วปล่อยให้ callback เป็นคนเปลี่ยน state
+  // การรีเซ็ตกลับเป็น false ทำตอนเริ่มค้นหารอบใหม่แทน ไม่ทำในนี้ เพราะ setState
+  // ตรงๆ ใน effect ทำให้เกิด cascading render
+  useEffect(() => {
+    if (!isLoading) return;
+
+    const timer = setTimeout(() => setIsQueued(true), QUEUED_NOTICE_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [isLoading]);
 
   function applyOutcome(outcome: Awaited<ReturnType<typeof requestTracking>>) {
     if (outcome.ok) {
@@ -62,6 +78,7 @@ export default function Home() {
   async function runSearchFromScan(value: string) {
     setTrackingNumber(value);
     setIsLoading(true);
+    setIsQueued(false);
     setResult(null);
     setError(null);
 
@@ -80,6 +97,7 @@ export default function Home() {
     }
 
     setIsLoading(true);
+    setIsQueued(false);
     setResult(null);
     setError(null);
 
@@ -209,7 +227,9 @@ export default function Home() {
           {isLoading && (
             <div className="flex flex-col items-center gap-4 py-6">
               <Postmark spinning />
-              <p className="text-sm text-faint">กำลังถามขนส่งอยู่…</p>
+              <p className="text-sm text-faint">
+                {isQueued ? QUEUED_MESSAGE : SEARCHING_MESSAGE}
+              </p>
             </div>
           )}
 

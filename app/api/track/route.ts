@@ -51,9 +51,15 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { result, fromCache } = await resolveTracking(trackingNumber);
+    const { result, fromCache, shared } = await resolveTracking(trackingNumber);
     // fromCache ไว้ debug ว่าผลนี้มาจาก cache หรือเพิ่งยิง API จริง
-    return NextResponse.json({ ok: true as const, data: result, fromCache });
+    // shared = ไปเกาะคำขอของเลขเดียวกันที่กำลังรอผลอยู่ ไม่ได้ยิง API เพิ่ม
+    return NextResponse.json({
+      ok: true as const,
+      data: result,
+      fromCache,
+      shared,
+    });
   } catch (error) {
     if (error instanceof CarrierError) {
       // log รายละเอียดไว้ฝั่ง server เท่านั้น (message อาจมีข้อมูลระบบ) ส่วน client ได้แค่ userMessage
