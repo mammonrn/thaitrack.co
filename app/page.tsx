@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 
 import AuthButton from "./auth-button";
+import InstallButton from "./install-button";
+import ScanButton from "./scan-button";
 import SaveTrackingButton from "./save-tracking-button";
 
 import type { TrackingResult, TrackingStatus } from "@/lib/carriers/types";
@@ -47,6 +49,22 @@ export default function Home() {
     } else {
       setError(outcome.error);
     }
+  }
+
+  /**
+   * ค้นหาจากเลขที่สแกนมาได้
+   *
+   * แยกจาก handleSubmit เพราะไม่ได้มาจากการ submit ฟอร์ม และต้องเติมเลขลงช่อง
+   * ให้ผู้ใช้เห็นด้วยว่าระบบอ่านได้ว่าอะไร
+   */
+  async function runSearchFromScan(value: string) {
+    setTrackingNumber(value);
+    setIsLoading(true);
+    setResult(null);
+    setError(null);
+
+    applyOutcome(await requestTracking(value));
+    setIsLoading(false);
   }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -119,7 +137,10 @@ export default function Home() {
             </span>
           </Link>
 
-          <AuthButton />
+          <div className="flex items-center gap-1">
+            <InstallButton />
+            <AuthButton />
+          </div>
         </div>
       </header>
 
@@ -142,6 +163,7 @@ export default function Home() {
               <label htmlFor="tracking-number" className="sr-only">
                 เลขพัสดุ
               </label>
+              <div className="relative flex-1">
               <input
                 id="tracking-number"
                 type="text"
@@ -152,8 +174,11 @@ export default function Home() {
                 value={trackingNumber}
                 onChange={(event) => setTrackingNumber(event.target.value)}
                 placeholder="เช่น EE000000000TH"
-                className="h-14 w-full rounded-xl border border-line-strong bg-white px-4 text-center font-body text-base text-body outline-none transition-colors placeholder:text-faint/70 hover:border-ink/30 focus:border-ink sm:h-15 sm:px-5 sm:text-left sm:text-lg"
+                // เว้นที่ด้านขวาให้ปุ่มกล้อง ไม่ให้ตัวอักษรวิ่งไปทับ
+                className="h-14 w-full rounded-xl border border-line-strong bg-white pl-4 pr-14 text-center font-body text-base text-body outline-none transition-colors placeholder:text-faint/70 hover:border-ink/30 focus:border-ink sm:h-15 sm:pl-5 sm:text-left sm:text-lg"
               />
+              <ScanButton onDetected={(value) => void runSearchFromScan(value)} />
+              </div>
               <button
                 type="submit"
                 disabled={isLoading}
@@ -276,19 +301,6 @@ export default function Home() {
         </section>
       </main>
 
-      <footer className="mt-auto border-t border-line">
-        <nav className="mx-auto flex w-full max-w-3xl items-center justify-center gap-7 px-4 py-6 text-sm text-faint sm:gap-10 sm:px-6">
-          <Link href="#" className="transition-colors hover:text-ink">
-            ติดตาม
-          </Link>
-          <Link href="/history" className="transition-colors hover:text-ink">
-            ประวัติ
-          </Link>
-          <Link href="#" className="transition-colors hover:text-ink">
-            รหัสไปรษณีย์
-          </Link>
-        </nav>
-      </footer>
     </div>
   );
 }

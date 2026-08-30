@@ -1,6 +1,8 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Anuphan, IBM_Plex_Sans_Thai } from "next/font/google";
 import "./globals.css";
+import ServiceWorkerRegistrar from "./service-worker-registrar";
+import SiteNav from "./site-nav";
 
 // หัวข้อ — รูปทรงเรขาคณิต มีบุคลิกชัดตอนขนาดใหญ่ (ดู DESIGN.md)
 const anuphan = Anuphan({
@@ -22,6 +24,20 @@ export const metadata: Metadata = {
   title: "พัสดุไทย.com — เช็คพัสดุถึงไหนแล้ว",
   description:
     "ติดตามพัสดุจาก ไปรษณีย์ไทย, Flash Express, Kerry Express, J&T Express, SPX Express และอื่นๆ ได้ในที่เดียว",
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    title: "พัสดุไทย",
+    // ให้แถบสถานะกลืนไปกับพื้นกระดาษของหัวเว็บ
+    statusBarStyle: "default",
+  },
+};
+
+export const viewport: Viewport = {
+  // ต้องเป็น cover ไม่งั้น env(safe-area-inset-*) จะเป็น 0 เสมอ แถบล่างจะไปทับ
+  // home indicator ของ iPhone
+  viewportFit: "cover",
+  themeColor: "#f6f3ec",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
@@ -30,7 +46,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="th"
       className={`${anuphan.variable} ${plexSansThai.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      {/* เผื่อระยะล่างเท่าความสูงแถบเมนู + safe area กันแถบลอยบังเนื้อหาท้ายหน้า
+          จอใหญ่ไม่ต้องเผื่อ เพราะแถบกลับไปอยู่ในสายเนื้อหาตามปกติ */}
+      <body className="flex min-h-full flex-col pb-[calc(4rem+env(safe-area-inset-bottom))] sm:pb-0">
+        {children}
+        <SiteNav />
+        <ServiceWorkerRegistrar />
+      </body>
     </html>
   );
 }

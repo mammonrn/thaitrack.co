@@ -1,0 +1,33 @@
+{
+  "name": "พัสดุไทย.com",
+  "short_name": "พัสดุไทย",
+  "description": "ติดตามพัสดุจากทุกขนส่งได้ในที่เดียว พิมพ์เลขพัสดุครั้งเดียว เราไล่ถามให้ทุกเจ้า",
+  "lang": "th",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#f6f3ec",
+  "background_color": "#f6f3ec",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
