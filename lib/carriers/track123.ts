@@ -338,7 +338,7 @@ function toTrackingResult(
  *
  * ทุกความผิดพลาดถูกโยนเป็น CarrierError ที่มี code ระบุสาเหตุ — ไม่มี error ดิบหลุดออกไป
  */
-export async function track(trackingNumber: string): Promise<TrackingResult> {
+function toTrackNo(trackingNumber: string): string {
   const trackNo = normalizeTrackingNumber(trackingNumber ?? "");
 
   if (!/^[A-Z0-9]{6,40}$/.test(trackNo)) {
@@ -348,9 +348,22 @@ export async function track(trackingNumber: string): Promise<TrackingResult> {
     );
   }
 
+  return trackNo;
+}
+
+/**
+ * ยิงถาม Track123 หนึ่งครั้ง
+ *
+ * ไม่ส่ง courierCode = ให้ Track123 ตรวจจับขนส่งเอง
+ * ส่ง courierCode = บังคับให้ถามขนส่งเจ้านั้นตรงๆ
+ */
+async function query(
+  trackNo: string,
+  courierCode?: string,
+): Promise<TrackingResult> {
   const response = await postJson("/track/query-realtime", {
     trackNo,
-    // ไม่ระบุ courierCode เพื่อให้ Track123 ตรวจจับขนส่งให้เอง
+    ...(courierCode === undefined ? {} : { courierCode }),
     lang: "th",
   });
 
@@ -370,16 +383,54 @@ export async function track(trackingNumber: string): Promise<TrackingResult> {
     throw new CarrierError(
       "not_found",
       "ไม่พบข้อมูลเลขพัสดุนี้ กรุณาตรวจสอบเลขพัสดุอีกครั้ง",
-      { debugMessage: `Track123 ไม่มีข้อมูลของเลข ${trackNo}` },
+      {
+        debugMessage: `Track123 ไม่มีข้อมูลของเลข ${trackNo}${
+          courierCode === undefined
+            ? " (ตรวจจับขนส่งอัตโนมัติ)"
+            : ` เมื่อระบุขนส่งเป็น ${courierCode}`
+        }`,
+      },
     );
   }
 
   return toTrackingResult(trackNo, accepted);
 }
 
+/**
+ * ติดตามพัสดุโดยให้ Track123 ตรวจจับขนส่งเอง
+ *
+ * ทุกความผิดพลาดถูกโยนเป็น CarrierError ที่มี code ระบุสาเหตุ
+ */
+export async function track(trackingNumber: string): Promise<TrackingResult> {
+  return query(toTrackNo(trackingNumber));
+}
+
+/** ติดตามพัสดุโดยบังคับว่าเป็นขนส่งเจ้าไหน ข้ามการตรวจจับอัตโนมัติ */
+export async function trackWithCourier(
+  trackingNumber: string,
+  courierCode: string,
+): Promise<TrackingResult> {
+  return query(toTrackNo(trackingNumber), courierCode);
+}
+
+/**
+ * ขนส่งที่การตรวจจับอัตโนมัติของ Track123 เดาผิดจนตอบว่าไม่พบ
+ *
+ * เรียงจากที่เจอปัญหาบ่อยที่สุดก่อน เพราะ resolveTracking ลองตามลำดับนี้แล้วหยุด
+ * เมื่อครบเพดาน การเพิ่มเจ้าใหม่ในอนาคตทำได้ด้วยการเติมรหัสต่อท้ายรายการนี้
+ *
+ * shopee-xpress-th คือ SPX / Shopee Xpress ประเทศไทย
+ * ห้ามสับสนกับ "spx" ซึ่งเป็นคนละบริษัท (SPX Express / SpeedX ในต่างประเทศ)
+ * ยืนยันแล้วว่าเลขของ Shopee ที่ auto-detect เดาเป็น Flash Express จนได้
+ * NO_RECORD กลับมาถูกต้องเมื่อระบุรหัสนี้
+ */
+export const RETRY_COURIER_CODES: readonly string[] = ["shopee-xpress-th"];
+
 /** adapter object สำหรับให้ส่วนอื่นเรียกใช้แบบเดียวกันทุกขนส่ง */
 export const track123: CarrierAdapter = {
   carrierCode: CARRIER_CODE,
   carrierName: CARRIER_NAME,
   track,
+  trackWithCourier,
+  retryCourierCodes: RETRY_COURIER_CODES,
 };

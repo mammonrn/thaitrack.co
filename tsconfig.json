@@ -6,6 +6,8 @@
     "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
+    // ให้ไฟล์เทสต์ import แบบระบุนามสกุล .ts ได้ ซึ่ง test runner ของ Node ต้องการ
+    "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",
