@@ -9,6 +9,7 @@ import { createBrowserClient } from "@supabase/ssr";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { readSupabaseEnv, SupabaseConfigError } from "./env";
+import { createTimeoutFetch } from "./fetch";
 
 /**
  * สร้าง client สำหรับเบราว์เซอร์
@@ -21,5 +22,7 @@ export function getBrowserClient(): SupabaseClient {
   if (!result.ok) throw new SupabaseConfigError(result.missing);
 
   // createBrowserClient เป็น singleton อยู่แล้ว เรียกซ้ำได้ไม่สิ้นเปลือง
-  return createBrowserClient(result.env.url, result.env.anonKey);
+  return createBrowserClient(result.env.url, result.env.anonKey, {
+    global: { fetch: createTimeoutFetch() },
+  });
 }

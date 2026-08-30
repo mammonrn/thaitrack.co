@@ -5,8 +5,10 @@
  * นั้นไปแลกเป็น session ฝั่ง server เพื่อให้ cookie ถูกตั้งแบบที่ server อ่านได้
  */
 
+import { isAuthRetryableFetchError } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 
+import { SupabaseConfigError } from "@/lib/supabase/env";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 /** ต้องรันบน Node.js runtime เพราะอ่าน process.env และเขียน cookie ของ session */
@@ -54,14 +56,22 @@ export async function GET(request: Request) {
 
     if (error) {
       console.error(`[auth/callback] แลก code ไม่สำเร็จ: ${error.message}`);
+
+      // ต่อไปหา Supabase ไม่ติด/หมดเวลารอ เป็นคนละเรื่องกับ code ที่ใช้ไม่ได้
+      // ผู้ใช้ควรได้คำแนะนำให้ตรวจอินเทอร์เน็ต ไม่ใช่ให้กดล็อกอินใหม่ไปเรื่อยๆ
+      if (isAuthRetryableFetchError(error)) return failureUrl("network_error");
+
       return failureUrl("oauth_failed");
     }
   } catch (error) {
-    // ส่วนใหญ่คือ SupabaseConfigError — ตั้งค่า env บน production ไม่ครบ
-    console.error(
-      `[auth/callback] ${error instanceof Error ? error.message : String(error)}`,
-    );
-    return failureUrl("config_missing");
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[auth/callback] ${message}`);
+
+    // ตั้งค่า env ไม่ครบ เป็นคนละเรื่องกับต่อ Supabase ไม่ติด ผู้ใช้ควรได้คำแนะนำ
+    // ที่ตรงกับสาเหตุจริง และผู้ดูแลระบบต้องแยกสองกรณีนี้ออกจากกันได้จาก log
+    if (error instanceof SupabaseConfigError) return failureUrl("config_missing");
+
+    return failureUrl("network_error");
   }
 
   return NextResponse.redirect(baseUrl);
