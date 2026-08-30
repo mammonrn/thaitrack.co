@@ -55,6 +55,25 @@ export interface CarrierAdapter {
   carrierCode: string;
   carrierName: string;
   track(trackingNumber: string): Promise<TrackingResult>;
+
+  /**
+   * ยิงซ้ำโดยระบุขนส่งเจาะจง สำหรับ adapter ที่ปกติตรวจจับขนส่งให้เอง
+   *
+   * มีไว้เพื่อกู้กรณีที่การตรวจจับอัตโนมัติเดาผิดจนตอบว่าไม่พบ ทั้งที่พัสดุมีอยู่จริง
+   * adapter ที่ไม่ได้ตรวจจับเองไม่ต้องมีเมธอดนี้
+   */
+  trackWithCourier?(
+    trackingNumber: string,
+    courierCode: string,
+  ): Promise<TrackingResult>;
+
+  /**
+   * รหัสขนส่งที่ควรลองระบุเจาะจงเมื่อการตรวจจับอัตโนมัติตอบว่าไม่พบ
+   *
+   * เรียงจากที่เจอปัญหาบ่อยที่สุดก่อน เพราะผู้เรียกจะลองตามลำดับและหยุดเมื่อครบ
+   * เพดานที่กำหนดไว้ เพื่อไม่ให้เปลือง quota
+   */
+  retryCourierCodes?: readonly string[];
 }
 
 /**
