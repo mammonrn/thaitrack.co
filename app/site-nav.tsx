@@ -49,6 +49,13 @@ interface NavItem {
   Icon: (props: IconProps) => React.ReactElement;
   /** true เมื่อ path ปัจจุบันถือว่าอยู่ในเมนูนี้ */
   isActive: (pathname: string) => boolean;
+  /**
+   * ยังไม่มีหน้าปลายทาง จึงไม่แสดงในแถบเมนู
+   *
+   * เก็บนิยามไว้แทนที่จะลบทิ้ง เพราะไอคอนกับข้อความออกแบบไว้แล้ว พอทำหน้าจริง
+   * เสร็จเมื่อไรแค่ลบบรรทัดนี้กับใส่ href ที่ถูกต้องก็กลับมาใช้ได้ทันที
+   */
+  comingSoon?: boolean;
 }
 
 const ITEMS: NavItem[] = [
@@ -65,11 +72,11 @@ const ITEMS: NavItem[] = [
     isActive: (pathname) => pathname.startsWith("/history"),
   },
   {
-    // ยังไม่มีหน้านี้ คงพฤติกรรมเดิมของ footer ไว้ก่อน
     href: "#",
     label: "รหัสไปรษณีย์",
     Icon: PinIcon,
     isActive: () => false,
+    comingSoon: true,
   },
 ];
 
@@ -82,6 +89,9 @@ const ITEMS: NavItem[] = [
  * ระยะเผื่อ safe-area-inset-bottom ไว้สำหรับ iPhone ที่มีแถบ home indicator
  * (ต้องมี viewport-fit=cover ใน layout ด้วย ไม่งั้นค่านี้จะเป็น 0 เสมอ)
  */
+/** เมนูที่มีหน้าปลายทางจริงแล้วเท่านั้น */
+const VISIBLE_ITEMS = ITEMS.filter((item) => item.comingSoon !== true);
+
 export default function SiteNav() {
   const pathname = usePathname();
 
@@ -91,7 +101,7 @@ export default function SiteNav() {
       className="fixed inset-x-0 bottom-0 z-20 border-t border-line bg-paper/95 pb-[env(safe-area-inset-bottom)] backdrop-blur sm:static sm:mt-auto sm:bg-paper sm:pb-0 sm:backdrop-blur-none"
     >
       <ul className="mx-auto flex w-full max-w-3xl items-stretch justify-around px-2 sm:justify-center sm:gap-10 sm:px-6 sm:py-1.5">
-        {ITEMS.map(({ href, label, Icon, isActive }) => {
+        {VISIBLE_ITEMS.map(({ href, label, Icon, isActive }) => {
           const active = isActive(pathname);
 
           return (
