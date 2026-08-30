@@ -156,6 +156,34 @@ export async function saveTracking(
   }
 }
 
+/**
+ * ถามว่าเลขนี้เคยบันทึกไว้แล้วหรือยัง
+ *
+ * คืน null ทั้งกรณี "ยังไม่เคยบันทึก" และกรณีถามไม่สำเร็จ เพราะหน้าเว็บทำอย่าง
+ * เดียวกันทั้งสองกรณีคือแสดงปุ่ม "บันทึก" ตามปกติ ไม่ต้องรบกวนผู้ใช้
+ */
+export async function findSavedTracking(
+  trackingNumber: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<SavedTracking | null> {
+  try {
+    const response = await fetchImpl(
+      `/api/saved?trackingNumber=${encodeURIComponent(trackingNumber)}`,
+    );
+    if (!response.ok) return null;
+
+    const payload: unknown = await response.json().catch(() => null);
+    const row =
+      typeof payload === "object" && payload !== null && "data" in payload
+        ? (payload as { data: SavedTrackingRow | null }).data
+        : null;
+
+    return row === null ? null : toSavedTracking(row);
+  } catch {
+    return null;
+  }
+}
+
 export async function deleteSavedTracking(
   id: string,
   fetchImpl: typeof fetch = fetch,

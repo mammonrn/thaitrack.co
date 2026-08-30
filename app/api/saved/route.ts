@@ -8,7 +8,7 @@
 
 import { NextResponse } from "next/server";
 
-import { resolveTracking } from "@/lib/carriers/resolve";
+import { normalizeTrackingNumber, resolveTracking } from "@/lib/carriers/resolve";
 import { CarrierError } from "@/lib/carriers/types";
 import { geocodeLocation } from "@/lib/geocode";
 import { NICKNAME_MAX_LENGTH, SAVED_TRACKING_COLUMNS } from "@/lib/saved-trackings";
@@ -29,6 +29,51 @@ function latestLocation(events: { location: string }[]): string {
     if (location !== "") return location;
   }
   return "";
+}
+
+/**
+ * GET /api/saved?trackingNumber=... — เลขนี้เคยบันทึกไว้แล้วหรือยัง
+ *
+ * หน้าผลลัพธ์ใช้ตัดสินว่าจะขึ้นปุ่ม "บันทึก" หรือ "บันทึกแล้ว" ตั้งแต่แรกเห็น
+ * โดยไม่ต้องดึงประวัติทั้งหมดมาแล้วค้นเอง
+ */
+export async function GET(request: Request) {
+  const trackingNumber = new URL(request.url).searchParams
+    .get("trackingNumber")
+    ?.trim();
+
+  if (trackingNumber === undefined || trackingNumber === "") {
+    return errorResponse("invalid_request", 400);
+  }
+
+  let supabase;
+  try {
+    supabase = await createServerSupabaseClient();
+  } catch (error) {
+    if (error instanceof SupabaseConfigError) return errorResponse("unavailable", 503);
+    throw error;
+  }
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (user === null) return errorResponse("unauthenticated", 401);
+
+  // RLS กรองให้เหลือเฉพาะแถวของเจ้าตัวอยู่แล้ว
+  const { data, error } = await supabase
+    .from("saved_trackings")
+    .select(SAVED_TRACKING_COLUMNS)
+    .eq("tracking_number", normalizeTrackingNumber(trackingNumber))
+    .maybeSingle();
+
+  if (error !== null) {
+    console.error(`[api/saved] อ่านรายการไม่สำเร็จ: ${error.message}`);
+    return errorResponse("unknown", 500);
+  }
+
+  // ไม่เคยบันทึกไว้ไม่ใช่ความผิดพลาด ตอบ null ไปตามปกติ
+  return NextResponse.json({ ok: true as const, data });
 }
 
 export async function POST(request: Request) {
