@@ -17,6 +17,8 @@
  * การเพิ่มคำแปลใหม่ทำได้ด้วยการเติม entry ในตารางด้านล่าง ไม่ต้องแก้ logic
  */
 
+import { TRACKING_STATUS_TEXT } from "./carriers/types";
+
 export interface ParsedStatus {
   /** ข้อความในวงเล็บเหลี่ยมอันแรก เช่น "Transit Warehouse Inbound" */
   tag: string | null;
@@ -74,7 +76,12 @@ const COUNTRY_TH: Record<string, string> = {
   indonesia: "อินโดนีเซีย",
 };
 
-/** คำแปลของ tag ในวงเล็บ ใช้เมื่อแปลทั้งประโยคไม่ได้ */
+/**
+ * คำแปลของ tag ในวงเล็บ ใช้เมื่อแปลทั้งประโยคไม่ได้
+ *
+ * tag ที่ตรงกับสถานะกลางอ้าง TRACKING_STATUS_TEXT แทนการพิมพ์ข้อความซ้ำ
+ * เพื่อให้ไทม์ไลน์กับหัวการ์ดเรียกสถานะเดียวกันด้วยคำเดียวกันเสมอ
+ */
 const TAG_TH: Record<string, string> = {
   manifested: "ผู้ส่งเตรียมพัสดุ",
   "order created": "สร้างคำสั่งซื้อแล้ว",
@@ -102,22 +109,22 @@ const TAG_TH: Record<string, string> = {
   "arrived at delivery branch": "ถึงสาขาที่จะนำจ่าย",
   "departed from origin country": "ออกจากประเทศต้นทางแล้ว",
   "arrived at destination country": "ถึงประเทศปลายทางแล้ว",
-  "in transit": "อยู่ระหว่างขนส่ง",
-  "out for delivery": "กำลังนำจ่าย",
-  delivering: "กำลังนำจ่าย",
+  "in transit": TRACKING_STATUS_TEXT.in_transit,
+  "out for delivery": TRACKING_STATUS_TEXT.out_for_delivery,
+  delivering: TRACKING_STATUS_TEXT.out_for_delivery,
   "delivery driver assigned": "มอบหมายพนักงานนำจ่ายแล้ว",
   "enter last mile hub": "ถึงสาขาปลายทาง",
   "leave last mile hub": "ออกจากสาขาปลายทาง",
   "arrived at station": "ถึงสาขา",
   "departed station": "ออกจากสาขา",
   "departed from station": "ออกจากสาขา",
-  delivered: "ส่งถึงแล้ว",
+  delivered: TRACKING_STATUS_TEXT.delivered,
   signed: "เซ็นรับพัสดุแล้ว",
   "delivery failed": "นำจ่ายไม่สำเร็จ",
   "failed attempt": "นำจ่ายไม่สำเร็จ",
   "return to sender": "ตีกลับผู้ส่ง",
   returned: "ตีกลับผู้ส่ง",
-  exception: "พัสดุมีปัญหา",
+  exception: TRACKING_STATUS_TEXT.exception,
 };
 
 /**
@@ -226,10 +233,16 @@ const BODY_RULES: {
     pattern: /^parcel has been handed over to\s+(.+)$/i,
     to: () => "ส่งมอบให้ผู้ให้บริการขนส่งแล้ว",
   },
-  { pattern: /^parcel has been delivered$/i, to: () => "ส่งถึงแล้ว" },
+  {
+    pattern: /^parcel has been delivered$/i,
+    to: () => TRACKING_STATUS_TEXT.delivered,
+  },
   { pattern: /^parcel has cleared export customs$/i, to: () => "ผ่านพิธีการศุลกากรขาออกแล้ว" },
   { pattern: /^parcel has cleared import customs$/i, to: () => "ผ่านพิธีการศุลกากรขาเข้าแล้ว" },
-  { pattern: /^parcel is out for delivery$/i, to: () => "กำลังนำจ่าย" },
+  {
+    pattern: /^parcel is out for delivery$/i,
+    to: () => TRACKING_STATUS_TEXT.out_for_delivery,
+  },
   { pattern: /^parcel has been picked up$/i, to: () => "รับพัสดุแล้ว" },
   { pattern: /^sender has shipped your parcel$/i, to: () => "ผู้ขายส่งพัสดุแล้ว" },
   { pattern: /^sender is preparing to ship your parcel$/i, to: () => "ผู้ส่งกำลังเตรียมพัสดุ" },

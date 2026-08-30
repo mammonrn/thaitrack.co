@@ -1,0 +1,143 @@
+"use client";
+
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+
+/**
+ * event ที่ Chrome ยิงเมื่อเว็บเข้าเกณฑ์ติดตั้งเป็นแอพได้
+ * ยังไม่อยู่ใน TypeScript DOM lib มาตรฐาน จึงประกาศเองเท่าที่ใช้
+ */
+interface BeforeInstallPromptEvent extends Event {
+  prompt(): Promise<void>;
+  readonly userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+}
+
+export type InstallState =
+  /** ยังรอดูว่าเบราว์เซอร์จะเสนอหน้าต่างติดตั้งให้หรือไม่ */
+  | "checking"
+  /** เปิดอยู่ในโหมดแอพแล้ว ไม่ต้องติดตั้งซ้ำ */
+  | "installed"
+  /** เรียกหน้าต่างติดตั้งของเบราว์เซอร์ได้เลย */
+  | "promptable"
+  /** ติดตั้งได้แต่ต้องกดเอง (Safari บน iOS) */
+  | "manual"
+  /** เบราว์เซอร์นี้ติดตั้งไม่ได้ */
+  | "unsupported";
+
+export interface InstallControl {
+  state: InstallState;
+  /** เรียกหน้าต่างติดตั้งของเบราว์เซอร์ — คืน false เมื่อไม่มีให้เรียก */
+  install: () => Promise<boolean>;
+  isGuideOpen: boolean;
+  openGuide: () => void;
+  closeGuide: () => void;
+}
+
+/** subscribe แบบไม่ทำอะไร ใช้กับค่าที่อ่านครั้งเดียวแล้วไม่เปลี่ยนอีก */
+const noopSubscribe = () => () => {};
+
+/**
+ * รอ beforeinstallprompt นานแค่ไหนก่อนสรุปว่าเบราว์เซอร์นี้ติดตั้งไม่ได้
+ *
+ * Chrome ยิง event นี้หลังโหลดหน้าเสร็จไม่นาน ถ้าไม่รอเลย การ์ดติดตั้งจะขึ้นว่า
+ * "ติดตั้งไม่ได้" แวบหนึ่งแล้วค่อยเปลี่ยนเป็นปุ่ม ซึ่งอ่านแล้วสับสน
+ */
+const SETTLE_MS = 1200;
+
+/**
+ * ติดตั้งไปแล้วหรือยัง
+ *
+ * ใช้ useSyncExternalStore เพราะเป็นการอ่านสถานะจากเบราว์เซอร์ซึ่งฝั่ง server
+ * ไม่รู้ค่า การอ่านผ่าน hook นี้ทำให้ React จัดการความต่างระหว่าง server กับ
+ * client ให้เอง ไม่ต้อง setState ใน effect ที่ทำให้เกิด render ซ้อน
+ */
+function useIsInstalled(): boolean {
+  return useSyncExternalStore(
+    (onChange) => {
+      const query = window.matchMedia("(display-mode: standalone)");
+      query.addEventListener("change", onChange);
+      return () => query.removeEventListener("change", onChange);
+    },
+    () =>
+      window.matchMedia("(display-mode: standalone)").matches ||
+      // Safari บน iOS ไม่รองรับ display-mode ใน matchMedia จึงต้องดูค่านี้ด้วย
+      ("standalone" in navigator && navigator.standalone === true),
+    () => false,
+  );
+}
+
+/** iOS ไม่มี beforeinstallprompt ต้องบอกวิธีติดตั้งด้วยมือแทน */
+function useIsIos(): boolean {
+  return useSyncExternalStore(
+    noopSubscribe,
+    () => /iphone|ipad|ipod/i.test(navigator.userAgent),
+    () => false,
+  );
+}
+
+/**
+ * สถานะการติดตั้งเป็นแอพ ใช้ร่วมกันทุกที่ที่ชวนติดตั้ง
+ *
+ * รวมไว้ที่เดียวเพราะปุ่มบนหัวเว็บกับการ์ดในหน้าโปรไฟล์ต้องเห็นสถานะตรงกันเสมอ
+ * ถ้าแยกกันอ่าน event เอง จะมีจังหวะที่อันหนึ่งรู้ว่าติดตั้งได้แล้วอีกอันยังไม่รู้
+ */
+export function useInstallState(): InstallControl {
+  const isInstalled = useIsInstalled();
+  const isIos = useIsIos();
+  const [promptEvent, setPromptEvent] = useState<BeforeInstallPromptEvent | null>(
+    null,
+  );
+  const [hasSettled, setHasSettled] = useState(false);
+  const [isGuideOpen, setIsGuideOpen] = useState(false);
+
+  useEffect(() => {
+    function capture(event: Event) {
+      // กันไม่ให้ Chrome ขึ้นแถบเชิญติดตั้งของตัวเอง เรามีปุ่มของเราแล้ว
+      event.preventDefault();
+      setPromptEvent(event as BeforeInstallPromptEvent);
+    }
+
+    function clearAfterInstall() {
+      setPromptEvent(null);
+      setIsGuideOpen(false);
+    }
+
+    window.addEventListener("beforeinstallprompt", capture);
+    window.addEventListener("appinstalled", clearAfterInstall);
+
+    const timer = window.setTimeout(() => setHasSettled(true), SETTLE_MS);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", capture);
+      window.removeEventListener("appinstalled", clearAfterInstall);
+      window.clearTimeout(timer);
+    };
+  }, []);
+
+  const install = useCallback(async () => {
+    if (promptEvent === null) return false;
+
+    try {
+      await promptEvent.prompt();
+      // ใช้ได้ครั้งเดียวต่อหนึ่ง event ทิ้งไปเลยไม่ว่าผู้ใช้จะกดตกลงหรือไม่
+      setPromptEvent(null);
+      return true;
+    } catch (error) {
+      console.error("[pwa] เรียกหน้าต่างติดตั้งไม่สำเร็จ:", error);
+      return false;
+    }
+  }, [promptEvent]);
+
+  let state: InstallState;
+  if (isInstalled) state = "installed";
+  else if (promptEvent !== null) state = "promptable";
+  else if (isIos) state = "manual";
+  else state = hasSettled ? "unsupported" : "checking";
+
+  return {
+    state,
+    install,
+    isGuideOpen,
+    openGuide: useCallback(() => setIsGuideOpen(true), []),
+    closeGuide: useCallback(() => setIsGuideOpen(false), []),
+  };
+}

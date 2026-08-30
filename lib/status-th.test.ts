@@ -8,6 +8,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { TRACKING_STATUS_TEXT } from "./carriers/types.ts";
+
 import {
   parseStatusText,
   translatePlace,
@@ -248,4 +250,20 @@ test("คำที่ขึ้นต้นเหมือนคำนามท�
   // "Portland" ขึ้นต้นด้วย "port" — \b กันไม่ให้กลายเป็น "ท่า land"
   assert.equal(translatePlace("Portland"), "Portland");
   assert.equal(translatePlace("Centerville"), "Centerville");
+});
+
+/* ---------------- ถ้อยคำต้องเป็นชุดเดียวกันทั้งเว็บ ---------------- */
+
+test("คำแปลในไทม์ไลน์ต้องใช้คำเดียวกับหัวการ์ดผลลัพธ์", () => {
+  // ถ้าใครแก้ TRACKING_STATUS_TEXT แล้วลืมแก้ตารางในโมดูลนี้ เทสต์นี้จะจับได้
+  const pairs: [string, string][] = [
+    ["[Delivered] Parcel has been delivered", TRACKING_STATUS_TEXT.delivered],
+    ["[Out For Delivery] Parcel is out for delivery", TRACKING_STATUS_TEXT.out_for_delivery],
+    ["[In Transit] Something we do not translate", TRACKING_STATUS_TEXT.in_transit],
+    ["[Exception] Something we do not translate", TRACKING_STATUS_TEXT.exception],
+  ];
+
+  for (const [input, expected] of pairs) {
+    assert.equal(translateStatusText(input), expected, `คำไม่ตรงกันที่: ${input}`);
+  }
 });

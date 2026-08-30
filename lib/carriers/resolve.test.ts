@@ -28,7 +28,7 @@ function makeResult(trackingNumber: string, carrierName: string): TrackingResult
     carrierName,
     carrierCode: "mock",
     status: "delivered",
-    statusText: "นำจ่ายสำเร็จ",
+    statusText: "ส่งถึงแล้ว",
     lastUpdated: "2026-08-30T10:00:00+07:00",
     events: [],
   };

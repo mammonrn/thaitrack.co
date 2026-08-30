@@ -61,7 +61,7 @@ test("transitStatus ค้างเป็น ABNORMAL แต่ event ล่า�
   const result = toTrackingResult(TRACK_NO, flashExpressAccepted());
 
   assert.equal(result.status, "delivered");
-  assert.equal(result.statusText, "นำจ่ายสำเร็จ");
+  assert.equal(result.statusText, "ส่งถึงแล้ว");
 });
 
 test("สถานะหัวการ์ดต้องตรงกับ event ล่าสุดในไทม์ไลน์เสมอ", () => {
