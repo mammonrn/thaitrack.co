@@ -1,0 +1,121 @@
+/**
+ * POST /api/saved — บันทึกหรืออัปเดตรายการในประวัติ
+ *
+ * ต้องทำฝั่ง server เพราะ:
+ *  1. การหาพิกัดใช้ GOOGLE_MAPS_API_KEY ที่ต้องไม่หลุดไปถึงเบราว์เซอร์
+ *  2. สถานะที่บันทึกต้องอ่านจากระบบขนส่งเอง ไม่ใช่เชื่อค่าที่ client ส่งมา
+ */
+
+import { NextResponse } from "next/server";
+
+import { resolveTracking } from "@/lib/carriers/resolve";
+import { CarrierError } from "@/lib/carriers/types";
+import { geocodeLocation } from "@/lib/geocode";
+import { NICKNAME_MAX_LENGTH, SAVED_TRACKING_COLUMNS } from "@/lib/saved-trackings";
+import { SupabaseConfigError } from "@/lib/supabase/env";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
+
+/** ต้องรันบน Node.js runtime เพราะอ่าน API key จาก process.env */
+export const runtime = "nodejs";
+
+function errorResponse(code: string, status: number) {
+  return NextResponse.json({ ok: false as const, error: { code } }, { status });
+}
+
+/** หาสถานที่ล่าสุดที่ระบุมาจริง — เหตุการณ์ใหม่สุดบางอันไม่ได้บอกสถานที่มาด้วย */
+function latestLocation(events: { location: string }[]): string {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const location = events[index].location.trim();
+    if (location !== "") return location;
+  }
+  return "";
+}
+
+export async function POST(request: Request) {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return errorResponse("invalid_request", 400);
+  }
+
+  const { trackingNumber, nickname } = (body ?? {}) as {
+    trackingNumber?: unknown;
+    nickname?: unknown;
+  };
+
+  if (typeof trackingNumber !== "string" || trackingNumber.trim() === "") {
+    return errorResponse("invalid_request", 400);
+  }
+
+  // ชื่อเล่นไม่บังคับ เว้นว่างแล้วหน้าประวัติจะใช้เลขพัสดุแทน
+  const cleanNickname =
+    typeof nickname === "string"
+      ? nickname.trim().slice(0, NICKNAME_MAX_LENGTH)
+      : "";
+
+  let supabase;
+  try {
+    supabase = await createServerSupabaseClient();
+  } catch (error) {
+    if (error instanceof SupabaseConfigError) {
+      console.error(`[api/saved] ${error.message}`);
+      return errorResponse("unavailable", 503);
+    }
+    throw error;
+  }
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  // RLS กันอยู่แล้วอีกชั้น แต่ตอบ 401 ตรงนี้เลยเพื่อให้ client แสดงข้อความที่ตรง
+  if (user === null) return errorResponse("unauthenticated", 401);
+
+  // อ่านสถานะล่าสุดเอง แทนที่จะเชื่อค่าที่ client ส่งมา
+  // ปกติจะได้จาก cache เพราะผู้ใช้เพิ่งค้นหาเลขนี้ไปเมื่อครู่
+  let result;
+  try {
+    ({ result } = await resolveTracking(trackingNumber));
+  } catch (error) {
+    if (error instanceof CarrierError) {
+      console.error(`[api/saved] ${error.code}: ${error.message}`);
+      return errorResponse(error.code === "not_found" ? "not_found" : "unknown", 502);
+    }
+    throw error;
+  }
+
+  const locationText = latestLocation(result.events);
+
+  // หาพิกัดไม่สำเร็จต้องไม่ทำให้การบันทึกล้มเหลว — เก็บ null แล้วไปต่อ
+  const coordinates =
+    locationText === "" ? null : await geocodeLocation(locationText);
+
+  const { data, error } = await supabase
+    .from("saved_trackings")
+    .upsert(
+      {
+        user_id: user.id,
+        tracking_number: result.trackingNumber,
+        carrier_name: result.carrierName,
+        nickname: cleanNickname === "" ? null : cleanNickname,
+        last_status: result.status,
+        last_status_text: result.statusText,
+        last_location_text: locationText === "" ? null : locationText,
+        last_lat: coordinates?.lat ?? null,
+        last_lng: coordinates?.lng ?? null,
+        last_updated_at: result.lastUpdated,
+      },
+      // บันทึกเลขเดิมซ้ำต้องอัปเดตแถวเดิม ไม่ใช่สร้างแถวใหม่
+      { onConflict: "user_id,tracking_number" },
+    )
+    .select(SAVED_TRACKING_COLUMNS)
+    .single();
+
+  if (error !== null) {
+    console.error(`[api/saved] บันทึกไม่สำเร็จ: ${error.message}`);
+    return errorResponse("unknown", 500);
+  }
+
+  return NextResponse.json({ ok: true as const, data });
+}

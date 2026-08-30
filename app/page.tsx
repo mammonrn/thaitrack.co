@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 
 import AuthButton from "./auth-button";
+import SaveTrackingButton from "./save-tracking-button";
 
 import type { TrackingResult, TrackingStatus } from "@/lib/carriers/types";
 import {
@@ -40,6 +41,14 @@ export default function Home() {
   const [result, setResult] = useState<TrackingResult | null>(null);
   const [error, setError] = useState<UserFacingError | null>(null);
 
+  function applyOutcome(outcome: Awaited<ReturnType<typeof requestTracking>>) {
+    if (outcome.ok) {
+      setResult(outcome.result);
+    } else {
+      setError(outcome.error);
+    }
+  }
+
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (isLoading) return;
@@ -54,15 +63,46 @@ export default function Home() {
     setResult(null);
     setError(null);
 
-    const outcome = await requestTracking(trackingNumber);
-    if (outcome.ok) {
-      setResult(outcome.result);
-    } else {
-      setError(outcome.error);
-    }
-
+    applyOutcome(await requestTracking(trackingNumber));
     setIsLoading(false);
   }
+
+  // ปุ่ม "ดูอีกครั้ง" ในหน้าประวัติพามาที่ /?track=<เลขพัสดุ> ให้ค้นหาให้เลย
+  //
+  // อ่านจาก window.location เองแทน useSearchParams เพื่อให้หน้านี้ยัง prerender
+  // เป็น static ได้ (useSearchParams บังคับให้ต้องมี Suspense ครอบ) และยิงค้นหา
+  // ก่อนแล้วค่อยอัปเดต state ทีเดียวหลัง await เพื่อไม่ให้เกิด cascading render
+  // จากการ setState ตรงๆ ใน effect
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const requested = params.get("track")?.trim() ?? "";
+    if (requested === "") return;
+
+    // ล้าง param ทิ้ง ไม่งั้นกด refresh ทีหลังจะยิงค้นหาซ้ำโดยไม่ได้ตั้งใจ
+    params.delete("track");
+    const query = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${query === "" ? "" : `?${query}`}`,
+    );
+
+    let isActive = true;
+
+    async function searchFromLink() {
+      const outcome = await requestTracking(requested);
+      if (!isActive) return;
+
+      setTrackingNumber(requested);
+      applyOutcome(outcome);
+    }
+
+    void searchFromLink();
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
 
   // timeline โชว์จากล่าสุดไปเก่าสุด (API ส่งมาเรียงจากเก่าไปใหม่)
   const eventsNewestFirst = result ? [...result.events].reverse() : [];
@@ -229,6 +269,8 @@ export default function Home() {
                   </ol>
                 )}
               </div>
+
+              <SaveTrackingButton trackingNumber={result.trackingNumber} />
             </article>
           )}
         </section>
@@ -239,7 +281,7 @@ export default function Home() {
           <Link href="#" className="transition-colors hover:text-ink">
             ติดตาม
           </Link>
-          <Link href="#" className="transition-colors hover:text-ink">
+          <Link href="/history" className="transition-colors hover:text-ink">
             ประวัติ
           </Link>
           <Link href="#" className="transition-colors hover:text-ink">
