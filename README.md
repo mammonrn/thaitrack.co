@@ -29,6 +29,17 @@ npm run build
 ตัวแปรที่ขึ้นต้นด้วย `NEXT_PUBLIC_` **ถูกฝังลงไฟล์ JS ตอน `npm run build`** ไม่ได้อ่านตอน
 runtime ถ้าเพิ่มหรือแก้ค่าเหล่านี้ต้อง build ใหม่เสมอ การ restart เฉยๆ ไม่มีผล
 
+## ฐานข้อมูล (Supabase)
+
+ไฟล์ SQL อยู่ใน `supabase/migrations/` รันครั้งเดียวตอนติดตั้ง ผ่าน SQL Editor
+ของ Supabase dashboard หรือ `supabase db push` ถ้าใช้ CLI
+
+`0001_saved_trackings.sql` สร้างตารางประวัติที่ผู้ใช้กดบันทึก พร้อมเปิด RLS และ
+policy ครบทั้ง SELECT / INSERT / UPDATE / DELETE โดยผูกกับ `auth.uid() = user_id`
+
+**ห้ามข้ามการเปิด RLS** เพราะเบราว์เซอร์ใช้ anon key ยิงเข้า PostgREST ได้โดยตรง
+ถ้าไม่เปิด ผู้ใช้ที่ล็อกอินอยู่คนไหนก็อ่านและลบประวัติของคนอื่นได้ทั้งหมด
+
 ## Deploy หลัง Nginx
 
 session ของ Supabase ถูกเก็บใน cookie ที่ใหญ่กว่าปกติมาก (JWT + ข้อมูลผู้ใช้จาก Google
