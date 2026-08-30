@@ -3,12 +3,15 @@ import type { Metadata } from "next";
 
 import {
   SAVED_TRACKING_COLUMNS,
+  sortBySavedAtDesc,
+  summarizeSavedTrackings,
   toSavedTracking,
   type SavedTracking,
 } from "@/lib/saved-trackings";
 import { SupabaseConfigError } from "@/lib/supabase/env";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import HistoryList from "./history-list";
+import HistorySummary from "./history-summary";
 
 export const metadata: Metadata = {
   title: "ประวัติที่บันทึกไว้ — พัสดุไทย.com",
@@ -42,17 +45,24 @@ async function loadHistory(): Promise<PageState> {
   if (user === null) return { kind: "guest" };
 
   // ไม่ต้องใส่ where user_id เอง เพราะ RLS กรองให้เหลือเฉพาะแถวของเจ้าตัวอยู่แล้ว
+  //
+  // เรียงตาม created_at (เวลาที่กดบันทึก) ไม่ใช่ last_updated_at (เวลาที่ขนส่ง
+  // ขยับสถานะ) เพราะของที่เพิ่งบันทึกแต่ยังไม่มีความเคลื่อนไหวควรอยู่บนสุด
   const { data, error } = await supabase
     .from("saved_trackings")
     .select(SAVED_TRACKING_COLUMNS)
-    .order("last_updated_at", { ascending: false, nullsFirst: false });
+    .order("created_at", { ascending: false });
 
   if (error !== null) {
     console.error(`[history] อ่านประวัติไม่สำเร็จ: ${error.message}`);
     return { kind: "ready", items: [] };
   }
 
-  return { kind: "ready", items: (data ?? []).map(toSavedTracking) };
+  // เรียงซ้ำฝั่งแอปด้วย เพื่อให้ลำดับเป็นชุดเดียวกับที่ client ใช้ต่อรายการเพิ่ม
+  return {
+    kind: "ready",
+    items: sortBySavedAtDesc((data ?? []).map(toSavedTracking)),
+  };
 }
 
 /**
@@ -124,8 +134,12 @@ export default async function HistoryPage() {
               <p className="mt-2 text-sm text-faint">
                 {state.items.length === 0
                   ? "ยังไม่มีรายการที่บันทึกไว้"
-                  : `ทั้งหมด ${state.items.length} รายการ เรียงจากอัปเดตล่าสุด`}
+                  : `${state.items.length} รายการ เรียงจากที่บันทึกล่าสุด`}
               </p>
+
+              {state.items.length > 0 && (
+                <HistorySummary summary={summarizeSavedTrackings(state.items)} />
+              )}
 
               {state.items.length === 0 ? (
                 <div className="mt-6 rounded-xl border border-dashed border-line-strong p-6 text-center">

@@ -8,13 +8,21 @@
  * จัดกลุ่มเฉพาะเหตุการณ์ที่อยู่ "ติดกัน" และสถานที่ตรงกันเท่านั้น ไม่รวมข้ามช่วง
  * เวลา เพราะพัสดุอาจวนกลับมาที่เดิมได้ การรวมข้ามช่วงจะทำให้ลำดับเวลาผิด
  *
+ * เหตุการณ์ที่ขนส่งไม่ได้บอกสถานที่ (เช่น "มอบหมายพนักงานนำจ่ายแล้ว") จะถูกยุบ
+ * เข้ากลุ่มเพื่อนบ้านแทนการตั้งกลุ่ม "ไม่ระบุสถานที่" ของตัวเอง ดูเหตุผลที่
+ * absorbLocationlessGroups
+ *
  * ทำงานที่ชั้นแสดงผลล้วนๆ ไม่แตะข้อมูลที่มาจาก API หรือ cache
  */
 
 import type { TrackingEvent } from "./carriers/types";
 
 export interface TimelineGroup {
-  /** ชื่อสถานที่สำหรับแสดงเป็นหัวกลุ่ม — null คือกลุ่มที่ขนส่งไม่ได้บอกสถานที่ */
+  /**
+   * ชื่อสถานที่สำหรับแสดงเป็นหัวกลุ่ม
+   *
+   * เป็น null ได้กรณีเดียว คือไทม์ไลน์ทั้งเส้นไม่มีเหตุการณ์ไหนบอกสถานที่เลย
+   */
   location: string | null;
   events: TrackingEvent[];
 }
@@ -67,5 +75,77 @@ export function groupEventsByLocation(
     currentKey = key;
   }
 
-  return groups;
+  return mergeAdjacentSameLocation(absorbLocationlessGroups(groups));
+}
+
+/**
+ * ยุบกลุ่มที่ไม่มีสถานที่เข้ากลุ่มเพื่อนบ้าน
+ *
+ * ขนส่งหลายเจ้าไม่ใส่สถานที่ให้เหตุการณ์เชิงสถานะ ("มอบหมายพนักงานนำจ่ายแล้ว",
+ * "อยู่ระหว่างขนส่ง") ถ้าปล่อยให้เหตุการณ์พวกนี้ตั้งกลุ่ม "ไม่ระบุสถานที่" ของ
+ * ตัวเอง ไทม์ไลน์จะถูกหั่นเป็นกลุ่มเล็กๆ สลับกับหัวข้อที่ไม่ได้บอกอะไรเลย
+ * ซึ่งอ่านยากกว่าไม่จัดกลุ่มเสียอีก
+ *
+ * เลือกยุบเข้ากลุ่ม "ถัดลงไป" (เหตุการณ์ที่เก่ากว่า เพราะไทม์ไลน์เรียงใหม่→เก่า)
+ * เพราะสถานที่ที่เหตุการณ์ไร้พิกัดเกิดขึ้นจริง คือที่ที่พัสดุอยู่ ณ ตอนนั้น และ
+ * ที่นั้นถูกระบุไว้แล้วโดยเหตุการณ์ก่อนหน้า เช่น "ถึงสาขา ACRAI-B" แล้วค่อย
+ * "มอบหมายพนักงานนำจ่ายแล้ว" — คนขับถูกมอบหมายที่ ACRAI-B ไม่ใช่ที่ปลายทาง
+ * ถัดไปที่พัสดุยังไปไม่ถึง
+ *
+ * ถ้าไม่มีกลุ่มที่เก่ากว่าให้ยุบเข้า (เหตุการณ์ไร้พิกัดอยู่ท้ายสุด) จึงถอยไปยุบ
+ * เข้ากลุ่มที่ใหม่กว่าแทน และถ้าทั้งไทม์ไลน์ไม่มีสถานที่เลย ก็คงกลุ่ม null ไว้
+ */
+function absorbLocationlessGroups(groups: TimelineGroup[]): TimelineGroup[] {
+  if (groups.every((group) => group.location === null)) return groups;
+
+  const merged: TimelineGroup[] = [];
+
+  for (let i = 0; i < groups.length; i++) {
+    const group = groups[i];
+
+    if (group.location !== null) {
+      merged.push(group);
+      continue;
+    }
+
+    // หากลุ่มที่มีสถานที่ตัวถัดไป (เก่ากว่า) แล้วแทรกไว้ด้านหน้าของกลุ่มนั้น
+    // เพื่อคงลำดับเวลาเดิมไว้
+    let next = i + 1;
+    while (next < groups.length && groups[next].location === null) next++;
+
+    if (next < groups.length) {
+      groups[next].events.unshift(...group.events);
+      continue;
+    }
+
+    // ไม่มีกลุ่มที่เก่ากว่าแล้ว → ต่อท้ายกลุ่มที่ใหม่กว่าซึ่งออกไปแล้ว
+    merged[merged.length - 1].events.push(...group.events);
+  }
+
+  return merged;
+}
+
+/**
+ * รวมกลุ่มที่อยู่ติดกันและเป็นสถานที่เดียวกัน
+ *
+ * หลังยุบเหตุการณ์ไร้พิกัดออกไป กลุ่มของสถานที่เดียวกันที่เคยถูกคั่นอยู่จะมาชน
+ * กันพอดี ต้องรวมอีกรอบ ไม่งั้นจะเห็นหัวข้อชื่อเดียวกันซ้ำสองบรรทัดติด
+ */
+function mergeAdjacentSameLocation(groups: TimelineGroup[]): TimelineGroup[] {
+  const merged: TimelineGroup[] = [];
+  let currentKey: string | null = null;
+
+  for (const group of groups) {
+    const key = group.location === null ? null : normalizeLocation(group.location);
+
+    if (key !== null && merged.length > 0 && key === currentKey) {
+      merged[merged.length - 1].events.push(...group.events);
+      continue;
+    }
+
+    merged.push(group);
+    currentKey = key;
+  }
+
+  return merged;
 }

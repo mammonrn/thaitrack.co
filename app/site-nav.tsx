@@ -43,6 +43,16 @@ function PinIcon({ className }: IconProps) {
   );
 }
 
+/** รูปคนครึ่งตัว — หน้าโปรไฟล์ */
+function PersonIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="8" r="3.6" />
+      <path d="M4.8 20c0-3.6 3.2-5.8 7.2-5.8s7.2 2.2 7.2 5.8" />
+    </svg>
+  );
+}
+
 interface NavItem {
   href: string;
   label: string;
@@ -70,6 +80,12 @@ const ITEMS: NavItem[] = [
     label: "ประวัติ",
     Icon: HistoryIcon,
     isActive: (pathname) => pathname.startsWith("/history"),
+  },
+  {
+    href: "/profile",
+    label: "โปรไฟล์",
+    Icon: PersonIcon,
+    isActive: (pathname) => pathname.startsWith("/profile"),
   },
   {
     href: "#",

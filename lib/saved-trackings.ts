@@ -5,7 +5,7 @@
  * แสดงผล และให้ทุกทางที่ล้มเหลวจบที่ข้อความไทยที่ผู้ใช้อ่านรู้เรื่องเสมอ
  */
 
-import type { TrackingStatus } from "./carriers/types";
+import { TRACKING_STATUS_TEXT, type TrackingStatus } from "./carriers/types";
 import type { UserFacingError } from "./tracking-view";
 
 /** หนึ่งรายการในหน้าประวัติ (แปลงจากคอลัมน์ snake_case ของฐานข้อมูลแล้ว) */
@@ -75,6 +75,87 @@ export function displayTitleOf(saved: SavedTracking): string {
   const nickname = saved.nickname?.trim() ?? "";
   return nickname === "" ? saved.trackingNumber : nickname;
 }
+
+/**
+ * เรียงรายการจากที่บันทึกล่าสุดไปเก่าสุด
+ *
+ * ผู้ใช้เพิ่งกดบันทึกอะไรไป ก็คาดว่าจะเห็นอันนั้นบนสุด การเรียงตาม
+ * last_updated_at (เวลาที่ขนส่งอัปเดต) ทำให้พัสดุที่บันทึกเมื่อครู่แต่ยังไม่มี
+ * ความเคลื่อนไหวตกไปอยู่ท้ายสุด ซึ่งดูเหมือนกดบันทึกไม่ติด
+ *
+ * ฐานข้อมูลเรียงมาให้แล้วด้วย order by created_at desc — ฟังก์ชันนี้ทำซ้ำฝั่ง
+ * แอปเพื่อให้ลำดับเหมือนกันแน่นอนไม่ว่าข้อมูลจะมาจากทางไหน (เช่นรายการที่
+ * client ต่อเพิ่มเองหลังบันทึกสำเร็จ) และเพื่อให้ทดสอบลำดับได้โดยไม่ต้องมี DB
+ *
+ * ไม่แก้อาร์เรย์เดิม เพราะผู้เรียกอาจถือ props ของ React อยู่
+ */
+export function sortBySavedAtDesc(items: readonly SavedTracking[]): SavedTracking[] {
+  return [...items].sort((a, b) => {
+    const gap = Date.parse(b.createdAt) - Date.parse(a.createdAt);
+    if (gap !== 0 && Number.isFinite(gap)) return gap;
+
+    // บันทึกพร้อมกันเป๊ะ (หรือเวลาเสีย) → ใช้ id ตัดสิน จะได้ลำดับคงที่ ไม่สลับ
+    // ไปมาทุกครั้งที่ render
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+}
+
+/** ตัวเลขสรุปบนหัวหน้าประวัติ */
+export interface SavedSummary {
+  /** ยังไม่ถึงมือผู้รับ: รอรับเข้าระบบ + อยู่ระหว่างขนส่ง + กำลังนำจ่าย */
+  inTransit: number;
+  delivered: number;
+  problem: number;
+  total: number;
+}
+
+/** สถานะที่ถือว่าพัสดุยังเดินทางอยู่ */
+const IN_TRANSIT_STATUSES = new Set<TrackingStatus>([
+  "pending",
+  "in_transit",
+  "out_for_delivery",
+]);
+
+/**
+ * นับสถานะจาก snapshot ที่เก็บไว้ตอนกดบันทึก
+ *
+ * ไม่ยิงถาม API ขนส่งใหม่โดยตั้งใจ — หน้าประวัติที่มี 20 รายการจะกลายเป็น 20
+ * คำขอออกนอกเครื่องทันทีที่เปิดหน้า ตัวเลขจึงเป็น "สถานะ ณ ครั้งล่าสุดที่ดู"
+ * ซึ่งตรงกับสิ่งที่การ์ดแต่ละใบแสดงอยู่แล้ว ไม่ขัดกันเอง
+ *
+ * รายการที่ไม่มีสถานะติดมา (บันทึกตอนขนส่งยังไม่ตอบ) นับเฉพาะใน total
+ * เพราะเดาแทนผู้ใช้ไม่ได้ว่าอยู่ขั้นไหน
+ */
+export function summarizeSavedTrackings(
+  items: readonly SavedTracking[],
+): SavedSummary {
+  let inTransit = 0;
+  let delivered = 0;
+  let problem = 0;
+
+  for (const item of items) {
+    if (item.lastStatus === null) continue;
+    if (item.lastStatus === "delivered") delivered += 1;
+    else if (item.lastStatus === "exception") problem += 1;
+    else if (IN_TRANSIT_STATUSES.has(item.lastStatus)) inTransit += 1;
+  }
+
+  return { inTransit, delivered, problem, total: items.length };
+}
+
+/**
+ * ป้ายกำกับของตัวเลขสรุป
+ *
+ * ป้ายที่ตรงกับสถานะเดี่ยวอ้าง TRACKING_STATUS_TEXT เพื่อให้ใช้คำเดียวกับ
+ * หัวการ์ดและไทม์ไลน์ ส่วน "กำลังเดินทาง" เป็นชื่อกลุ่มที่รวมหลายสถานะเข้าด้วยกัน
+ * จึงตั้งชื่อของตัวเอง
+ */
+export const SUMMARY_LABEL = {
+  inTransit: "กำลังเดินทาง",
+  delivered: TRACKING_STATUS_TEXT.delivered,
+  problem: TRACKING_STATUS_TEXT.exception,
+  total: "ทั้งหมด",
+} as const;
 
 /** ความยาวสูงสุดของชื่อเล่น กันไม่ให้ยัดข้อความยาวจนหน้าเพี้ยน */
 export const NICKNAME_MAX_LENGTH = 60;
