@@ -219,27 +219,53 @@ test("ไปรษณีย์ไทยพังด้วยสาเหตุ�
 /** เลขทรง Shopee Xpress ที่ prefix บอกขนส่งได้แน่ๆ */
 const uniqueShopeeNumber = () => `SPXTH${(counter += 1)}0000000`;
 
-test("เลขขึ้นต้น SPXTH → ยิง shopee-xpress-th ตรงๆ ไม่ผ่าน auto-detect (ยิงครั้งเดียว)", async () => {
+/** ไปรษณีย์ไทยที่ตอบว่าไม่พบเสมอ แต่นับด้วยว่าถูกถามกี่ครั้ง */
+function makeCountingPrimary(): CarrierAdapter & { calls: string[] } {
+  const calls: string[] = [];
+  return {
+    carrierCode: "thailand-post",
+    carrierName: "ไปรษณีย์ไทย",
+    calls,
+    track(trackingNumber) {
+      calls.push(trackingNumber);
+      return Promise.reject(notFound());
+    },
+  };
+}
+
+test("เลขขึ้นต้น SPXTH → ข้ามไปรษณีย์ไทย ยิง shopee-xpress-th ตรงเลย (ยิงครั้งเดียว)", async () => {
+  const primary = makeCountingPrimary();
   const fallback = makeTrack123({ succeedsForCourier: "shopee-xpress-th" });
 
   const { result } = await resolveTracking(uniqueShopeeNumber(), {
-    primary: primaryAlwaysNotFound,
+    primary,
     fallback,
   });
 
   assert.equal(result.carrierName, "Shopee Xpress");
+  // เลขทรงนี้ไม่มีทางอยู่ในระบบไปรษณีย์ไทย การถามคือเสียเวลารอฟรีๆ
+  assert.deepEqual(primary.calls, [], "ต้องไม่ถามไปรษณีย์ไทยเลย");
   // เดิมเคสนี้กิน 2 call (auto-detect เดาผิด แล้วค่อยลองซ้ำ) ตอนนี้เหลือ 1
   assert.deepEqual(fallback.calls, ["shopee-xpress-th"]);
 });
 
-test("prefix รู้จักแต่ยิงแล้วไม่เจอ → ยังลอง auto-detect ต่อ แต่ไม่ถามเจ้าเดิมซ้ำ", async () => {
+test("prefix ไม่ฟันธง → คงพฤติกรรมเดิม ถามไปรษณีย์ไทยก่อนเสมอ", async () => {
+  const primary = makeCountingPrimary();
+  const fallback = makeTrack123({ succeedsForCourier: "shopee-xpress-th" });
+  const trackingNumber = uniqueTrackingNumber();
+
+  await resolveTracking(trackingNumber, { primary, fallback });
+
+  assert.deepEqual(primary.calls, [trackingNumber], "ต้องถามเจ้าที่ฟรีก่อน");
+  assert.deepEqual(fallback.calls, ["auto-detect", "shopee-xpress-th"]);
+});
+
+test("prefix ฟันธงแต่ยิงแล้วไม่เจอ → ลอง auto-detect ต่อ ไม่ย้อนไปถามไปรษณีย์ไทย", async () => {
+  const primary = makeCountingPrimary();
   const fallback = makeTrack123({ codes: ["shopee-xpress-th", "kerry-th"] });
 
   await assert.rejects(
-    resolveTracking(uniqueShopeeNumber(), {
-      primary: primaryAlwaysNotFound,
-      fallback,
-    }),
+    resolveTracking(uniqueShopeeNumber(), { primary, fallback }),
     (error: unknown) => {
       assert.ok(error instanceof CarrierError);
       assert.equal(error.code, "not_found");
@@ -247,6 +273,7 @@ test("prefix รู้จักแต่ยิงแล้วไม่เจอ 
     },
   );
 
+  assert.deepEqual(primary.calls, []);
   // shopee-xpress-th ต้องโผล่ครั้งเดียว ไม่ถูกไล่ซ้ำในขั้นลองรายชื่อ
   assert.deepEqual(fallback.calls, [
     "shopee-xpress-th",
@@ -255,7 +282,7 @@ test("prefix รู้จักแต่ยิงแล้วไม่เจอ 
   ]);
 });
 
-test("prefix รู้จัก แต่ auto-detect เป็นฝ่ายเจอ → หยุดที่ 2 call", async () => {
+test("prefix ฟันธง แต่ auto-detect เป็นฝ่ายเจอ → หยุดที่ 2 call", async () => {
   const fallback = makeTrack123({ autoDetectSucceeds: true });
 
   const { result } = await resolveTracking(uniqueShopeeNumber(), {
@@ -267,15 +294,24 @@ test("prefix รู้จัก แต่ auto-detect เป็นฝ่าย�
   assert.deepEqual(fallback.calls, ["shopee-xpress-th", "auto-detect"]);
 });
 
-test("prefix ไม่รู้จัก → ลำดับเดิมทุกอย่าง เริ่มที่ auto-detect", async () => {
-  const fallback = makeTrack123({ succeedsForCourier: "shopee-xpress-th" });
+test("prefix ฟันธง แต่ adapter ระบุขนส่งเจาะจงไม่ได้ → กลับไปใช้ลำดับเดิม", async () => {
+  const primary = makeCountingPrimary();
+  const calls: string[] = [];
+  const fallback: CarrierAdapter = {
+    carrierCode: "track123",
+    carrierName: "Track123",
+    track(trackingNumber) {
+      calls.push("auto-detect");
+      return Promise.resolve(makeResult(trackingNumber, "Flash Express"));
+    },
+  };
+  const trackingNumber = uniqueShopeeNumber();
 
-  await resolveTracking(uniqueTrackingNumber(), {
-    primary: primaryAlwaysNotFound,
-    fallback,
-  });
+  await resolveTracking(trackingNumber, { primary, fallback });
 
-  assert.deepEqual(fallback.calls, ["auto-detect", "shopee-xpress-th"]);
+  // ใช้ทางลัดไม่ได้ ก็ต้องไม่ทิ้งเจ้าที่ฟรีไปเปล่าๆ
+  assert.deepEqual(primary.calls, [trackingNumber]);
+  assert.deepEqual(calls, ["auto-detect"]);
 });
 
 /* ------------------------------------------------------------------ *

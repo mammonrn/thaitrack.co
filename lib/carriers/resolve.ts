@@ -4,15 +4,16 @@
  * ลำดับการทำงาน:
  *   0. เช็ค cache ก่อนเสมอ — ถ้ามีและยังไม่หมดอายุ คืนเลยโดยไม่ยิง API ใดๆ
  *   0.5 เลขเดียวกันที่กำลังรอผลอยู่ ให้เกาะคำขอเดิมแทนที่จะยิงซ้ำ
- *   1. ถามไปรษณีย์ไทยก่อน — ฟรีและไม่จำกัดจำนวนครั้ง
- *   2. ถ้าไปรษณีย์ไทยตอบว่า "ไม่พบเลขนี้" (not_found) ค่อยถาม Track123 ต่อ
- *      เผื่อเป็นพัสดุของขนส่งเจ้าอื่น โดยถ้า prefix ของเลขบอกได้แน่ๆ ว่าเป็นเจ้าไหน
- *      (เช่น SPXTH → Shopee Xpress) ให้ระบุเจาะจงไปเลย ไม่ต้องเสีย call ให้
- *      การตรวจจับอัตโนมัติที่เดาผิดได้
- *   3. prefix ไม่รู้จัก หรือระบุแล้วยังไม่เจอ → ให้ Track123 ตรวจจับขนส่งเอง
- *   4. ตรวจจับเองแล้วยังไม่พบ ค่อยยิงซ้ำโดยระบุขนส่งเจาะจงจากรายชื่อที่รู้ว่า
- *      การตรวจจับอัตโนมัติมักเดาผิด (ข้ามเจ้าที่ลองไปแล้วในขั้นที่ 2)
- *   5. ถ้าไปรษณีย์ไทยพังด้วยสาเหตุอื่น (ระบบล่ม, timeout, ยิงถี่เกินไป ฯลฯ)
+ *   1. ดู prefix ของเลขก่อน แล้วแยกเป็นสองทาง
+ *      1ก. prefix ฟันธงว่าเป็นขนส่งเจ้าอื่น (เช่น SPXTH → Shopee Xpress)
+ *          → ข้ามไปรษณีย์ไทยไปเลย ยิง Track123 โดยระบุขนส่งเจาะจงทันที
+ *            เลขทรงนี้ไม่มีทางอยู่ในระบบไปรษณีย์ไทย การถามจึงเสียเวลารอฟรีๆ
+ *            และไม่ต้องเสีย call ให้การตรวจจับอัตโนมัติที่เดาผิดได้
+ *      1ข. prefix ไม่ฟันธง → ถามไปรษณีย์ไทยก่อนตามเดิม เพราะฟรีและไม่จำกัดครั้ง
+ *   2. ยังไม่เจอ → ให้ Track123 ตรวจจับขนส่งเอง
+ *   3. ตรวจจับเองแล้วยังไม่พบ ค่อยยิงซ้ำโดยระบุขนส่งเจาะจงจากรายชื่อที่รู้ว่า
+ *      การตรวจจับอัตโนมัติมักเดาผิด (ข้ามเจ้าที่ลองไปแล้วในขั้นที่ 1ก)
+ *   4. ถ้าไปรษณีย์ไทยพังด้วยสาเหตุอื่น (ระบบล่ม, timeout, ยิงถี่เกินไป ฯลฯ)
  *      จะไม่ fallback — คืน error ไปเลย เพื่อไม่ให้เปลือง quota ของ Track123
  *
  * เก็บลง cache เฉพาะผลที่ค้นเจอ — ไม่ cache error เพราะพัสดุที่วันนี้ยังไม่พบ
@@ -148,6 +149,37 @@ async function retryWithCourierCodes(
   return { result: null, codes };
 }
 
+/** ทางลัดยิงตรงไปหาขนส่งที่ prefix ฟันธงแล้ว */
+interface PrefixShortcut {
+  courierCode: string;
+  track: () => Promise<TrackingResult>;
+}
+
+/**
+ * หาทางลัดจาก prefix ของเลขพัสดุ — null เมื่อใช้ทางลัดไม่ได้
+ *
+ * ใช้ไม่ได้สองกรณี: prefix ไม่ฟันธงว่าเป็นเจ้าไหน หรือ adapter สำรองไม่รองรับ
+ * การระบุขนส่งเจาะจง ทั้งสองกรณีต้องกลับไปใช้ลำดับเดิม (ถามไปรษณีย์ไทยก่อน)
+ *
+ * มัดรหัสขนส่งกับฟังก์ชันที่ผูก this ไว้แล้วมาเป็นก้อนเดียว เพื่อให้ผู้เรียก
+ * เช็ค null ครั้งเดียวจบ ไม่ต้องเช็คสองค่าที่ต้องมีหรือไม่มีพร้อมกันเสมอ
+ */
+function prefixShortcut(
+  trackingNumber: string,
+  fallback: CarrierAdapter,
+): PrefixShortcut | null {
+  const trackWithCourier = fallback.trackWithCourier;
+  if (trackWithCourier === undefined) return null;
+
+  const courierCode = courierFromPrefix(trackingNumber);
+  if (courierCode === null) return null;
+
+  return {
+    courierCode,
+    track: () => trackWithCourier.call(fallback, trackingNumber, courierCode),
+  };
+}
+
 /**
  * ไล่ถามขนส่งจริงๆ ตามลำดับที่ประหยัดที่สุด — เรียกได้ก็ต่อเมื่อ cache ไม่มีของ
  * และไม่มีคำขอของเลขเดียวกันกำลังบินอยู่
@@ -157,27 +189,29 @@ async function resolveFresh(
   primary: CarrierAdapter,
   fallback: CarrierAdapter,
 ): Promise<TrackingResult> {
-  const fromPrimary = await attempt(() => primary.track(normalized));
-  if (fromPrimary !== null) return store(normalized, fromPrimary);
-
   // เจ้าที่ยิงไปแล้ว ไว้กันไม่ให้ขั้นถัดไปถามซ้ำคำถามเดิม และไว้อธิบายใน log
   const tried: string[] = [];
+  const shortcut = prefixShortcut(normalized, fallback);
 
-  // prefix บอกได้แน่ๆ ว่าเป็นขนส่งเจ้าไหน → ยิงตรงเลย ประหยัดไป 1 call
-  // เทียบกับการปล่อยให้ auto-detect เดาผิดแล้วค่อยมาลองซ้ำทีหลัง
-  const prefixCourier = courierFromPrefix(normalized);
-  const trackWithCourier = fallback.trackWithCourier;
+  if (shortcut === null) {
+    // prefix ไม่ฟันธงว่าเป็นเจ้าไหน → ลำดับเดิม ถามไปรษณีย์ไทยก่อนเพราะฟรี
+    // และไม่จำกัดจำนวนครั้ง จะได้ไม่ไปแตะ quota ของ Track123 โดยไม่จำเป็น
+    const fromPrimary = await attempt(() => primary.track(normalized));
+    if (fromPrimary !== null) return store(normalized, fromPrimary);
+  } else {
+    // prefix ฟันธงว่าเป็นขนส่งเจ้าอื่น → ข้ามไปรษณีย์ไทยไปเลย
+    //
+    // เลขทรงนี้ (เช่น SPXTH...) เป็นรูปแบบเฉพาะของขนส่งเจ้านั้น ไม่มีทางอยู่ใน
+    // ระบบไปรษณีย์ไทย การถามจึงได้ not_found แน่นอนอยู่แล้ว เสียแค่เวลารอ
+    // ของผู้ใช้ไปหนึ่งรอบเปล่าๆ ที่กล้าข้ามได้เพราะตาราง prefix รับเฉพาะแถวที่
+    // ผ่านเกณฑ์ "ฟันธงได้จริง" (ดูเกณฑ์ในหัว lib/carriers/courier-prefix.ts)
+    tried.push(shortcut.courierCode);
 
-  if (prefixCourier !== null && trackWithCourier !== undefined) {
-    tried.push(prefixCourier);
-
-    const byPrefix = await attempt(() =>
-      trackWithCourier.call(fallback, normalized, prefixCourier),
-    );
+    const byPrefix = await attempt(shortcut.track);
     if (byPrefix !== null) return store(normalized, byPrefix);
   }
 
-  // prefix ไม่รู้จัก หรือระบุแล้วยังไม่เจอ → ให้ Track123 ตรวจจับขนส่งเอง
+  // ยังไม่เจอ → ให้ Track123 ตรวจจับขนส่งเอง
   // ยังต้องลองขั้นนี้แม้ prefix จะพลาด เพราะพัสดุข้ามประเทศอาจเปลี่ยนมือไปให้
   // ขนส่งเจ้าอื่นเดินช่วงสุดท้าย ซึ่ง prefix ต้นทางบอกไม่ได้
   const autoDetected = await attempt(() => fallback.track(normalized));
@@ -197,10 +231,13 @@ async function resolveFresh(
     "ไม่พบข้อมูลเลขพัสดุนี้ในระบบขนส่งที่รองรับ กรุณาตรวจสอบเลขพัสดุอีกครั้ง",
     {
       debugMessage:
-        `ไม่พบเลข ${normalized} ทั้งที่ ${primary.carrierCode} และ ${fallback.carrierCode}` +
+        `ไม่พบเลข ${normalized} ที่ ` +
+        (shortcut === null
+          ? `${primary.carrierCode} และ ${fallback.carrierCode}`
+          : `${fallback.carrierCode} (ข้าม ${primary.carrierCode} เพราะ prefix ชี้ว่าเป็น ${shortcut.courierCode})`) +
         (tried.length === 0
           ? ""
-          : ` (ระบุขนส่งเจาะจงอีก ${tried.length} เจ้าแล้ว: ${tried.join(", ")})`),
+          : ` — ระบุขนส่งเจาะจงแล้ว ${tried.length} เจ้า: ${tried.join(", ")}`),
     },
   );
 }
