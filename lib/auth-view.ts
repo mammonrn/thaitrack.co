@@ -97,16 +97,31 @@ export async function signOut(): Promise<AuthOutcome> {
     const supabase = getBrowserClient();
     const { error } = await supabase.auth.signOut();
 
-    if (error) {
-      console.error(`[auth] signOut: ${error.message}`);
-      return fail("signout_failed");
+    if (error === null) return { ok: true };
+
+    console.error(`[auth] signOut: ${error.message}`);
+
+    // ถึงฝั่งเซิร์ฟเวอร์จะตอบพลาด (เช่น 500 หรือเครือข่ายมีปัญหา) auth-js ก็ลบ
+    // session ในเครื่องทิ้งไปแล้ว ผู้ใช้จึงออกจากระบบสำเร็จในทางปฏิบัติ
+    // ถ้าขึ้น "ออกจากระบบไม่สำเร็จ" ทั้งที่ปุ่มกลับเป็น "เข้าสู่ระบบ" และ cookie
+    // ถูกล้างไปแล้ว มีแต่จะทำให้สับสน จึงยืนยันจากสถานะจริงแทนที่จะเชื่อ error
+    try {
+      const { data } = await supabase.auth.getSession();
+      if (data.session === null) return { ok: true };
+    } catch (cause) {
+      console.error("[auth] ตรวจสถานะหลัง signOut ไม่สำเร็จ:", cause);
     }
 
-    return { ok: true };
+    return fail("signout_failed");
   } catch (error) {
     return fail(classify("signOut", error));
   }
 }
+
+/** ชื่อ query param ที่ callback route เติมให้เฉพาะตอนแลก code สำเร็จจริง */
+export const WELCOME_PARAM = "auth_welcome";
+
+const ERROR_PARAM = "auth_error";
 
 /**
  * แปลงค่า ?auth_error= ที่ callback route ส่งกลับมาเป็นข้อความไทย
@@ -118,6 +133,43 @@ export function authErrorFromCode(code: string | null): UserFacingError | null {
   if (!Object.hasOwn(AUTH_ERROR_MESSAGE, code)) return null;
 
   return AUTH_ERROR_MESSAGE[code as AuthErrorCode];
+}
+
+/** ผลลัพธ์ของการกลับมาจาก /auth/callback ที่หน้าแรกต้องรู้ */
+export interface CallbackSignals {
+  /** ข้อความบอกผู้ใช้เมื่อเข้าสู่ระบบไม่สำเร็จ */
+  error: UserFacingError | null;
+  /** true เมื่อ server ยืนยันว่าเพิ่งแลก code สำเร็จ ใช้ตัดสินใจโชว์ toast ต้อนรับ */
+  welcomed: boolean;
+}
+
+/**
+ * อ่านสัญญาณจาก query string แล้วล้าง param ทิ้งในคราวเดียว
+ *
+ * อ่านจาก window.location เองแทน useSearchParams เพื่อให้หน้าแรกยัง prerender
+ * เป็น static ได้ (useSearchParams บังคับให้ต้องมี Suspense ครอบ)
+ *
+ * ที่ต้องล้าง param ทิ้งเพราะถ้าปล่อยไว้ ผู้ใช้กด refresh หรือแชร์ลิงก์ต่อแล้ว
+ * ข้อความจะโผล่ซ้ำทั้งที่ไม่ได้เพิ่งเข้าสู่ระบบ ส่วน param อื่นของผู้ใช้ต้องคงไว้
+ */
+export function takeCallbackSignals(): CallbackSignals {
+  const params = new URLSearchParams(window.location.search);
+
+  const error = authErrorFromCode(params.get(ERROR_PARAM));
+  const welcomed = params.get(WELCOME_PARAM) === "1";
+
+  if (error === null && !welcomed) return { error: null, welcomed: false };
+
+  params.delete(ERROR_PARAM);
+  params.delete(WELCOME_PARAM);
+  const query = params.toString();
+  window.history.replaceState(
+    null,
+    "",
+    `${window.location.pathname}${query === "" ? "" : `?${query}`}`,
+  );
+
+  return { error, welcomed };
 }
 
 /** ชื่อที่เอาไว้แสดงบนหัวเว็บ — ถ้าไม่มีชื่อก็ใช้ส่วนหน้าของอีเมลแทน */

@@ -8,6 +8,7 @@
 import { isAuthRetryableFetchError } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 
+import { WELCOME_PARAM } from "@/lib/auth-view";
 import { SupabaseConfigError } from "@/lib/supabase/env";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
@@ -74,5 +75,8 @@ export async function GET(request: Request) {
     return failureUrl("network_error");
   }
 
-  return NextResponse.redirect(baseUrl);
+  // เติมสัญญาณให้หน้าแรกรู้ว่า "เพิ่งแลก code สำเร็จเมื่อกี้" เพื่อโชว์ toast ต้อนรับ
+  // ต้องให้ server เป็นคนเติมเท่านั้น ถ้าให้ client เดาจากการมี session อยู่
+  // toast จะโผล่ซ้ำทุกครั้งที่ reload หน้าโดยที่ยังล็อกอินค้างอยู่
+  return NextResponse.redirect(`${baseUrl}/?${WELCOME_PARAM}=1`);
 }
