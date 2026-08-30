@@ -3,6 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 
+import AuthButton from "./auth-button";
+
 import type { TrackingResult, TrackingStatus } from "@/lib/carriers/types";
 import {
   EMPTY_INPUT_ERROR,
@@ -77,12 +79,7 @@ export default function Home() {
             </span>
           </Link>
 
-          <button
-            type="button"
-            className="rounded-lg px-3 py-2 text-sm font-medium text-faint transition-colors hover:bg-ink/5 hover:text-ink"
-          >
-            เข้าสู่ระบบ
-          </button>
+          <AuthButton />
         </div>
       </header>
 
