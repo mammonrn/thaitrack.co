@@ -337,3 +337,77 @@ test("ลายเซ็นเก่าของ record_unknown_branch ต้อ
   assert.ok(dropAt !== -1, "ต้อง drop ลายเซ็นเดิม");
   assert.ok(dropAt < createAt, "ต้อง drop ก่อนสร้างตัวใหม่");
 });
+
+
+/* ----- สิทธิ์ของตารางของกลางที่เพิ่มมาในรอบหลัง (0010 / 0011) ----- */
+
+const LATER_MIGRATIONS = [
+  {
+    file: "supabase/migrations/0010_tracking_couriers.sql",
+    tables: ["tracking_couriers"],
+    functions: ["public\\.remember_tracking_courier\\(text, text, text\\)"],
+  },
+  {
+    file: "supabase/migrations/0011_stats_details.sql",
+    tables: ["install_events"],
+    functions: [
+      "public\\.admin_error_breakdown\\(integer\\)",
+      "public\\.admin_latency\\(integer\\)",
+      "public\\.admin_install_stats\\(\\)",
+      "public\\.admin_member_activity\\(\\)",
+    ],
+  },
+];
+
+test("ตารางของกลางที่เพิ่มใหม่ต้อง revoke + เปิด RLS + grant ให้ service_role", () => {
+  for (const { file, tables } of LATER_MIGRATIONS) {
+    const sql = readFileSync(join(PROJECT_DIR, file), "utf8");
+
+    for (const table of tables) {
+      assert.match(
+        sql,
+        new RegExp(`revoke all on table public\\.${table} from anon, authenticated`),
+        `${table}: ยังไม่ได้ revoke`,
+      );
+      assert.match(
+        sql,
+        new RegExp(`alter table public\\.${table} enable row level security`),
+        `${table}: ยังไม่ได้เปิด RLS`,
+      );
+      assert.match(
+        sql,
+        new RegExp(`grant select[^;]*on table public\\.${table} to service_role`),
+        `${table}: ยังไม่ได้ grant ให้ service_role`,
+      );
+    }
+  }
+});
+
+test("ฟังก์ชันที่เพิ่มใหม่ต้อง revoke จาก role อื่นแล้ว grant ให้ service_role", () => {
+  for (const { file, functions } of LATER_MIGRATIONS) {
+    const sql = readFileSync(join(PROJECT_DIR, file), "utf8");
+
+    for (const signature of functions) {
+      assert.match(
+        sql,
+        new RegExp(`revoke all on function\\s+${signature}\\s+from anon, authenticated, public`),
+        `ยังไม่ได้ revoke ${signature}`,
+      );
+      assert.match(
+        sql,
+        new RegExp(`grant execute on function ${signature} to service_role`),
+        `ยังไม่ได้ grant ${signature}`,
+      );
+    }
+  }
+});
+
+test("ฟังก์ชันของกลางรอบหลังต้องไม่เป็น security definer", () => {
+  for (const { file } of LATER_MIGRATIONS) {
+    assert.doesNotMatch(
+      readFileSync(join(PROJECT_DIR, file), "utf8"),
+      /security\s+definer/i,
+      file,
+    );
+  }
+});

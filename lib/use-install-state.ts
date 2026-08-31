@@ -80,6 +80,39 @@ function useIsIos(): boolean {
  * รวมไว้ที่เดียวเพราะปุ่มบนหัวเว็บกับการ์ดในหน้าโปรไฟล์ต้องเห็นสถานะตรงกันเสมอ
  * ถ้าแยกกันอ่าน event เอง จะมีจังหวะที่อันหนึ่งรู้ว่าติดตั้งได้แล้วอีกอันยังไม่รู้
  */
+/**
+ * บอกเซิร์ฟเวอร์ว่ามีการติดตั้งเพิ่มหนึ่งครั้ง — ล้มเหลวได้เงียบๆ
+ *
+ * `appinstalled` ยิงครั้งเดียวต่อการติดตั้งหนึ่งครั้ง จึงเป็นสัญญาณเดียวที่นับ
+ * จำนวนการติดตั้งได้จริง ต่างจากการเช็ค display-mode ตอนเปิดหน้าซึ่งจะนับซ้ำ
+ * ทุกครั้งที่เปิดแอพ
+ *
+ * ⚠️ ส่งแค่ platform กว้างๆ ไม่ส่ง user agent เต็มและไม่ส่งอะไรที่ระบุตัวคนได้
+ * — จำนวนการติดตั้งเป็นตัวเลขรวม ไม่ใช่ข้อมูลของใครคนหนึ่ง
+ *
+ * ใช้ keepalive เพราะการติดตั้งมักตามด้วยการที่เบราว์เซอร์สลับไปเปิดแอพทันที
+ * ซึ่งอาจฆ่า request ปกติทิ้งกลางทาง
+ */
+function reportInstall(): Promise<void> {
+  const agent = navigator.userAgent;
+  const platform = /android/i.test(agent)
+    ? "android"
+    : /iphone|ipad|ipod/i.test(agent)
+      ? "ios"
+      : /windows|macintosh|linux/i.test(agent)
+        ? "desktop"
+        : "unknown";
+
+  return fetch("/api/installed", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ platform }),
+    keepalive: true,
+  })
+    .then(() => undefined)
+    .catch(() => undefined);
+}
+
 export function useInstallState(): InstallControl {
   const isInstalled = useIsInstalled();
   const isIos = useIsIos();
@@ -99,6 +132,7 @@ export function useInstallState(): InstallControl {
     function clearAfterInstall() {
       setPromptEvent(null);
       setIsGuideOpen(false);
+      void reportInstall();
     }
 
     window.addEventListener("beforeinstallprompt", capture);

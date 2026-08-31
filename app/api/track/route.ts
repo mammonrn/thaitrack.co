@@ -164,6 +164,7 @@ export async function POST(request: Request) {
       source: resolved.source,
       provider: resolved.provider,
       stale: resolved.stale,
+      tookMs: Date.now() - startedAt,
     });
 
     const proofPhotoUrl = await readProofPhoto(trackNo, resolved);
@@ -205,6 +206,11 @@ export async function POST(request: Request) {
       source: "error",
       provider: "none",
       stale: false,
+      // สาเหตุที่แท้จริงต้องอยู่บนหน้าสถิติ ไม่ใช่ต้องไปงมใน pm2 log
+      reason: code,
+      upstreamCode:
+        error instanceof CarrierError ? (error.upstreamCode ?? null) : null,
+      tookMs: Date.now() - startedAt,
     });
 
     if (error instanceof CarrierError) {

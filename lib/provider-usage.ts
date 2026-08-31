@@ -20,19 +20,31 @@ import {
   type ProviderUsageStore,
 } from "./supabase/provider-usage";
 
-/** ผู้ให้บริการที่มีโควตาให้นับ — ไปรษณีย์ไทยไม่อยู่ในนี้เพราะฟรีและไม่จำกัด */
-export type ProviderId = "track123" | "etrackings";
+/**
+ * ผู้ให้บริการที่มีโควตาให้นับ
+ *
+ * ไปรษณีย์ไทยเคยไม่อยู่ในนี้เพราะคิดว่า "ฟรีและไม่จำกัด" แต่บัญชีทั่วไปมีเพดาน
+ * ต่อเดือนอยู่ การไม่นับแปลว่ามันเป็นเจ้าเดียวที่เราไม่รู้เลยว่าใช้ไปเท่าไร
+ * ทั้งที่เป็นเจ้าที่ถูกถามบ่อยที่สุด (ถูกถามก่อนทุกครั้งที่ prefix เดาไม่ออก)
+ */
+export type ProviderId = "thailand-post" | "track123" | "etrackings";
 
-export const PROVIDER_IDS: readonly ProviderId[] = ["track123", "etrackings"];
+export const PROVIDER_IDS: readonly ProviderId[] = [
+  "thailand-post",
+  "track123",
+  "etrackings",
+];
 
 /** ชื่อไทยไว้แสดงในหน้าสถิติ */
 export const PROVIDER_LABEL: Record<ProviderId, string> = {
+  "thailand-post": "ไปรษณีย์ไทย",
   track123: "Track123",
   etrackings: "ETrackings",
 };
 
 /** ชื่อตัวแปร env ของเพดานแต่ละเจ้า */
 export const QUOTA_VARS: Record<ProviderId, string> = {
+  "thailand-post": "THAILAND_POST_MONTHLY_CALL_LIMIT",
   track123: "TRACK123_MONTHLY_CALL_LIMIT",
   etrackings: "ETRACKINGS_MONTHLY_CALL_LIMIT",
 };
@@ -48,6 +60,9 @@ export const QUOTA_VARS: Record<ProviderId, string> = {
  * ทั้งคู่ปรับได้ผ่าน env และ **ควรปรับให้ตรงกับแผนที่ใช้จริง**
  */
 export const DEFAULT_QUOTA: Record<ProviderId, number> = {
+  // 1,000 ชิ้น/เดือนตามที่เข้าใจว่าเป็นเพดานของบัญชีทั่วไป — ตัวเลขนี้ไม่ได้
+  // ยืนยันจากเอกสารทางการ ถ้ารู้เพดานจริงของบัญชีที่ใช้อยู่ ให้ตั้งผ่าน env
+  "thailand-post": 1_000,
   track123: 1_000,
   etrackings: 50,
 };
@@ -73,7 +88,7 @@ interface UsageState {
 }
 
 function emptyCounts(): Record<ProviderId, number> {
-  return { track123: 0, etrackings: 0 };
+  return { "thailand-post": 0, track123: 0, etrackings: 0 };
 }
 
 let state: UsageState = {
@@ -109,9 +124,11 @@ export function readQuota(provider: ProviderId): number {
   // เขียนชื่อตัวแปรเต็มๆ ไม่อ้างแบบไดนามิก เพราะ Next แทนค่า process.env.X
   // ตอน build จากชื่อที่เขียนตรงๆ เท่านั้น (เหตุผลเดียวกับ lib/supabase/env.ts)
   const raw =
-    provider === "track123"
-      ? process.env.TRACK123_MONTHLY_CALL_LIMIT
-      : process.env.ETRACKINGS_MONTHLY_CALL_LIMIT;
+    provider === "thailand-post"
+      ? process.env.THAILAND_POST_MONTHLY_CALL_LIMIT
+      : provider === "track123"
+        ? process.env.TRACK123_MONTHLY_CALL_LIMIT
+        : process.env.ETRACKINGS_MONTHLY_CALL_LIMIT;
 
   return readPositiveNumber(raw, DEFAULT_QUOTA[provider]);
 }

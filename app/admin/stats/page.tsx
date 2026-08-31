@@ -26,6 +26,10 @@ import { requireAdmin } from "@/lib/supabase/admin-guard";
 import { countBranches } from "@/lib/supabase/locations";
 import { listProviderUsage } from "@/lib/supabase/provider-usage";
 import {
+  readErrorBreakdown,
+  readInstallStats,
+  readLatency,
+  readMemberActivity,
   readMemberStats,
   readSearchDaily,
   readSearchOverview,
@@ -42,6 +46,14 @@ const TOP_CARRIER_LIMIT = 8;
 
 /** จำนวนแบบอ่านง่าย เช่น 12,345 */
 const count = (value: number) => value.toLocaleString("th-TH");
+
+/** ชื่อไทยของชั้นที่ตอบคำค้น */
+const SOURCE_LABEL: Record<string, string> = {
+  memory: "cache ใน memory",
+  supabase: "cache ถาวร",
+  api: "ยิงถามขนส่งจริง",
+  error: "ตอบไม่ได้",
+};
 
 /** สัดส่วนเป็นเปอร์เซ็นต์ — "—" เมื่อยังไม่มีข้อมูลให้หาร */
 function percent(part: number, whole: number): string {
@@ -99,16 +111,31 @@ export default async function AdminStatsPage() {
 
   const month = currentMonth();
 
-  const [members, allTime, recent, daily, carriers, branches, usage] =
-    await Promise.all([
-      readMemberStats(),
-      readSearchOverview(0),
-      readSearchOverview(WINDOW_DAYS),
-      readSearchDaily(WINDOW_DAYS),
-      readTopCarriers(WINDOW_DAYS, TOP_CARRIER_LIMIT),
-      countBranches(),
-      listProviderUsage(month),
-    ]);
+  const [
+    members,
+    activity,
+    allTime,
+    recent,
+    daily,
+    carriers,
+    branches,
+    usage,
+    errors,
+    latency,
+    installs,
+  ] = await Promise.all([
+    readMemberStats(),
+    readMemberActivity(),
+    readSearchOverview(0),
+    readSearchOverview(WINDOW_DAYS),
+    readSearchDaily(WINDOW_DAYS),
+    readTopCarriers(WINDOW_DAYS, TOP_CARRIER_LIMIT),
+    countBranches(),
+    listProviderUsage(month),
+    readErrorBreakdown(WINDOW_DAYS),
+    readLatency(WINDOW_DAYS),
+    readInstallStats(),
+  ]);
 
   const answered = recent.found + recent.notFound;
   const cacheable = recent.fromCache + recent.fromApi;
@@ -157,6 +184,41 @@ export default async function AdminStatsPage() {
           </Section>
 
           <Section
+            title="การกลับมาใช้ซ้ำ"
+            note="วัดจากการบันทึกพัสดุ ไม่ใช่การค้นหา — ระบบไม่เก็บว่าใครค้นอะไร ตัวเลขจึงต่ำกว่าความจริงเสมอ"
+          >
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <Tile
+                label="สมาชิกที่บันทึกพัสดุ 7 วัน"
+                value={count(activity.active7d)}
+              />
+              <Tile
+                label="กลับมาสัปดาห์ถัดไป"
+                value={percent(activity.returned, activity.activePrev7d)}
+                hint={`${count(activity.returned)} จาก ${count(activity.activePrev7d)} คน`}
+              />
+              <Tile
+                label="บันทึกเฉลี่ยต่อคน"
+                value={
+                  activity.active7d === 0
+                    ? "—"
+                    : (activity.saves7d / activity.active7d).toFixed(1)
+                }
+                hint={`บันทึกรวม ${count(activity.saves7d)} ครั้ง`}
+              />
+              <Tile
+                label="ค้นหาต่อสมาชิก"
+                value={
+                  members.total === 0
+                    ? "—"
+                    : (recent.total / members.total).toFixed(1)
+                }
+                hint={`${WINDOW_DAYS} วัน · รวมคนที่ไม่ได้ล็อกอินด้วย`}
+              />
+            </div>
+          </Section>
+
+          <Section
             title="การค้นหา"
             note={`ยอดสะสมทั้งหมด ${count(allTime.total)} ครั้ง`}
           >
@@ -185,6 +247,56 @@ export default async function AdminStatsPage() {
                 {count(recent.stale)} ครั้ง
               </p>
             ) : null}
+          </Section>
+
+          <Section
+            title="สาเหตุที่ตอบไม่ได้"
+            note="รวมทั้งที่ค้นไม่เจอและที่ระบบขัดข้อง — ไม่ต้องไปงมใน log อีก"
+          >
+            {errors.length === 0 ? (
+              <Empty>ยังไม่มีคำขอที่ตอบไม่ได้ในช่วงนี้</Empty>
+            ) : (
+              <ul className="flex flex-col gap-1">
+                {errors.map((row) => (
+                  <li
+                    key={`${row.reason}:${row.upstreamCode ?? "-"}`}
+                    className="flex items-center gap-3 border-b border-line py-1.5 last:border-0"
+                  >
+                    <span className="font-mono text-[11px] text-ink">
+                      {row.reason}
+                    </span>
+                    {row.upstreamCode === null ? null : (
+                      <span className="font-mono text-[11px] text-faint">
+                        {row.upstreamCode}
+                      </span>
+                    )}
+                    <span className="ml-auto font-mono text-[11px] text-faint">
+                      {count(row.total)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Section>
+
+          <Section
+            title="ความเร็ว"
+            note="p95 สำคัญกว่า p50 — ค่ากลางบอกว่าปกติเร็วแค่ไหน แต่ที่ผู้ใช้จำได้คือครั้งที่ช้า"
+          >
+            {latency.length === 0 ? (
+              <Empty>ยังไม่มีข้อมูลความเร็ว</Empty>
+            ) : (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                {latency.map((row) => (
+                  <Tile
+                    key={row.source}
+                    label={SOURCE_LABEL[row.source] ?? row.source}
+                    value={`${count(row.p95Ms)} ms`}
+                    hint={`p50 ${count(row.p50Ms)} ms · ${count(row.total)} ครั้ง`}
+                  />
+                ))}
+              </div>
+            )}
           </Section>
 
           <Section title="ค้นหาแยกตามวัน" note="เวลาไทย · วันที่ไม่มีการค้นจะไม่ปรากฏ">
@@ -258,6 +370,21 @@ export default async function AdminStatsPage() {
                   />
                 );
               })}
+            </div>
+          </Section>
+
+          <Section
+            title="ติดตั้งเป็นแอพ"
+            note="นับจากตอนที่เบราว์เซอร์ยืนยันว่าติดตั้งสำเร็จ · ไม่ต้องล็อกอินจึงยิงปลอมได้ ถือเป็น “อย่างมากเท่านี้”"
+          >
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <Tile label="ติดตั้งทั้งหมด" value={count(installs.total)} />
+              <Tile label="30 วันล่าสุด" value={count(installs.last30d)} />
+              <Tile label="Android" value={count(installs.android)} />
+              <Tile
+                label="iOS · เดสก์ท็อป"
+                value={`${count(installs.ios)} · ${count(installs.desktop)}`}
+              />
             </div>
           </Section>
 
