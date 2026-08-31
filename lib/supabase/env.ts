@@ -10,6 +10,7 @@
 /** ชื่อตัวแปรจริงที่ใช้ในไฟล์ .env — ใช้ประกอบข้อความบอกผู้ดูแลระบบว่าต้องเพิ่มอะไร */
 export const SUPABASE_URL_VAR = "NEXT_PUBLIC_SUPABASE_URL";
 export const SUPABASE_ANON_KEY_VAR = "NEXT_PUBLIC_SUPABASE_ANON_KEY";
+export const SUPABASE_SERVICE_ROLE_KEY_VAR = "SUPABASE_SERVICE_ROLE_KEY";
 
 export interface SupabaseEnv {
   url: string;
@@ -65,4 +66,21 @@ export function readSupabaseEnv(): SupabaseEnvResult {
   if (missing.length > 0) return { ok: false, missing };
 
   return { ok: true, env: { url, anonKey } };
+}
+
+/**
+ * อ่าน service role key — คืน "" ถ้ายังไม่ได้ตั้งค่า
+ *
+ * ⚠️ key ตัวนี้ข้าม Row Level Security ได้ทุกตาราง ถือว่าเทียบเท่ารหัสผ่านของ
+ * ฐานข้อมูลทั้งก้อน ใช้ได้เฉพาะฝั่งเซิร์ฟเวอร์เท่านั้น
+ *
+ * ชื่อตัวแปร "ห้าม" ขึ้นต้นด้วย NEXT_PUBLIC_ เพราะ Next ฝังค่าที่ขึ้นต้นแบบนั้น
+ * ลงไฟล์ JS ที่ส่งให้เบราว์เซอร์ตอน build — ใครก็ตามที่เปิดหน้าเว็บจะได้ key
+ * ติดมือไปด้วย ชื่อที่ไม่ขึ้นต้นแบบนั้นจะไม่ถูกฝัง จึงอ่านได้เฉพาะฝั่ง server
+ *
+ * ไม่ throw เมื่อไม่มีค่า เพราะฟีเจอร์ที่ใช้ key นี้ (cache ถาวร) เป็นของเสริม
+ * ที่ขาดได้ ระบบต้องยังทำงานได้ด้วย cache ใน memory อย่างเดียว
+ */
+export function readSupabaseServiceRoleKey(): string {
+  return normalize(process.env.SUPABASE_SERVICE_ROLE_KEY);
 }

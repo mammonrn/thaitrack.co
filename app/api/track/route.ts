@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 
-import { resolveTracking } from "@/lib/carriers/resolve";
+import { normalizeTrackingNumber, resolveTracking } from "@/lib/carriers/resolve";
 import { CarrierError, type TrackingErrorCode } from "@/lib/carriers/types";
+import { logTracking } from "@/lib/track-log";
 
 /** ต้องรันบน Node.js runtime เพราะอ่าน process.env ที่เก็บ API key */
 export const runtime = "nodejs";
@@ -50,17 +51,46 @@ export async function POST(request: Request) {
     return errorResponse("invalid_tracking_number", "กรุณากรอกเลขพัสดุ");
   }
 
+  const startedAt = Date.now();
+  const trackNo = normalizeTrackingNumber(trackingNumber);
+
   try {
-    const { result, fromCache, shared } = await resolveTracking(trackingNumber);
-    // fromCache ไว้ debug ว่าผลนี้มาจาก cache หรือเพิ่งยิง API จริง
-    // shared = ไปเกาะคำขอของเลขเดียวกันที่กำลังรอผลอยู่ ไม่ได้ยิง API เพิ่ม
+    const resolved = await resolveTracking(trackingNumber);
+
+    logTracking({
+      ts: startedAt,
+      trackNo,
+      route: "track",
+      source: resolved.source,
+      stale: resolved.stale,
+      shared: resolved.shared,
+      tookMs: Date.now() - startedAt,
+    });
+
+    // source / stale / fetchedAt ไม่ใช่ข้อมูลลับ — UI ใช้ตัดสินว่าจะขึ้นป้าย
+    // "ข้อมูล ณ เวลานี้" หรือไม่ ส่วน shared ไว้ debug เรื่องการรวมคำขอซ้ำ
     return NextResponse.json({
       ok: true as const,
-      data: result,
-      fromCache,
-      shared,
+      data: resolved.result,
+      source: resolved.source,
+      stale: resolved.stale,
+      fetchedAt: resolved.fetchedAt,
+      shared: resolved.shared,
     });
   } catch (error) {
+    const code = error instanceof CarrierError ? error.code : "upstream_error";
+
+    logTracking({
+      ts: startedAt,
+      trackNo,
+      route: "track",
+      source: "error",
+      stale: false,
+      shared: false,
+      tookMs: Date.now() - startedAt,
+      reason: code,
+    });
+
     if (error instanceof CarrierError) {
       // log รายละเอียดไว้ฝั่ง server เท่านั้น (message อาจมีข้อมูลระบบ) ส่วน client ได้แค่ userMessage
       console.error(`[api/track] ${error.code}: ${error.message}`);

@@ -2,7 +2,7 @@
  * รวมขนส่งหลายเจ้าเข้าด้วยกันแบบ hybrid พร้อม cache
  *
  * ลำดับการทำงาน:
- *   0. เช็ค cache ก่อนเสมอ — ถ้ามีและยังไม่หมดอายุ คืนเลยโดยไม่ยิง API ใดๆ
+ *   0. เช็ค cache ก่อนเสมอ (memory → Supabase) ถ้ามีและยังไม่หมดอายุ คืนเลย
  *   0.5 เลขเดียวกันที่กำลังรอผลอยู่ ให้เกาะคำขอเดิมแทนที่จะยิงซ้ำ
  *   1. ดู prefix ของเลขก่อน แล้วแยกเป็นสองทาง
  *      1ก. prefix ฟันธงว่าเป็นขนส่งเจ้าอื่น (เช่น SPXTH → Shopee Xpress)
@@ -19,18 +19,28 @@
  * เก็บลง cache เฉพาะผลที่ค้นเจอ — ไม่ cache error เพราะพัสดุที่วันนี้ยังไม่พบ
  * พรุ่งนี้อาจเข้าระบบแล้ว
  *
+ * ถ้ายิง API ไม่สำเร็จเพราะระบบมีปัญหา (ขนส่งล่ม, โควตาหมด, ชนลิมิตจนเอาไม่อยู่)
+ * แต่มีข้อมูลเก่าค้างอยู่ใน cache จะคืนข้อมูลเก่านั้นพร้อมธง stale แทนการโยน
+ * error — ผู้ใช้ต้องได้คำตอบพร้อมป้ายบอกว่าเป็นข้อมูล ณ เวลาใด ไม่ใช่หน้าจอ error
+ *
  * แยกออกมาจาก API route เพื่อให้ทดสอบได้โดยไม่ต้องเปิดเซิร์ฟเวอร์
  * (pattern เดียวกับที่แยก lib/tracking-view.ts ออกจาก page.tsx)
  */
 
-import { getCached, setCached } from "../cache";
 import { InflightMap } from "../inflight";
+import type { PersistentTrackingCache } from "../supabase/tracking-cache";
+import {
+  lookupTracking,
+  rememberTracking,
+  type CacheSource,
+} from "../tracking-cache";
 import { courierFromPrefix } from "./courier-prefix";
 import { thailandPost } from "./thailand-post";
 import { track123 } from "./track123";
 import {
   CarrierError,
   type CarrierAdapter,
+  type TrackingErrorCode,
   type TrackingResult,
 } from "./types";
 
@@ -61,12 +71,25 @@ export interface ResolveOptions {
   fallback?: CarrierAdapter;
   /** true = ข้าม cache แล้วยิง API สดๆ (ยังบันทึกผลลง cache ตามปกติ) */
   skipCache?: boolean;
+  /** ชั้น cache ถาวร (ค่าเริ่มต้น: ตาราง tracking_cache ใน Supabase) */
+  persistentCache?: PersistentTrackingCache;
 }
+
+/** ชั้นที่ตอบคำค้นนี้ — "api" คือยิงถามขนส่งจริง */
+export type ResolveSource = CacheSource | "api";
 
 export interface ResolvedTracking {
   result: TrackingResult;
-  /** true = ได้จาก cache, false = เพิ่งยิง API จริง — ไว้ debug */
-  fromCache: boolean;
+  /** ชั้นที่ตอบคำค้นนี้ — ไว้นับ cache hit rate จาก log */
+  source: ResolveSource;
+  /**
+   * true = ข้อมูลหมดอายุแล้ว แต่ถูกใช้เป็นคำตอบสำรองเพราะยิง API ไม่สำเร็จ
+   *
+   * UI ต้องขึ้นป้ายบอกผู้ใช้ว่าเป็นข้อมูล ณ เวลาใดเมื่อค่านี้เป็น true
+   */
+  stale: boolean;
+  /** เวลาที่ดึงข้อมูลชุดนี้มาจากขนส่ง (ISO 8601) — null เมื่อเพิ่งยิงสดๆ */
+  fetchedAt: string | null;
   /**
    * true = ไปเกาะคำขอของเลขเดียวกันที่กำลังรอผลอยู่ ไม่ได้ยิง API เพิ่ม
    *
@@ -75,17 +98,34 @@ export interface ResolvedTracking {
   shared: boolean;
 }
 
+/**
+ * สาเหตุที่ยอมคืนข้อมูลเก่าแทนการโยน error
+ *
+ * ทั้งหมดคือ "ฝั่งระบบมีปัญหา" ไม่ใช่คำตอบที่แท้จริงเกี่ยวกับพัสดุ ตั้งใจไม่รวม
+ * not_found กับ invalid_tracking_number เพราะสองอันนั้นเป็นคำตอบจริงที่ผู้ใช้
+ * ต้องได้เห็น การเอาข้อมูลเก่ามาบังไว้จะทำให้พัสดุที่หลุดออกจากระบบขนส่งไปแล้ว
+ * ดูเหมือนยังตามได้อยู่ตลอดกาล
+ */
+const DEGRADE_ON: ReadonlySet<TrackingErrorCode> = new Set([
+  "rate_limited",
+  "network_error",
+  "upstream_error",
+  "auth_failed",
+  "config_error",
+]);
+
 /** ตัดช่องว่างกับขีด และทำเป็นตัวพิมพ์ใหญ่ ใช้เป็นรูปแบบมาตรฐานของทั้งระบบ */
 export function normalizeTrackingNumber(input: string): string {
   return (input ?? "").replace(/[\s-]/g, "").toUpperCase();
 }
 
-/** บันทึกผลที่เพิ่งยิงมาได้ลง cache แล้วส่งต่อ */
-function store(
+/** บันทึกผลที่เพิ่งยิงมาได้ลง cache ทั้งสองชั้น แล้วส่งต่อ */
+async function store(
   trackingNumber: string,
   result: TrackingResult,
-): TrackingResult {
-  setCached(trackingNumber, result);
+  cache: PersistentTrackingCache | undefined,
+): Promise<TrackingResult> {
+  await rememberTracking(trackingNumber, result, cache);
   return result;
 }
 
@@ -188,6 +228,7 @@ async function resolveFresh(
   normalized: string,
   primary: CarrierAdapter,
   fallback: CarrierAdapter,
+  cache: PersistentTrackingCache | undefined,
 ): Promise<TrackingResult> {
   // เจ้าที่ยิงไปแล้ว ไว้กันไม่ให้ขั้นถัดไปถามซ้ำคำถามเดิม และไว้อธิบายใน log
   const tried: string[] = [];
@@ -197,7 +238,7 @@ async function resolveFresh(
     // prefix ไม่ฟันธงว่าเป็นเจ้าไหน → ลำดับเดิม ถามไปรษณีย์ไทยก่อนเพราะฟรี
     // และไม่จำกัดจำนวนครั้ง จะได้ไม่ไปแตะ quota ของ Track123 โดยไม่จำเป็น
     const fromPrimary = await attempt(() => primary.track(normalized));
-    if (fromPrimary !== null) return store(normalized, fromPrimary);
+    if (fromPrimary !== null) return store(normalized, fromPrimary, cache);
   } else {
     // prefix ฟันธงว่าเป็นขนส่งเจ้าอื่น → ข้ามไปรษณีย์ไทยไปเลย
     //
@@ -208,20 +249,20 @@ async function resolveFresh(
     tried.push(shortcut.courierCode);
 
     const byPrefix = await attempt(shortcut.track);
-    if (byPrefix !== null) return store(normalized, byPrefix);
+    if (byPrefix !== null) return store(normalized, byPrefix, cache);
   }
 
   // ยังไม่เจอ → ให้ Track123 ตรวจจับขนส่งเอง
   // ยังต้องลองขั้นนี้แม้ prefix จะพลาด เพราะพัสดุข้ามประเทศอาจเปลี่ยนมือไปให้
   // ขนส่งเจ้าอื่นเดินช่วงสุดท้าย ซึ่ง prefix ต้นทางบอกไม่ได้
   const autoDetected = await attempt(() => fallback.track(normalized));
-  if (autoDetected !== null) return store(normalized, autoDetected);
+  if (autoDetected !== null) return store(normalized, autoDetected, cache);
 
   // ขั้นสุดท้าย — การตรวจจับขนส่งอัตโนมัติเดาผิดได้ เช่นเลขของ Shopee Xpress
   // ที่ถูกเดาเป็น Flash Express แล้วตอบว่าไม่พบทั้งที่พัสดุมีอยู่จริง
   // จึงลองยิงซ้ำโดยระบุขนส่งเจาะจงจากรายชื่อที่รู้ว่ามีปัญหา
   const retried = await retryWithCourierCodes(normalized, fallback, tried);
-  if (retried.result !== null) return store(normalized, retried.result);
+  if (retried.result !== null) return store(normalized, retried.result, cache);
 
   tried.push(...retried.codes);
 
@@ -263,23 +304,50 @@ export async function resolveTracking(
     );
   }
 
-  if (!options.skipCache) {
-    const cached = getCached(normalized);
-    if (cached) {
-      return { result: cached.result, fromCache: true, shared: false };
-    }
+  // อ่าน cache ครั้งเดียวได้ทั้งของสด (คืนเลย) และของเก่า (เก็บไว้เป็นคำตอบ
+  // สำรองเผื่อยิง API ไม่สำเร็จ) จะได้ไม่ต้องวิ่งไปถาม Supabase อีกรอบขาล้มเหลว
+  const cached = options.skipCache
+    ? null
+    : await lookupTracking(normalized, options.persistentCache);
+
+  if (cached !== null && !cached.stale) {
+    return {
+      result: cached.entry.result,
+      source: cached.source,
+      stale: false,
+      fetchedAt: new Date(cached.entry.fetchedAt).toISOString(),
+      shared: false,
+    };
   }
 
   // เลขเดียวกันที่กำลังรอผลอยู่ให้เกาะคำขอเดิม — cache ช่วยตรงนี้ไม่ได้ เพราะผล
   // ยังไม่ถูกบันทึกจนกว่าคำขอแรกจะเสร็จ ช่วงที่คำขอแรกกำลังบินคือช่องว่างที่
   // คนกดปุ่มรัวหรือคนละคนที่ค้นเลขเดียวกันจะหลุดออกไปยิงซ้ำได้
   const run = inflightResolves.start(normalized, () =>
-    resolveFresh(normalized, primary, fallback),
+    resolveFresh(normalized, primary, fallback, options.persistentCache),
   );
 
-  return {
-    result: await run.promise,
-    fromCache: false,
-    shared: run.joined,
-  };
+  try {
+    return {
+      result: await run.promise,
+      source: "api",
+      stale: false,
+      fetchedAt: null,
+      shared: run.joined,
+    };
+  } catch (error) {
+    const carrierError = toCarrierError(error);
+
+    // ระบบมีปัญหา แต่เรามีของเก่าอยู่ → คืนของเก่าพร้อมธง stale
+    // ผู้ใช้ได้คำตอบพร้อมป้ายบอกเวลา ดีกว่าหน้าจอ error ที่ทำอะไรต่อไม่ได้เลย
+    if (cached === null || !DEGRADE_ON.has(carrierError.code)) throw carrierError;
+
+    return {
+      result: cached.entry.result,
+      source: cached.source,
+      stale: true,
+      fetchedAt: new Date(cached.entry.fetchedAt).toISOString(),
+      shared: run.joined,
+    };
+  }
 }
