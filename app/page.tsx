@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 
 import AuthButton from "./auth-button";
@@ -9,6 +9,7 @@ import ScanButton from "./scan-button";
 import SaveTrackingButton from "./save-tracking-button";
 
 import type { TrackingResult, TrackingStatus } from "@/lib/carriers/types";
+import type { SavedTracking } from "@/lib/saved-trackings";
 import { translateStatusText } from "@/lib/status-th";
 import { groupEventsByLocation } from "@/lib/timeline-groups";
 import {
@@ -55,6 +56,17 @@ export default function Home() {
   // รอนานเกินปกติ = คำขอน่าจะติดคิวฝั่งเซิร์ฟเวอร์อยู่ (หรือกำลังถูกลองใหม่ให้)
   // ยังไม่ใช่ความล้มเหลว จึงแค่เปลี่ยนถ้อยคำระหว่างรอ ไม่ขึ้นเป็น error
   const [isQueued, setIsQueued] = useState(false);
+  /**
+   * ชื่อเล่นที่ผู้ใช้ตั้งไว้ให้พัสดุชิ้นนี้ — "" เมื่อยังไม่ได้ตั้งหรือยังไม่ล็อกอิน
+   *
+   * ปุ่มบันทึกเป็นคนถามฝั่งเซิร์ฟเวอร์ว่าเลขนี้เคยบันทึกไว้ไหมอยู่แล้ว
+   * (มันต้องรู้เพื่อขึ้นปุ่มให้ถูก) จึงรับค่ามาจากตรงนั้นแทนที่จะถามซ้ำเอง
+   */
+  const [savedNickname, setSavedNickname] = useState("");
+
+  const handleSavedChange = useCallback((saved: SavedTracking | null) => {
+    setSavedNickname(saved?.nickname?.trim() ?? "");
+  }, []);
 
   // ตั้งนาฬิกาไว้เฉยๆ แล้วปล่อยให้ callback เป็นคนเปลี่ยน state
   // การรีเซ็ตกลับเป็น false ทำตอนเริ่มค้นหารอบใหม่แทน ไม่ทำในนี้ เพราะ setState
@@ -290,13 +302,34 @@ export default function Home() {
                 </div>
 
                 <div className="order-2 ml-auto sm:order-3 sm:ml-0">
-                  <SaveTrackingButton trackingNumber={result.trackingNumber} />
+                  <SaveTrackingButton
+                    trackingNumber={result.trackingNumber}
+                    onSavedChange={handleSavedChange}
+                  />
                 </div>
 
                 <div className="order-3 min-w-0 basis-full sm:order-2 sm:flex-1 sm:basis-auto">
-                  <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-faint sm:text-xs">
-                    {result.trackingNumber}
-                  </p>
+                  {/* ชื่อที่ผู้ใช้ตั้งเองมีความหมายกับเขามากกว่าเลข 15 หลัก
+                      จึงขึ้นก่อน แล้วลดเลขพัสดุเป็นบรรทัดรอง — ลำดับเดียวกับ
+                      การ์ดในหน้าประวัติ จะได้เป็นของสิ่งเดียวกันในสายตาผู้ใช้
+
+                      แต่ยังเล็กกว่าข้อความสถานะอยู่หนึ่งขั้น เพราะคำถามที่หน้า
+                      นี้ต้องตอบให้เร็วที่สุดคือ "พัสดุถึงไหนแล้ว" ไม่ใช่
+                      "พัสดุชิ้นไหน" (ดู DESIGN.md) */}
+                  {savedNickname === "" ? (
+                    <h2 className="font-mono text-[11px] uppercase tracking-[0.12em] text-faint sm:text-xs">
+                      {result.trackingNumber}
+                    </h2>
+                  ) : (
+                    <>
+                      <h2 className="font-display text-base font-semibold leading-snug text-ink sm:text-lg">
+                        {savedNickname}
+                      </h2>
+                      <p className="mt-0.5 font-mono text-[11px] uppercase tracking-[0.12em] text-faint sm:text-xs">
+                        {result.trackingNumber}
+                      </p>
+                    </>
+                  )}
                   <p
                     className={`mt-1 font-display text-xl font-semibold leading-snug sm:text-2xl ${STATUS_TEXT_CLASS[result.status]}`}
                   >

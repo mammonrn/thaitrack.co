@@ -16,6 +16,15 @@ import SignInPromptDialog from "./sign-in-prompt-dialog";
 
 interface SaveTrackingButtonProps {
   trackingNumber: string;
+  /**
+   * รายการที่บันทึกไว้ของเลขนี้เปลี่ยน — null คือยังไม่ได้บันทึก
+   *
+   * ปุ่มนี้เป็นที่เดียวที่รู้ว่าเลขนี้ถูกบันทึกไว้หรือยัง (มันเป็นคนถามเอง)
+   * หัวการ์ดต้องใช้ชื่อเล่นจากตรงนี้ด้วย จึงส่งขึ้นไปให้แทนที่จะให้พ่อถามซ้ำ
+   *
+   * ต้องเป็นฟังก์ชันที่ identity คงที่ (useCallback) ไม่งั้น effect จะวนไม่จบ
+   */
+  onSavedChange?: (saved: SavedTracking | null) => void;
 }
 
 function BookmarkIcon({ filled }: { filled: boolean }) {
@@ -46,15 +55,32 @@ function BookmarkIcon({ filled }: { filled: boolean }) {
  */
 export default function SaveTrackingButton({
   trackingNumber,
+  onSavedChange,
 }: SaveTrackingButtonProps) {
   const { user } = useSessionUser();
 
-  const [saved, setSaved] = useState<SavedTracking | null>(null);
+  /**
+   * ผลการถามว่าเลขนี้เคยบันทึกไว้ไหม ผูกไว้กับเลขที่ถามด้วยเสมอ
+   *
+   * ผูกคู่กันเพราะ props เปลี่ยนเป็นเลขใหม่ได้ก่อนที่คำตอบของเลขนั้นจะกลับมา
+   * ถ้าเก็บแต่ผลลัพธ์เดี่ยวๆ ช่วงนั้นปุ่มจะขึ้น "บันทึกแล้ว" และหัวการ์ดจะขึ้น
+   * ชื่อเล่นของพัสดุคนละชิ้น การเทียบเลขตอน render ทำให้ของเก่าใช้ไม่ได้ทันที
+   * โดยไม่ต้อง setState ใน effect (ซึ่งทำให้เกิด cascading render)
+   */
+  const [loaded, setLoaded] = useState<{
+    trackingNumber: string;
+    saved: SavedTracking | null;
+  } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isSignInOpen, setIsSignInOpen] = useState(false);
   const [toastTitle, setToastTitle] = useState<string | null>(null);
   const [error, setError] = useState<UserFacingError | null>(null);
+
+  const saved =
+    loaded !== null && loaded.trackingNumber === trackingNumber
+      ? loaded.saved
+      : null;
 
   // ถามว่าเลขนี้เคยบันทึกไว้แล้วหรือยัง เพื่อขึ้นปุ่มให้ตรงตั้งแต่แรกเห็น
   useEffect(() => {
@@ -64,7 +90,7 @@ export default function SaveTrackingButton({
 
     async function load() {
       const existing = await findSavedTracking(trackingNumber);
-      if (isActive) setSaved(existing);
+      if (isActive) setLoaded({ trackingNumber, saved: existing });
     }
 
     void load();
@@ -73,6 +99,11 @@ export default function SaveTrackingButton({
       isActive = false;
     };
   }, [trackingNumber, user]);
+
+  // ส่งต่อทุกครั้งที่เปลี่ยน ครอบทั้งตอนโหลดครั้งแรกและตอนเพิ่งกดบันทึก
+  useEffect(() => {
+    onSavedChange?.(saved);
+  }, [saved, onSavedChange]);
 
   const handleConfirm = useCallback(
     async (nickname: string) => {
@@ -83,7 +114,7 @@ export default function SaveTrackingButton({
       const outcome = await saveTracking(trackingNumber, nickname);
 
       if (outcome.ok) {
-        setSaved(outcome.saved);
+        setLoaded({ trackingNumber, saved: outcome.saved });
         setToastTitle(displayTitleOf(outcome.saved));
       } else {
         setError(outcome.error);

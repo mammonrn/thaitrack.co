@@ -5,6 +5,7 @@ import Link from "next/link";
 
 import type { TrackingStatus } from "@/lib/carriers/types";
 import {
+  LOCATION_ACCURACY_NOTICE,
   deleteSavedTracking,
   displayTitleOf,
   type SavedTracking,
@@ -79,11 +80,13 @@ export default function HistoryList({ items }: HistoryListProps) {
           // (ดู lib/location-resolve.ts) แสดงชื่อสถานที่เป็นข้อความแทน
           const showMap = item.lastLat !== null && item.lastLng !== null;
 
-          // พิกัดระดับตำบล/หมู่บ้าน — ปักหมุดได้ แต่ต้องบอกตรงๆ ว่าไม่ใช่จุดเป๊ะ
-          // ไม่งั้นหมุดจะสื่อความแม่นยำที่เราไม่มี ซึ่งคือปัญหาเดิมที่ทั้งระบบ
-          // พิกัดสาขาตั้งใจแก้ (ดู lib/geocode.ts) · null = แถวเก่าที่บันทึกก่อน
-          // มีคอลัมน์นี้ ไม่ขึ้นป้าย เพราะเราไม่รู้จริงๆ ว่าแม่นแค่ไหน
-          const approximate = item.lastLocationAccuracy === "approximate";
+          // หมุดที่ไม่แม่นต้องบอกตรงๆ ว่าคลาดเคลื่อนได้เท่าไร ไม่งั้นมันจะสื่อ
+          // ความแม่นยำที่เราไม่มี ซึ่งคือปัญหาเดิมที่ทั้งระบบพิกัดสาขาตั้งใจแก้
+          // (ดู lib/geocode.ts) · null = แถวเก่าที่บันทึกก่อนมีคอลัมน์นี้
+          // ไม่ขึ้นป้าย เพราะเราไม่รู้จริงๆ ว่าแม่นแค่ไหน
+          const accuracy = item.lastLocationAccuracy;
+          const accuracyNotice =
+            accuracy === null ? null : LOCATION_ACCURACY_NOTICE[accuracy];
 
           return (
             <li
@@ -136,13 +139,13 @@ export default function HistoryList({ items }: HistoryListProps) {
                       มาแปลงซ้ำมีแต่จะเพิ่มงานฝั่งเซิร์ฟเวอร์เปล่าๆ */}
                   <img
                     src={`/api/map?lat=${item.lastLat}&lng=${item.lastLng}${
-                      approximate ? "&accuracy=approximate" : ""
+                      accuracy === null ? "" : `&accuracy=${accuracy}`
                     }`}
                     alt={
                       (item.lastLocationText === null
                         ? `แผนที่ตำแหน่งล่าสุดของ ${displayTitleOf(item)}`
                         : `แผนที่แสดงตำแหน่งของ ${displayTitleOf(item)} ที่ ${item.lastLocationText}`) +
-                      (approximate ? " (ตำแหน่งโดยประมาณ)" : "")
+                      (accuracyNotice === null ? "" : ` (${accuracyNotice})`)
                     }
                     loading="lazy"
                     width={640}
@@ -150,13 +153,13 @@ export default function HistoryList({ items }: HistoryListProps) {
                     className="block h-44 w-full object-cover sm:h-52"
                   />
 
-                  {approximate && (
+                  {accuracyNotice !== null && (
                     /* ป้ายนี้ไม่ใช่ของประดับ — มันคือความต่างระหว่าง "บอกว่า
                        พัสดุอยู่ตรงนี้" กับ "บอกว่าพัสดุอยู่แถวนี้" ซึ่งเป็น
-                       สิ่งเดียวที่เรารู้จริงเมื่อพิกัดมาจากระดับตำบล */
+                       สิ่งเดียวที่เรารู้จริงเมื่อพิกัดไม่ได้มาจากจุดที่ยืนยันแล้ว */
                     <p className="flex items-start gap-2 border-t border-line px-5 py-2.5 text-xs text-faint">
                       <PlaceMark className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                      ตำแหน่งโดยประมาณระดับตำบล ไม่ใช่จุดที่ตั้งที่แน่นอน
+                      {accuracyNotice}
                     </p>
                   )}
                 </div>

@@ -188,21 +188,35 @@ test("ที่อยู่ที่หาพิกัดได้แม่น �
   assert.equal(branch?.accuracy, "exact");
 });
 
-test("พิกัดระดับตำบล → บันทึกได้ แต่ติดชั้น approximate ไว้", async () => {
-  // เกณฑ์เดิมรับเฉพาะ ROOFTOP ซึ่งที่อยู่ไทยไม่เคยได้เลย การเก็บพิกัดสาขาจึง
-  // ตายสนิท ตอนนี้รับระดับตำบลได้ แต่ต้องติดชั้นไว้ให้ UI ขึ้นป้ายบอกผู้ใช้
+test("ที่อยู่ไทยเต็มยศ (8.3 กม. จากของจริง) → บันทึกได้ ติดชั้น coarse", async () => {
+  // เกณฑ์เดิม 5 กม. ทำให้ค่านี้ตกทุกครั้ง การเก็บพิกัดสาขาจึงไม่เคยทำงานเลย
+  // ตอนนี้รับได้ แต่ต้องติดชั้นไว้ให้ UI บอกผู้ใช้ว่าคลาดเคลื่อนได้หลายกิโล
   const store = makeStore();
 
   const saved = await harvestBranchCoordinates(makeResult([branchEvent()]), {
     store,
-    geocode: makeGeocoder(3_000).geocode,
+    geocode: makeGeocoder(8_299).geocode,
   });
 
   assert.equal(saved, 1);
-  assert.equal(store.branches.get(`${CARRIER}::ACRAI-B`)?.accuracy, "approximate");
+  assert.equal(store.branches.get(`${CARRIER}::ACRAI-B`)?.accuracy, "coarse");
 });
 
-test("พิกัดระดับอำเภอ → ห้ามเขียนลงตารางสาขาเด็ดขาด", async () => {
+test("คลาดเคลื่อนราวหนึ่งกิโล → ติดชั้น approximate", async () => {
+  const store = makeStore();
+
+  await harvestBranchCoordinates(makeResult([branchEvent()]), {
+    store,
+    geocode: makeGeocoder(900).geocode,
+  });
+
+  assert.equal(
+    store.branches.get(`${CARRIER}::ACRAI-B`)?.accuracy,
+    "approximate",
+  );
+});
+
+test("กว้างเกินเพดาน → ห้ามเขียนลงตารางสาขาเด็ดขาด", async () => {
   // นี่คือหน้าตาของบั๊กเดิม: Google เดาจากคำที่พอเดาได้แล้วคืนหมุดกลางอำเภอ
   const store = makeStore();
 
