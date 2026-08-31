@@ -53,6 +53,13 @@ export default function Home() {
   const [error, setError] = useState<UserFacingError | null>(null);
   // มีค่าเมื่อผลที่แสดงอยู่เป็นข้อมูลเก่าจาก cache เพราะระบบขนส่งไม่ตอบ
   const [staleSince, setStaleSince] = useState<string | null>(null);
+  /**
+   * รูปถ่ายตอนนำจ่าย — มีค่าเฉพาะเมื่อเซิร์ฟเวอร์ตัดสินว่าผู้ใช้คนนี้มีสิทธิ์เห็น
+   *
+   * ฝั่ง client ไม่ได้ตรวจสิทธิ์อะไรเลยและไม่ควรตรวจ — ถ้าไม่มีสิทธิ์ URL จะไม่
+   * ถูกส่งมาตั้งแต่แรก ไม่ใช่ส่งมาแล้วซ่อน (ดู app/api/track/route.ts)
+   */
+  const [proofPhotoUrl, setProofPhotoUrl] = useState<string | null>(null);
   // รอนานเกินปกติ = คำขอน่าจะติดคิวฝั่งเซิร์ฟเวอร์อยู่ (หรือกำลังถูกลองใหม่ให้)
   // ยังไม่ใช่ความล้มเหลว จึงแค่เปลี่ยนถ้อยคำระหว่างรอ ไม่ขึ้นเป็น error
   const [isQueued, setIsQueued] = useState(false);
@@ -82,6 +89,7 @@ export default function Home() {
     if (outcome.ok) {
       setResult(outcome.result);
       setStaleSince(outcome.staleSince);
+      setProofPhotoUrl(outcome.proofPhotoUrl);
     } else {
       setError(outcome.error);
     }
@@ -100,6 +108,7 @@ export default function Home() {
     setResult(null);
     setError(null);
     setStaleSince(null);
+    setProofPhotoUrl(null);
 
     applyOutcome(await requestTracking(value));
     setIsLoading(false);
@@ -120,6 +129,7 @@ export default function Home() {
     setResult(null);
     setError(null);
     setStaleSince(null);
+    setProofPhotoUrl(null);
 
     applyOutcome(await requestTracking(trackingNumber));
     setIsLoading(false);
@@ -347,8 +357,9 @@ export default function Home() {
                   วางคั่นระหว่างหัวการ์ดกับไทม์ไลน์ เพราะเป็นข้อมูลของ "พัสดุชิ้นนี้"
                   ไม่ใช่ของเหตุการณ์ใดเหตุการณ์หนึ่ง
 
-                  ไม่มีชื่อผู้รับหรือผู้เซ็นรับในนี้โดยตั้งใจ — ใครที่เห็นเลขพัสดุ
-                  ก็ค้นได้โดยไม่ต้องพิสูจน์ตัวตน (ดู ShipmentDetails) */}
+                  ชื่อผู้รับกับผู้เซ็นรับที่อยู่ในนี้ถูกปิดบังบางส่วนมาตั้งแต่ adapter
+                  แล้ว (ดู lib/mask-name.ts) เพราะใครที่เห็นเลขพัสดุก็ค้นได้โดย
+                  ไม่ต้องพิสูจน์ตัวตน ค่าเต็มจึงไม่เคยเดินทางมาถึงเบราว์เซอร์ */}
               {shipmentFacts.length > 0 && (
                 <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-line bg-paper/60 px-5 py-4 sm:grid-cols-3 sm:px-6">
                   {shipmentFacts.map((fact) => (
@@ -362,6 +373,32 @@ export default function Home() {
                     </div>
                   ))}
                 </dl>
+              )}
+
+              {/* รูปถ่ายตอนนำจ่าย — เห็นเฉพาะคนที่บันทึกพัสดุนี้ไว้ก่อนของถึงมือ
+                  (ดู lib/proof-access.ts) เซิร์ฟเวอร์เป็นคนตัดสินสิทธิ์และไม่ส่ง
+                  URL มาให้เลยถ้าไม่ผ่านเกณฑ์ ตรงนี้จึงไม่มีเงื่อนไขเรื่องสิทธิ์
+                  ให้ตรวจซ้ำ — มี URL = มีสิทธิ์ */}
+              {proofPhotoUrl !== null && (
+                <div className="border-t border-line bg-paper/60 p-5 sm:p-6">
+                  <h3 className="font-display text-sm font-semibold text-ink">
+                    รูปถ่ายตอนนำจ่าย
+                  </h3>
+                  <p className="mt-1 text-xs leading-relaxed text-faint">
+                    เห็นได้เฉพาะคุณ เพราะบันทึกพัสดุชิ้นนี้ไว้ก่อนของถึงมือผู้รับ
+                  </p>
+
+                  {/* eslint-disable-next-line @next/next/no-img-element --
+                      รูปมาจากเซิร์ฟเวอร์ของขนส่ง next/image จะต้องตั้ง
+                      remotePatterns ให้ทุกเจ้าที่รองรับ ซึ่งเปลี่ยนได้ตลอด
+                      และไม่ได้ช่วยอะไรกับรูปที่แสดงครั้งเดียว */}
+                  <img
+                    src={proofPhotoUrl}
+                    alt="รูปถ่ายที่ขนส่งบันทึกไว้ตอนนำจ่ายพัสดุชิ้นนี้"
+                    loading="lazy"
+                    className="mt-3 block max-h-96 w-full rounded-xl border border-line object-contain"
+                  />
+                </div>
               )}
 
               {/* ไทม์ไลน์ — จัดกลุ่มตามสถานที่ ให้กวาดตาหาว่า "ตอนนี้อยู่ไหน" ได้เร็ว

@@ -1,9 +1,17 @@
 import { NextResponse } from "next/server";
 
 import { normalizeTrackingNumber, resolveTracking } from "@/lib/carriers/resolve";
-import { CarrierError, type TrackingErrorCode } from "@/lib/carriers/types";
+import {
+  CarrierError,
+  type TrackingErrorCode,
+  type TrackingResult,
+} from "@/lib/carriers/types";
+import { canRevealProof } from "@/lib/proof-access";
+import { SupabaseConfigError } from "@/lib/supabase/env";
 import { recordSearchEvent } from "@/lib/supabase/search-events";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { logTracking } from "@/lib/track-log";
+import { withoutSensitive } from "@/lib/tracking-cache";
 
 /** ต้องรันบน Node.js runtime เพราะอ่าน process.env ที่เก็บ API key */
 export const runtime = "nodejs";
@@ -18,6 +26,85 @@ const ERROR_HTTP_STATUS: Record<TrackingErrorCode, number> = {
   upstream_error: 502,
   config_error: 500,
 };
+
+/**
+ * เวลาที่ผู้ใช้คนนี้กดบันทึกเลขนี้ไว้ — null เมื่อยังไม่ล็อกอินหรือไม่เคยบันทึก
+ *
+ * ใช้ session ของผู้ใช้จริง ไม่ใช่ service role — RLS ของ saved_trackings จึง
+ * กรองให้เหลือแต่แถวของเจ้าตัวโดยอัตโนมัติ ต่อให้มีคนแก้ query ผิดในอนาคต
+ * ก็ยังอ่านของคนอื่นไม่ได้
+ *
+ * ห้ามโยน error — สิทธิ์ดูรูปเป็นของเสริม พังแล้วต้องกลายเป็น "ไม่มีสิทธิ์"
+ * ไม่ใช่ทำให้การค้นหาทั้งครั้งล้ม
+ */
+async function readSavedAt(trackingNumber: string): Promise<string | null> {
+  try {
+    const supabase = await createServerSupabaseClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (user === null) return null;
+
+    const { data, error } = await supabase
+      .from("saved_trackings")
+      .select("created_at")
+      .eq("tracking_number", trackingNumber)
+      .maybeSingle();
+
+    if (error !== null) {
+      console.warn(`[api/track] อ่านเวลาที่บันทึกไม่สำเร็จ: ${error.message}`);
+      return null;
+    }
+    return typeof data?.created_at === "string" ? data.created_at : null;
+  } catch (cause) {
+    if (!(cause instanceof SupabaseConfigError)) {
+      console.warn(
+        `[api/track] ตรวจสิทธิ์ดูรูปไม่สำเร็จ: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+    return null;
+  }
+}
+
+/**
+ * หา URL รูปถ่ายตอนนำจ่ายให้คนที่มีสิทธิ์ — null เมื่อไม่มีสิทธิ์หรือไม่มีรูป
+ *
+ * ตรวจสถานะก่อนทุกอย่างโดยตั้งใจ: พัสดุที่ยังไม่ถึงมือไม่มีรูปอยู่แล้ว การ
+ * ลัดออกตรงนี้ทำให้การค้นหาส่วนใหญ่ไม่ต้องแตะ Supabase auth เลยสักครั้ง
+ *
+ * ⚠️ ข้อมูลอ่อนไหวไม่เคยอยู่ใน cache (ดู rememberTracking) ผลที่มาจาก cache จึง
+ * ไม่มี URL ติดมาด้วย ต้องยิงสดใหม่ ซึ่งยอมจ่ายเพราะเกิดเฉพาะกับคนที่มีสิทธิ์
+ * และเฉพาะพัสดุที่ถึงมือแล้ว (ซึ่งเป็นสถานะสุดท้าย ไม่มีใครเปิดดูบ่อย)
+ */
+async function readProofPhoto(
+  trackingNumber: string,
+  resolved: { result: TrackingResult; source: string },
+): Promise<string | null> {
+  if (resolved.result.status !== "delivered") return null;
+
+  const savedAt = await readSavedAt(trackingNumber);
+  const allowed = canRevealProof({
+    status: resolved.result.status,
+    lastUpdated: resolved.result.lastUpdated,
+    savedAt,
+  });
+  if (!allowed) return null;
+
+  if (resolved.source === "api") {
+    return resolved.result.sensitive?.proofPhotoUrl ?? null;
+  }
+
+  try {
+    const fresh = await resolveTracking(trackingNumber, { skipCache: true });
+    return fresh.result.sensitive?.proofPhotoUrl ?? null;
+  } catch (cause) {
+    console.warn(
+      `[api/track] ดึงรูปนำจ่ายไม่สำเร็จ: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+    return null;
+  }
+}
 
 function errorResponse(code: TrackingErrorCode, message: string) {
   return NextResponse.json(
@@ -77,17 +164,26 @@ export async function POST(request: Request) {
       source: resolved.source,
       provider: resolved.provider,
       stale: resolved.stale,
+      tookMs: Date.now() - startedAt,
     });
+
+    const proofPhotoUrl = await readProofPhoto(trackNo, resolved);
 
     // source / stale / fetchedAt ไม่ใช่ข้อมูลลับ — UI ใช้ตัดสินว่าจะขึ้นป้าย
     // "ข้อมูล ณ เวลานี้" หรือไม่ ส่วน shared ไว้ debug เรื่องการรวมคำขอซ้ำ
     return NextResponse.json({
       ok: true as const,
-      data: resolved.result,
+      // ตัดข้อมูลอ่อนไหวออกจาก data เสมอ ไม่ว่าผู้ขอจะมีสิทธิ์แค่ไหน — สิ่งที่
+      // มีสิทธิ์เห็นถูกส่งไปเป็นฟิลด์แยกข้างล่าง จะได้ไม่มีทางที่ของอ่อนไหว
+      // ติดไปกับก้อนข้อมูลหลักโดยไม่ได้ตั้งใจเมื่อมีคนเพิ่มฟิลด์ใหม่
+      data: withoutSensitive(resolved.result),
       source: resolved.source,
       stale: resolved.stale,
       fetchedAt: resolved.fetchedAt,
       shared: resolved.shared,
+      // มีค่าเฉพาะคนที่บันทึกพัสดุนี้ไว้ก่อนมันถึงมือผู้รับ (ดู lib/proof-access.ts)
+      // คนที่ไม่มีสิทธิ์ไม่ได้ค่านี้ และไม่ได้รู้ด้วยซ้ำว่ามีรูปอยู่
+      proofPhotoUrl,
     });
   } catch (error) {
     const code = error instanceof CarrierError ? error.code : "upstream_error";
@@ -110,6 +206,11 @@ export async function POST(request: Request) {
       source: "error",
       provider: "none",
       stale: false,
+      // สาเหตุที่แท้จริงต้องอยู่บนหน้าสถิติ ไม่ใช่ต้องไปงมใน pm2 log
+      reason: code,
+      upstreamCode:
+        error instanceof CarrierError ? (error.upstreamCode ?? null) : null,
+      tookMs: Date.now() - startedAt,
     });
 
     if (error instanceof CarrierError) {

@@ -31,6 +31,14 @@ const ACCURACY_MIGRATION = join(
   PROJECT_DIR,
   "supabase/migrations/0008_location_accuracy.sql",
 );
+const COURIERS_MIGRATION = join(
+  PROJECT_DIR,
+  "supabase/migrations/0010_tracking_couriers.sql",
+);
+const STATS_MIGRATION = join(
+  PROJECT_DIR,
+  "supabase/migrations/0011_stats_details.sql",
+);
 
 interface SourceFile {
   path: string;
@@ -293,4 +301,114 @@ test("การบันทึกสถิติต้องเกิดจา�
     const payload = call.slice(0, call.indexOf("});"));
     assert.doesNotMatch(payload, /trackNo|trackingNumber|user|email|request/);
   }
+});
+
+/* --------------- ตารางของกลางที่เพิ่มมาในรอบหลัง --------------- */
+
+test("ตาราง tracking_couriers ต้องไม่ผูกกับผู้ใช้", () => {
+  // "เลขนี้เป็นของขนส่งเจ้าไหน" เป็นข้อเท็จจริงของพัสดุ ไม่ใช่ข้อมูลของคนที่ค้น
+  // ถ้าเก็บว่าใครทำให้เรารู้ มันจะกลายเป็นบันทึกว่าใครค้นเลขอะไรทันที
+  const sql = withoutSqlComments(readFileSync(COURIERS_MIGRATION, "utf8"));
+
+  assert.doesNotMatch(sql, /user_id/);
+  assert.doesNotMatch(sql, /references auth\.users/);
+  assert.doesNotMatch(sql, /\bemail\b/i);
+});
+
+test("ตารางสถิติที่เพิ่มใหม่ต้องไม่เก็บอะไรที่ระบุตัวคน", () => {
+  // ตรวจเฉพาะนิยามของตาราง ไม่ใช่ทั้งไฟล์ — ฟังก์ชันสรุปอ่าน user_id จาก
+  // saved_trackings เพื่อ "นับผู้ใช้ที่ไม่ซ้ำ" ได้ ตราบใดที่คืนออกมาแค่ตัวเลข
+  // (มีเทสต์แยกเฝ้าเรื่องนั้นอยู่ข้างล่าง)
+  const sql = withoutSqlComments(readFileSync(STATS_MIGRATION, "utf8"));
+
+  const definitions = [
+    ...sql.matchAll(/create table[^;]*?\(([\s\S]*?)\);/g),
+    ...sql.matchAll(/(add column if not exists[^;]*);/g),
+  ]
+    .map((match) => match[1])
+    .join("\n");
+
+  for (const forbidden of [
+    "user_id",
+    "ip_address",
+    "user_agent",
+    "session_id",
+    "tracking_number",
+    "email",
+  ]) {
+    assert.doesNotMatch(
+      definitions,
+      new RegExp(forbidden),
+      `ตารางสถิติต้องไม่มีคอลัมน์ ${forbidden}`,
+    );
+  }
+});
+
+test("ฟังก์ชันที่แตะ saved_trackings ต้องคืนได้แค่ตัวเลขนับ", () => {
+  // saved_trackings มี user_id มาแต่เดิม การนับผู้ใช้ที่ไม่ซ้ำเป็นตัวเลขรวม
+  // แต่ถ้าเผลอ select user_id ออกมา มันจะกลายเป็นรายชื่อคนทันที
+  const sql = withoutSqlComments(readFileSync(STATS_MIGRATION, "utf8"));
+
+  const bodies = sql
+    .split(/create or replace function/i)
+    .filter((body) => /from public\.saved_trackings/i.test(body));
+
+  assert.equal(bodies.length, 1, "ควรมีฟังก์ชันเดียวที่อ่าน saved_trackings");
+
+  const [body] = bodies;
+  assert.match(body, /count\(\*\)/);
+  assert.doesNotMatch(body, /returns table/i, "ห้ามคืนเป็นตาราง คืน jsonb ของตัวนับเท่านั้น");
+  assert.doesNotMatch(body, /select\s+\*/i);
+});
+
+test("ตารางสถิติใหม่ต้องล็อกสิทธิ์แบบเดียวกับตารางของกลางอื่น", () => {
+  const cases = [
+    { file: COURIERS_MIGRATION, table: "tracking_couriers" },
+    { file: STATS_MIGRATION, table: "install_events" },
+  ];
+
+  for (const { file, table } of cases) {
+    const sql = readFileSync(file, "utf8");
+
+    assert.match(
+      sql,
+      new RegExp(`revoke all on table public\\.${table} from anon, authenticated`),
+      `${table} ยังไม่ได้ revoke`,
+    );
+    assert.match(
+      sql,
+      new RegExp(`alter table public\\.${table} enable row level security`),
+      `${table} ยังไม่ได้เปิด RLS`,
+    );
+    assert.deepEqual(
+      sql.split("\n").filter((line) => /^\s*create policy/i.test(line)),
+      [],
+      `${table} ต้องไม่มี policy`,
+    );
+  }
+});
+
+test("โค้ดที่อ้างชื่อตารางสถิติใหม่ ต้องมีไฟล์ละหนึ่งที่", () => {
+  const owners: Record<string, string> = {
+    install_events: "lib/supabase/search-events.ts",
+    tracking_couriers: "lib/supabase/tracking-couriers.ts",
+  };
+
+  for (const [table, owner] of Object.entries(owners)) {
+    const users = allFiles
+      .filter((file) => new RegExp(`["'\`]${table}["'\`]`).test(file.source))
+      .map((file) => file.path)
+      .sort();
+
+    assert.deepEqual(users, [owner], `${table} ถูกแตะจากหลายไฟล์`);
+  }
+});
+
+test("endpoint นับการติดตั้งแอพต้องไม่เก็บอะไรที่ระบุตัวคน", () => {
+  const route = allFiles.find(
+    (file) => file.path === "app/api/installed/route.ts",
+  );
+  assert.ok(route !== undefined, "ต้องมี endpoint ให้ตรวจจริง");
+
+  assert.doesNotMatch(route.source, /getUser|user_id|headers\.get|userAgent/i);
 });

@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { TrackingResult } from "./carriers/types.ts";
+import type { ShipmentDetails, TrackingResult } from "./carriers/types.ts";
 import {
   ERROR_MESSAGE,
   STALE_NOTICE,
@@ -39,6 +39,28 @@ function fakeFetch(payload: unknown, ok = true): typeof fetch {
 }
 
 /* ------------------------ อ่านธงข้อมูลเก่า ------------------------ */
+
+/**
+ * สร้าง ShipmentDetails ที่ครบทุกฟิลด์ จากส่วนที่เทสต์สนใจจริงๆ
+ *
+ * มีไว้เพื่อให้การเพิ่มฟิลด์ใหม่ในสัญญากลางไม่ทำให้ต้องไปแก้เทสต์ทุกตัวที่
+ * ไม่ได้เกี่ยวข้องกับฟิลด์นั้น
+ */
+function shipment(partial: Partial<ShipmentDetails>): ShipmentDetails {
+  return {
+    originProvince: null,
+    destinationProvince: null,
+    deliveryStaffName: null,
+    dueDate: null,
+    cashOnDelivery: null,
+    deliveryType: null,
+    callCenterPhone: null,
+    sender: null,
+    recipientMasked: null,
+    signerMasked: null,
+    ...partial,
+  };
+}
 
 test("payload ปกติ (ข้อมูลสด) → staleSince เป็น null", () => {
   assert.equal(readStaleSince({ ok: true, data: RESULT, stale: false }), null);
@@ -152,13 +174,13 @@ test("ไม่มีข้อมูลเก่าให้แสดง → ย
  * ------------------------------------------------------------------ */
 
 test("มีทั้งต้นทางและปลายทาง → รวมเป็นบรรทัดเส้นทางเดียว", () => {
-  const facts = toShipmentFacts({
+  const facts = toShipmentFacts(shipment({
     originProvince: "นนทบุรี",
     destinationProvince: "พระนครศรีอยุธยา",
     deliveryStaffName: null,
     dueDate: null,
     cashOnDelivery: null,
-  });
+  }));
 
   assert.deepEqual(facts, [
     { label: "เส้นทาง", value: "นนทบุรี → พระนครศรีอยุธยา" },
@@ -166,33 +188,33 @@ test("มีทั้งต้นทางและปลายทาง → ร
 });
 
 test("มีข้างเดียว → แสดงข้างที่มี ไม่เติมคำว่าไม่ระบุ", () => {
-  const originOnly = toShipmentFacts({
+  const originOnly = toShipmentFacts(shipment({
     originProvince: "นนทบุรี",
     destinationProvince: null,
     deliveryStaffName: null,
     dueDate: null,
     cashOnDelivery: null,
-  });
+  }));
   assert.deepEqual(originOnly, [{ label: "ต้นทาง", value: "นนทบุรี" }]);
 
-  const destinationOnly = toShipmentFacts({
+  const destinationOnly = toShipmentFacts(shipment({
     originProvince: null,
     destinationProvince: "เชียงราย",
     deliveryStaffName: null,
     dueDate: null,
     cashOnDelivery: null,
-  });
+  }));
   assert.deepEqual(destinationOnly, [{ label: "ปลายทาง", value: "เชียงราย" }]);
 });
 
 test("แสดงเฉพาะฟิลด์ที่มีค่าจริง", () => {
-  const facts = toShipmentFacts({
+  const facts = toShipmentFacts(shipment({
     originProvince: null,
     destinationProvince: null,
     deliveryStaffName: "สมชาย ใจดี",
     dueDate: null,
     cashOnDelivery: "1250",
-  });
+  }));
 
   assert.deepEqual(facts, [
     { label: "เก็บเงินปลายทาง", value: "1250 บาท" },
@@ -204,25 +226,25 @@ test("ไม่มีข้อมูลเลย → รายการว่า
   assert.deepEqual(toShipmentFacts(null), []);
   assert.deepEqual(toShipmentFacts(undefined), []);
   assert.deepEqual(
-    toShipmentFacts({
+    toShipmentFacts(shipment({
       originProvince: null,
       destinationProvince: null,
       deliveryStaffName: null,
       dueDate: null,
       cashOnDelivery: null,
-    }),
+    })),
     [],
   );
 });
 
 test("กำหนดส่งถึงแสดงเป็นวันที่แบบไทย ไม่ใช่ค่าดิบ", () => {
-  const facts = toShipmentFacts({
+  const facts = toShipmentFacts(shipment({
     originProvince: null,
     destinationProvince: null,
     deliveryStaffName: null,
     dueDate: "2021-02-10",
     cashOnDelivery: null,
-  });
+  }));
 
   assert.equal(facts.length, 1);
   assert.equal(facts[0].label, "กำหนดส่งถึง");
@@ -231,13 +253,13 @@ test("กำหนดส่งถึงแสดงเป็นวันที�
 });
 
 test("วันที่อ่านไม่ออก → ไม่แสดงบรรทัดนั้น แทนที่จะโชว์ค่าดิบ", () => {
-  const facts = toShipmentFacts({
+  const facts = toShipmentFacts(shipment({
     originProvince: null,
     destinationProvince: null,
     deliveryStaffName: null,
     dueDate: "ไม่ใช่วันที่",
     cashOnDelivery: null,
-  });
+  }));
 
   assert.deepEqual(facts, []);
 });

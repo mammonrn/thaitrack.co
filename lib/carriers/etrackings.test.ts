@@ -19,6 +19,7 @@ import {
   parseETrackingsTime,
   resolveCourier,
   splitDescription,
+  toSensitiveDetails,
   toShipmentDetails,
   toTrackingResult,
   type ETrackingsData,
@@ -277,18 +278,73 @@ test("ไม่มีฟิลด์ไหนมีค่าเลย → คื
   );
 });
 
-test("ห้ามเก็บชื่อผู้รับหรือผู้เซ็นรับ แม้ปลายทางจะส่งมา", () => {
-  // ใครที่เห็นเลขพัสดุก็ค้นได้โดยไม่ต้องพิสูจน์ตัวตน ชื่อคนรับจึงต้องไม่หลุด
-  const shipment = toShipmentDetails(sampleData().detail);
-  const serialized = JSON.stringify(shipment);
+/** ข้อมูลจริงแบบที่ Flash ส่งมา — ชื่อคนไม่ถูกปิดบังมาให้เลย */
+function unmaskedDetail() {
+  return {
+    ...sampleData().detail,
+    sender: "amonthepnontarug",
+    recipient: "ภูมิ ธรรมสอน",
+    signer: "แผนกต้อนรับ",
+    deliveryType: "On-Time Delivery",
+    courierCallCenterPhoneNumber: "1436",
+    signerImageURL: "https://cdn.example.com/proof/abc.jpg",
+  };
+}
 
-  assert.doesNotMatch(serialized, /สหรัก/);
-  assert.doesNotMatch(serialized, /recipient|signer|sender/i);
+test("ชื่อผู้รับกับผู้เซ็นรับต้องถูกปิดบังตั้งแต่ตอนแปลงข้อมูลเข้าระบบ", () => {
+  // ใครที่เห็นเลขพัสดุก็ค้นได้โดยไม่ต้องพิสูจน์ตัวตน ชื่อเต็มของคนรับจึงต้อง
+  // ไม่มีทางออกไปถึงใคร — ปิดที่ต้นทางแข็งกว่าไปกรองตอนขาออกทีละทาง
+  const shipment = toShipmentDetails(unmaskedDetail());
+
+  assert.equal(shipment?.recipientMasked, "ภูมิ ธ***");
+  assert.equal(shipment?.signerMasked, "แผน***");
 });
 
-test("ผลลัพธ์ทั้งก้อนต้องไม่มีชื่อผู้รับหลุดออกไปทางไหนเลย", () => {
-  const result = toTrackingResult("SHP5054369172", sampleData());
-  assert.doesNotMatch(JSON.stringify(result), /สหรัก/);
+test("ชื่อเต็มต้องไม่หลุดออกไปกับผลลัพธ์ทั้งก้อน", () => {
+  const result = toTrackingResult("SHP5054369172", {
+    ...sampleData(),
+    detail: unmaskedDetail(),
+  });
+  const serialized = JSON.stringify(result);
+
+  assert.doesNotMatch(serialized, /ธรรมสอน/, "นามสกุลผู้รับหลุด");
+  assert.doesNotMatch(serialized, /ต้อนรับ/, "ชื่อผู้เซ็นรับหลุด");
+});
+
+test("ผู้ส่งแสดงเต็ม เพราะแทบทั้งหมดเป็นชื่อร้านที่เปิดเผยอยู่แล้ว", () => {
+  const shipment = toShipmentDetails(unmaskedDetail());
+  assert.equal(shipment?.sender, "amonthepnontarug");
+});
+
+test("เก็บฟิลด์โลจิสติกส์ที่เคยทิ้งไปเงียบๆ", () => {
+  const shipment = toShipmentDetails(unmaskedDetail());
+
+  assert.equal(shipment?.deliveryType, "On-Time Delivery");
+  assert.equal(shipment?.callCenterPhone, "1436");
+});
+
+test("รูปถ่ายตอนนำจ่ายไปอยู่ในก้อนอ่อนไหว ไม่ปนกับข้อมูลทั่วไป", () => {
+  const result = toTrackingResult("SHP5054369172", {
+    ...sampleData(),
+    detail: unmaskedDetail(),
+  });
+
+  assert.equal(
+    result.sensitive?.proofPhotoUrl,
+    "https://cdn.example.com/proof/abc.jpg",
+  );
+  assert.doesNotMatch(JSON.stringify(result.shipment), /cdn\.example\.com/);
+});
+
+test("URL ที่ไม่ใช่ https → ไม่รับ", () => {
+  // ค่านี้ถูกเอาไปใส่ใน src ของ <img> โดยตรง
+  for (const bad of ["http://x/a.jpg", "javascript:alert(1)", "", "  "]) {
+    assert.equal(
+      toSensitiveDetails({ ...unmaskedDetail(), signerImageURL: bad }),
+      null,
+      bad,
+    );
+  }
 });
 
 /* ------------------------- เลือกขนส่ง ------------------------- */

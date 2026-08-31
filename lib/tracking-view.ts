@@ -126,6 +126,14 @@ export type TrackingOutcome =
        * มีค่าเมื่อไร แปลว่าต้องขึ้นป้าย STALE_NOTICE ให้ผู้ใช้เห็น
        */
       staleSince: string | null;
+      /**
+       * รูปถ่ายตอนนำจ่าย — null เมื่อไม่มีสิทธิ์เห็นหรือไม่มีรูป
+       *
+       * เซิร์ฟเวอร์เป็นคนตัดสินสิทธิ์และส่งค่ามาให้เฉพาะคนที่ผ่านเกณฑ์
+       * ฝั่ง client ไม่มีทางรู้ว่ามีรูปอยู่หรือไม่ถ้าไม่ได้ค่านี้มา — และนั่น
+       * คือเจตนา ไม่ใช่การส่งมาแล้วซ่อนด้วย CSS
+       */
+      proofPhotoUrl: string | null;
     }
   | { ok: false; error: UserFacingError };
 
@@ -148,6 +156,22 @@ export function isSuccessPayload(
     typeof statusText === "string" &&
     Array.isArray(events)
   );
+}
+
+/**
+ * อ่าน URL รูปถ่ายตอนนำจ่าย — null เมื่อเซิร์ฟเวอร์ไม่ได้ส่งมา
+ *
+ * รับเฉพาะ https เท่านั้น เพราะค่านี้ถูกเอาไปใส่ใน src ของ <img> โดยตรง
+ * (ฝั่งเซิร์ฟเวอร์กรองมาแล้วชั้นหนึ่ง ตรงนี้เป็นชั้นที่สอง — ค่าที่วิ่งข้าม
+ * เครือข่ายมาต้องไม่ถูกเชื่อทันทีแม้จะมาจากเซิร์ฟเวอร์ของเราเอง)
+ */
+export function readProofPhotoUrl(payload: unknown): string | null {
+  if (typeof payload !== "object" || payload === null) return null;
+
+  const { proofPhotoUrl } = payload as { proofPhotoUrl?: unknown };
+  if (typeof proofPhotoUrl !== "string") return null;
+
+  return proofPhotoUrl.startsWith("https://") ? proofPhotoUrl : null;
 }
 
 /**
@@ -238,8 +262,32 @@ export function toShipmentFacts(
     });
   }
 
+  if (shipment.deliveryType) {
+    facts.push({ label: "รูปแบบการส่ง", value: shipment.deliveryType });
+  }
+
+  if (shipment.sender) {
+    facts.push({ label: "ผู้ส่ง", value: shipment.sender });
+  }
+
+  // ชื่อสองช่องนี้ถูกปิดบังมาตั้งแต่ adapter แล้ว (ดู lib/mask-name.ts)
+  // ค่าเต็มไม่เคยเดินทางมาถึงตรงนี้ จึงไม่ต้องปิดซ้ำ และห้ามพยายามเปิดคืน
+  if (shipment.recipientMasked) {
+    facts.push({ label: "ผู้รับ", value: shipment.recipientMasked });
+  }
+
+  if (shipment.signerMasked) {
+    facts.push({ label: "ผู้เซ็นรับ", value: shipment.signerMasked });
+  }
+
   if (shipment.deliveryStaffName) {
     facts.push({ label: "พนักงานนำจ่าย", value: shipment.deliveryStaffName });
+  }
+
+  // เบอร์คอลเซ็นเตอร์อยู่ท้ายสุดเพราะเป็นสิ่งที่ต้องใช้เมื่อมีปัญหา ไม่ใช่
+  // ข้อมูลที่คนอ่านทุกครั้ง แต่ต้องมีให้หาเจอโดยไม่ต้องไปเปิดเว็บขนส่ง
+  if (shipment.callCenterPhone) {
+    facts.push({ label: "คอลเซ็นเตอร์ขนส่ง", value: shipment.callCenterPhone });
   }
 
   return facts;
@@ -310,7 +358,12 @@ export async function requestTracking(
     const payload: unknown = await response.json().catch(() => null);
 
     if (response.ok && isSuccessPayload(payload)) {
-      return { ok: true, result: payload.data, staleSince: readStaleSince(payload) };
+      return {
+        ok: true,
+        result: payload.data,
+        staleSince: readStaleSince(payload),
+        proofPhotoUrl: readProofPhotoUrl(payload),
+      };
     }
 
     return { ok: false, error: toUserError(payload) };

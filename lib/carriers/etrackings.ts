@@ -34,12 +34,19 @@
  */
 
 import { CircuitBreaker } from "../circuit-breaker";
+import { maskPersonName } from "../mask-name";
 import { countProviderCall, readQuota } from "../provider-usage";
+import {
+  buildCourierLookup,
+  normalizeCourierCode,
+  reportUnknownCourier,
+} from "./courier-code";
 import { courierFromPrefix } from "./courier-prefix";
 import {
   CarrierError,
   TRACKING_STATUS_TEXT,
   type CarrierAdapter,
+  type SensitiveDetails,
   type ShipmentDetails,
   type TrackingEvent,
   type TrackingResult,
@@ -79,6 +86,11 @@ const STATUS_MAP: Record<string, TrackingStatus> = {
  * ฝั่งซ้ายคือรหัสที่ระบบเราใช้อยู่ ซึ่งบางตัวตรงกับของ Track123 บางตัวเป็น
  * ของเราเอง เติมแถวใหม่ได้เลยเมื่อรองรับขนส่งเพิ่ม
  *
+ * ✅ เทียบแบบ normalize แล้ว (ดู lib/carriers/courier-code.ts) จึงไม่ต้องเขียน
+ * ทุกวิธีสะกดของรหัสเดียวกัน — `flash-express` ในตารางนี้จับ `flashexpress`
+ * ที่ Track123 คืนมาได้เอง ซึ่งเป็นบั๊กที่เคยทำให้ ETrackings ไม่เคยถูกเรียก
+ * ให้ Flash เลยและไม่มีอะไรฟ้องสักอย่าง
+ *
  * ⚠️ **ห้ามใส่ขนส่งที่ ETrackings ไม่รองรับ** ยืนยันจากการยิงจริงแล้วว่าไม่มี:
  * thailand-post (ตอบ 400 Courier does not exist), lex, fed-ex, dhl-express,
  * ems-international — แถวที่ไม่รองรับหนึ่งแถวคือการทิ้งโควตาหนึ่งครั้งทุกครั้ง
@@ -100,6 +112,13 @@ const COURIER_MAP: Record<string, string> = {
   "inter-express": "inter-express",
   "dhl-ecommerce": "dhl-ecommerce",
 };
+
+/**
+ * ตารางค้นหาที่ทนต่อการสะกดต่างกัน สร้างจาก COURIER_MAP ตอน import
+ *
+ * โยน error ทันทีถ้าตารางขัดแย้งกันเอง — ดังกว่าปล่อยให้ผลขึ้นกับลำดับที่เขียน
+ */
+const COURIER_LOOKUP = buildCourierLookup(COURIER_MAP);
 
 /** ชื่อไทยของขนส่งที่ ETrackings ตอบกลับมา ใช้เมื่อ response ไม่ได้บอกชื่อมา */
 const COURIER_NAME_TH: Record<string, string> = {
@@ -131,6 +150,10 @@ export interface ETrackingsDetail {
   deliveryStaffName?: string | null;
   deliveryStaffPhoneNumber?: string | null;
   deliveryType?: string | null;
+  /** เบอร์คอลเซ็นเตอร์ของขนส่ง เช่น "1436" ของ Flash */
+  courierCallCenterPhoneNumber?: string | null;
+  /** รูปถ่ายตอนนำจ่าย — ข้อมูลอ่อนไหวที่สุดที่ระบบนี้แตะ */
+  signerImageURL?: string | null;
 }
 
 export interface ETrackingsDetailEntry {
@@ -456,7 +479,13 @@ export function splitDescription(raw: string): SplitDescription {
   return { description: head, location: tail, address: "" };
 }
 
-/** ดึงรายละเอียดการจัดส่งที่มีค่าจริง — ฟิลด์ที่ว่างถูกตัดทิ้งทั้งหมด */
+/**
+ * ดึงรายละเอียดการจัดส่งที่มีค่าจริง — ฟิลด์ที่ว่างถูกตัดทิ้งทั้งหมด
+ *
+ * ⚠️ **ชื่อผู้รับกับผู้เซ็นรับถูกปิดบังตรงนี้ ไม่ใช่ตอนแสดงผล** ค่าเต็มจึงไม่เคย
+ * ออกจากฟังก์ชันนี้ไปไหนเลย ไม่ลง cache ไม่ลง response ไม่ลง log — เป็นการ
+ * รับประกันที่แข็งกว่าการไปกรองตอนขาออก เพราะไม่ต้องไล่อุดทุกทางที่ข้อมูลไหลผ่าน
+ */
 export function toShipmentDetails(
   detail: ETrackingsDetail | null | undefined,
 ): ShipmentDetails | null {
@@ -471,10 +500,33 @@ export function toShipmentDetails(
     dueDate: text(detail.dueDate),
     // "0" แปลว่าไม่มีเก็บเงินปลายทาง ไม่ใช่ยอดศูนย์บาทที่ต้องแสดง
     cashOnDelivery: cod === null || cod === "0" ? null : cod,
+    deliveryType: text(detail.deliveryType),
+    callCenterPhone: text(detail.courierCallCenterPhoneNumber),
+    // ผู้ส่งแทบทั้งหมดเป็นชื่อร้าน ซึ่งเปิดเผยอยู่แล้วและผู้ซื้อต้องใช้ระบุ
+    // ว่าเป็นของจากคำสั่งซื้อไหน — ต่างจากผู้รับที่เป็นตัวบุคคลจริง
+    sender: text(detail.sender),
+    recipientMasked: maskPersonName(detail.recipient),
+    signerMasked: maskPersonName(detail.signer),
   };
 
   const hasAnything = Object.values(shipment).some((value) => value !== null);
   return hasAnything ? shipment : null;
+}
+
+/**
+ * ดึงข้อมูลอ่อนไหวออกมาเป็นก้อนแยก — null เมื่อไม่มีอะไรอ่อนไหวเลย
+ *
+ * แยกจาก toShipmentDetails เพื่อให้เห็นชัดตั้งแต่ชื่อฟังก์ชันว่าของในนี้เดินทาง
+ * คนละทางกับที่เหลือ (ไม่ลง cache · ต้องผ่านการตรวจสิทธิ์ก่อนส่งออก)
+ */
+export function toSensitiveDetails(
+  detail: ETrackingsDetail | null | undefined,
+): SensitiveDetails | null {
+  const url = text(detail?.signerImageURL);
+  // รับเฉพาะ https — URL อื่นไม่มีทางเป็นรูปที่ขนส่งโฮสต์ไว้จริง
+  if (url === null || !url.startsWith("https://")) return null;
+
+  return { proofPhotoUrl: url };
 }
 
 /**
@@ -534,6 +586,7 @@ export function toTrackingResult(
     lastUpdated: latest?.event.time || null,
     events,
     shipment: toShipmentDetails(data.detail),
+    sensitive: toSensitiveDetails(data.detail),
   };
 }
 
@@ -552,13 +605,22 @@ export function resolveCourier(
   trackingNumber: string,
   hint?: string,
 ): string | null {
-  const fromHint = hint === undefined ? undefined : COURIER_MAP[hint];
-  if (fromHint !== undefined) return fromHint;
+  if (hint !== undefined) {
+    const fromHint = COURIER_LOOKUP.get(normalizeCourierCode(hint));
+    if (fromHint !== undefined) return fromHint;
+  }
 
   const fromPrefix = courierFromPrefix(trackingNumber);
-  if (fromPrefix === null) return null;
+  if (fromPrefix !== null) {
+    const mapped = COURIER_LOOKUP.get(normalizeCourierCode(fromPrefix));
+    if (mapped !== undefined) return mapped;
+  }
 
-  return COURIER_MAP[fromPrefix] ?? null;
+  // ตามไม่ได้ — ถ้าเป็นเพราะเจอรหัสที่ไม่เคยเห็น ต้องได้ยินเสียงทันที ไม่ใช่
+  // ปล่อยให้ระบบทำงานน้อยกว่าที่ควรอย่างเงียบๆ เหมือนที่เคยเกิดกับ Flash
+  if (hint !== undefined) reportUnknownCourier(hint, CARRIER_CODE);
+
+  return null;
 }
 
 function toTrackNo(trackingNumber: string): string {

@@ -54,6 +54,10 @@ import { InflightMap } from "../inflight";
 import { isNearQuota, loadProviderUsage, usageLabel } from "../provider-usage";
 import type { PersistentTrackingCache } from "../supabase/tracking-cache";
 import {
+  supabaseTrackingCourierStore,
+  type TrackingCourierStore,
+} from "../supabase/tracking-couriers";
+import {
   lookupTracking,
   rememberTracking,
   type CacheSource,
@@ -111,6 +115,14 @@ export interface ResolveOptions {
   skipCache?: boolean;
   /** ชั้น cache ถาวร (ค่าเริ่มต้น: ตาราง tracking_cache ใน Supabase) */
   persistentCache?: PersistentTrackingCache;
+  /**
+   * ความจำว่าเลขไหนเป็นของขนส่งเจ้าไหน
+   * (ค่าเริ่มต้น: ตาราง tracking_couriers ใน Supabase)
+   *
+   * แยกจาก cache โดยตั้งใจ — "เลขนี้เป็นของ SPX" เป็นจริงตลอดกาล ไม่ควรหมดอายุ
+   * พร้อมสถานะพัสดุ (ดู lib/supabase/tracking-couriers.ts)
+   */
+  courierStore?: TrackingCourierStore;
 }
 
 /** ชั้นที่ตอบคำค้นนี้ — "api" คือยิงถามขนส่งจริง */
@@ -195,8 +207,9 @@ function toCarrierError(error: unknown): CarrierError {
 /**
  * ยิงหนึ่งครั้งแล้วบอกว่า "เจอ" หรือ "ไม่พบ"
  *
- * error ที่ไม่ใช่ "ไม่พบ" ถูกโยนต่อขึ้นไปทันที เพราะถ้าเป็นปัญหาสิทธิ์หรือยิงถี่
- * เกินไป การลองทางที่เหลือก็จะพังเหมือนกันและเปลือง quota เปล่าๆ
+ * error ที่ไม่ใช่ "ไม่พบ" ถูกโยนต่อขึ้นไปทันที เพราะภายในเจ้าเดียวกัน ถ้าขั้นแรก
+ * พังด้วยปัญหาสิทธิ์หรือยิงถี่เกินไป ขั้นที่เหลือของเจ้านั้นก็จะพังเหมือนกัน
+ * (ผู้เรียกที่ต้องการ "ข้ามไปเจ้าถัดไป" ใช้ attemptOrSkip แทน)
  */
 async function attempt(
   call: () => Promise<TrackingResult>,
@@ -206,6 +219,36 @@ async function attempt(
   } catch (error) {
     const carrierError = toCarrierError(error);
     if (carrierError.code !== FALLBACK_TRIGGER) throw carrierError;
+    return null;
+  }
+}
+
+/**
+ * ยิงหนึ่งครั้งแล้วบอกว่า "เจอ" หรือ "ไม่ได้คำตอบจากเจ้านี้"
+ *
+ * ต่างจาก attempt() ตรงที่ **กลืนความล้มเหลวทุกชนิด** แล้วคืน null เพื่อให้
+ * ผู้เรียกไปถามเจ้าถัดไปได้ ใช้กับการข้ามระหว่างเจ้า ไม่ใช่ภายในเจ้าเดียวกัน
+ *
+ * มีอยู่เพราะบทเรียนจากของจริง: ตอน API key ของไปรษณีย์ไทยเพี้ยน ระบบล้มที่
+ * ด่านแรกแล้วจบ ไม่มี [track123] หรือ [etrackings] โผล่ใน log เลย ทั้งเว็บ
+ * ค้นอะไรไม่ได้เพราะเจ้าเดียวล้ม — การพังของเจ้าหนึ่งไม่ควรเป็นการพังของทั้งระบบ
+ *
+ * ยังคง log ให้เห็นเสมอว่าเจ้าไหนมีปัญหาอะไร ไม่งั้นการข้ามจะกลายเป็นการซ่อน
+ * ปัญหา แล้วเจ้าที่พังจะพังเงียบไปเรื่อยๆ โดยไม่มีใครรู้
+ */
+async function attemptOrSkip(
+  call: () => Promise<TrackingResult>,
+  carrierCode: string,
+): Promise<TrackingResult | null> {
+  try {
+    return await call();
+  } catch (error) {
+    const carrierError = toCarrierError(error);
+    if (carrierError.code !== FALLBACK_TRIGGER) {
+      console.warn(
+        `[resolve] ข้าม ${carrierCode} (${carrierError.code}): ${carrierError.message}`,
+      );
+    }
     return null;
   }
 }
@@ -350,6 +393,7 @@ async function resolveFresh(
   backup: CarrierAdapter | null,
   cache: PersistentTrackingCache | undefined,
   courierHint: string | undefined,
+  courierStore: TrackingCourierStore,
 ): Promise<FreshResult> {
   // เจ้าที่ยิงไปแล้ว ไว้กันไม่ให้ขั้นถัดไปถามซ้ำคำถามเดิม และไว้อธิบายใน log
   const tried: string[] = [];
@@ -358,12 +402,17 @@ async function resolveFresh(
   if (shortcut === null) {
     // prefix ไม่ฟันธงว่าเป็นเจ้าไหน → ลำดับเดิม ถามไปรษณีย์ไทยก่อนเพราะฟรี
     // และไม่จำกัดจำนวนครั้ง จะได้ไม่ไปแตะ quota ของเจ้าที่เสียเงินโดยไม่จำเป็น
-    const fromPrimary = await attempt(() => primary.track(normalized));
+    //
+    // ⚠️ ความล้มเหลวตรงนี้ต้อง **ไม่** จบทั้งคำขอ — เคยเป็นแบบนั้นแล้วเจอของจริง:
+    // วันที่ API key ของไปรษณีย์ไทยเพี้ยน ทั้งเว็บค้นอะไรไม่ได้เลย ทั้งที่
+    // Track123 ยังทำงานปกติดี ผู้ใช้ทุกคนเจอ auth_failed ของเจ้าที่อาจไม่ใช่
+    // ขนส่งของพัสดุเขาด้วยซ้ำ
+    const fromPrimary = await attemptOrSkip(
+      () => primary.track(normalized),
+      primary.carrierCode,
+    );
     if (fromPrimary !== null) {
-      return {
-        result: await store(normalized, fromPrimary, cache),
-        provider: "primary",
-      };
+      return finish(normalized, fromPrimary, "primary", cache, courierStore);
     }
   } else {
     // prefix ฟันธงว่าเป็นขนส่งเจ้าอื่น → ข้ามไปรษณีย์ไทยไปเลย
@@ -416,10 +465,7 @@ async function resolveFresh(
         // เก็บที่อยู่สาขาก่อนคืนผล — ทำหลังจากนี้ไม่ได้เพราะ Next อาจตัด
         // งานที่ยังค้างอยู่ทิ้งเมื่อ response ถูกส่งออกไปแล้ว
         if (slot === "backup") await harvest(found);
-        return {
-          result: await store(normalized, found, cache),
-          provider: slot,
-        };
+        return finish(normalized, found, slot, cache, courierStore);
       }
 
       // ตอบว่าไม่พบ — คำว่าไม่พบของ Track123 หนักแน่นพอจะหยุด (ดูหัวไฟล์)
@@ -460,6 +506,29 @@ async function resolveFresh(
           : ` — ระบุขนส่งเจาะจงแล้ว ${tried.length} เจ้า: ${tried.join(", ")}`),
     },
   );
+}
+
+/**
+ * เก็บผลที่ค้นเจอลงทุกที่ที่ต้องเก็บ แล้วคืนคำตอบ
+ *
+ * รวมสองการเก็บที่มีอายุต่างกันไว้ในที่เดียว เพื่อให้ทุกทางที่ค้นเจอผ่านจุดนี้
+ * เหมือนกันหมด ไม่มีทางไหนลืมเก็บอะไร:
+ *
+ *   cache          สถานะพัสดุ มี TTL เก่าแล้วไร้ค่า
+ *   courierStore   เลขนี้เป็นของขนส่งเจ้าไหน จริงตลอดกาล
+ *
+ * การจำขนส่งล้มเหลวได้โดยไม่กระทบอะไร (store กลืน error ไว้แล้ว) — ผลที่ตามมา
+ * คือครั้งหน้าต้องไปตรวจจับใหม่ ซึ่งก็คือพฤติกรรมก่อนมีตารางนี้
+ */
+async function finish(
+  normalized: string,
+  result: TrackingResult,
+  provider: ResolveProvider,
+  cache: PersistentTrackingCache | undefined,
+  courierStore: TrackingCourierStore,
+): Promise<FreshResult> {
+  await courierStore.remember(normalized, result.carrierCode, provider);
+  return { result: await store(normalized, result, cache), provider };
 }
 
 /**
@@ -562,15 +631,16 @@ export async function resolveTracking(
   // เลขเดียวกันที่กำลังรอผลอยู่ให้เกาะคำขอเดิม — cache ช่วยตรงนี้ไม่ได้ เพราะผล
   // ยังไม่ถูกบันทึกจนกว่าคำขอแรกจะเสร็จ ช่วงที่คำขอแรกกำลังบินคือช่องว่างที่
   // คนกดปุ่มรัวหรือคนละคนที่ค้นเลขเดียวกันจะหลุดออกไปยิงซ้ำได้
-  // ขนส่งที่ยืนยันแล้วจากครั้งก่อน — cache เก็บ carrierCode ของผลที่ค้นเจอไว้
-  // อยู่แล้ว และ lookupTracking คืนแถวที่หมดอายุแล้วด้วย (ธง stale) ตรงนี้จึง
-  // เป็นความจำ "เลขนี้คือขนส่งเจ้าไหน" ที่มีอยู่แล้วโดยไม่ต้องเก็บอะไรเพิ่ม
+  // ขนส่งที่ยืนยันแล้วจากครั้งก่อน — สำคัญมากในทางปฏิบัติ เพราะเลขไทยส่วนใหญ่
+  // ดู prefix แล้วบอกไม่ได้ (`TH…` ใช้ร่วมกันระหว่าง SPX กับ Flash) ถ้าไม่มีค่านี้
+  // ETrackings แทบไม่ถูกเรียกเลย
   //
-  // สำคัญมากในทางปฏิบัติ เพราะเลขไทยส่วนใหญ่ดู prefix แล้วบอกไม่ได้
-  // (`TH…` ใช้ร่วมกันระหว่าง SPX กับ Flash) ถ้าไม่มีค่านี้ ETrackings แทบไม่
-  // ถูกเรียกเลย — ค่าที่ไม่ใช่รหัสขนส่งจริง (เช่น "track123") ไม่เป็นไร
-  // เพราะ adapter เป็นคนตัดสินเองว่ารหัสนั้นใช้ได้ไหม
-  const courierHint = cached?.entry.result.carrierCode;
+  // อ่านจากตารางถาวรก่อน แล้วค่อยตกมาที่ cache — ตารางถาวรไม่มีวันหมดอายุ ส่วน
+  // cache หายได้เมื่อแถวถูกกวาด ซึ่งเคยทำให้ความจำเรื่องขนส่งหายไปทั้งระบบ
+  // (ดู supabase/migrations/0010_tracking_couriers.sql)
+  const courierStore = options.courierStore ?? supabaseTrackingCourierStore;
+  const courierHint =
+    (await courierStore.read(normalized)) ?? cached?.entry.result.carrierCode;
 
   const run = inflightResolves.start(normalized, () =>
     resolveFresh(
@@ -580,6 +650,7 @@ export async function resolveTracking(
       backup,
       options.persistentCache,
       courierHint,
+      courierStore,
     ),
   );
 

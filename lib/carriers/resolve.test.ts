@@ -13,6 +13,7 @@ import { test } from "node:test";
 
 import { clearCache, type CacheEntry } from "../cache.ts";
 import type { PersistentTrackingCache } from "../supabase/tracking-cache.ts";
+import { normalizeCourierCode } from "./courier-code.ts";
 import { chooseProviderOrder, resolveTracking } from "./resolve.ts";
 import {
   CarrierError,
@@ -225,28 +226,66 @@ test("adapter ที่ไม่รองรับการระบุขนส
   assert.deepEqual(calls, ["auto-detect"]);
 });
 
-test("ไปรษณีย์ไทยพังด้วยสาเหตุอื่น → ไม่แตะ Track123 เลย", async () => {
+test("ไปรษณีย์ไทยพัง → ข้ามไปเจ้าถัดไป ไม่ใช่จบทั้งคำขอ", async () => {
+  // เจอของจริงมาแล้ว: วันที่ API key ของไปรษณีย์ไทยเพี้ยน ทั้งเว็บค้นอะไรไม่ได้
+  // เลย ทั้งที่ Track123 ยังทำงานปกติดี — ผู้ใช้เจอ auth_failed ของเจ้าที่อาจ
+  // ไม่ใช่ขนส่งของพัสดุเขาด้วยซ้ำ
   const fallback = makeTrack123({ autoDetectSucceeds: true });
-  const primary: CarrierAdapter = {
-    carrierCode: "thailand-post",
-    carrierName: "ไปรษณีย์ไทย",
-    track: () => Promise.reject(new CarrierError("auth_failed", "สิทธิ์มีปัญหา")),
-  };
 
+  const resolved = await resolveTracking(uniqueTrackingNumber(), {
+    primary: makeBrokenPrimary(new CarrierError("auth_failed", "สิทธิ์มีปัญหา")),
+    fallback,
+    persistentCache: noCache,
+  });
+
+  assert.equal(resolved.provider, "fallback");
+  assert.equal(fallback.calls.length, 1);
+});
+
+test("ไปรษณีย์ไทยพังทุกแบบก็ข้ามหมด ไม่ใช่เฉพาะเรื่องสิทธิ์", async () => {
+  for (const code of ["config_error", "rate_limited", "network_error", "upstream_error"] as const) {
+    const fallback = makeTrack123({ autoDetectSucceeds: true });
+
+    const resolved = await resolveTracking(uniqueTrackingNumber(), {
+      primary: makeBrokenPrimary(new CarrierError(code, "พัง")),
+      fallback,
+      persistentCache: noCache,
+    });
+
+    assert.equal(resolved.provider, "fallback", code);
+  }
+});
+
+test("ไปรษณีย์ไทยพัง แต่ Track123 ตอบว่าไม่พบ → ผู้ใช้ได้คำตอบจริง ไม่ใช่ error ของเจ้าที่พัง", async () => {
   await assert.rejects(
     resolveTracking(uniqueTrackingNumber(), {
-      primary,
-      fallback,
+      primary: makeBrokenPrimary(new CarrierError("auth_failed", "สิทธิ์มีปัญหา")),
+      fallback: makeTrack123(),
       persistentCache: noCache,
     }),
     (error: unknown) => {
       assert.ok(error instanceof CarrierError);
-      assert.equal(error.code, "auth_failed");
+      assert.equal(error.code, "not_found");
       return true;
     },
   );
+});
 
-  assert.deepEqual(fallback.calls, []);
+test("พังทั้งคู่ → ส่ง error ของเจ้าที่ตามได้จริงขึ้นไป ไม่ใช่ของเจ้าแรก", async () => {
+  // ชั้นบนใช้ code นี้ตัดสินเรื่องการคืนข้อมูลเก่าจาก cache — error ของ
+  // ไปรษณีย์ไทยที่อาจไม่ใช่ขนส่งของพัสดุนี้เลย ไม่ควรเป็นตัวตัดสิน
+  await assert.rejects(
+    resolveTracking(uniqueTrackingNumber(), {
+      primary: makeBrokenPrimary(new CarrierError("auth_failed", "สิทธิ์มีปัญหา")),
+      fallback: makeBrokenFallback(new CarrierError("rate_limited", "คิวหนาแน่น")),
+      persistentCache: noCache,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof CarrierError);
+      assert.equal(error.code, "rate_limited");
+      return true;
+    },
+  );
 });
 
 /* ------------------------------------------------------------------ *
@@ -480,15 +519,20 @@ test("คำขอที่เกาะอยู่ได้ error ก้อน�
       throw new CarrierError("rate_limited", "คิวค้นหาหนาแน่น");
     },
   };
+  // ไปรษณีย์ไทยพังแล้วระบบข้ามไปเจ้าถัดไป (ดูเทสต์เรื่องการข้าม) เจ้าถัดไปจึง
+  // ต้องพังด้วย error จึงจะไหลขึ้นไปถึงผู้เรียกให้เทสต์นี้ตรวจได้
+  const fallback = makeBrokenFallback(
+    new CarrierError("rate_limited", "คิวค้นหาหนาแน่น"),
+  );
 
   const first = resolveTracking(trackingNumber, {
     primary,
-    fallback: fallbackNeverUsed,
+    fallback,
     persistentCache: noCache,
   });
   const second = resolveTracking(trackingNumber, {
     primary,
-    fallback: fallbackNeverUsed,
+    fallback,
     persistentCache: noCache,
   });
 
@@ -760,8 +804,10 @@ function makeBackup(result: "found" | CarrierError = "found"): CarrierAdapter & 
     carrierName: "ETrackings",
     calls,
     // เหมือนตัวจริง: ตามได้เมื่อ prefix ฟันธง หรือมี courier ที่ยืนยันแล้ว
+    // และเทียบรหัสแบบ normalize เหมือนกัน (shopee-xpress-th = shopeexpressth)
     canTrack: (trackingNumber, hint) =>
-      trackingNumber.startsWith("SPXTH") || hint === "shopee-xpress-th",
+      trackingNumber.startsWith("SPXTH") ||
+      normalizeCourierCode(hint) === "shopeexpressth",
     track(trackingNumber) {
       calls.push("auto");
       return answer(trackingNumber);
@@ -1189,4 +1235,104 @@ test("prefix ยังชนะ courier ที่จำไว้ เมื่อ
     ["shopee-xpress-th"],
     "prefix ที่ผ่านเกณฑ์ 'ฟันธงได้จริง' เชื่อถือได้กว่าผลตรวจจับครั้งก่อน",
   );
+});
+
+/* --------- ความจำว่าเลขไหนเป็นของขนส่งเจ้าไหน (ตารางถาวร) --------- */
+
+/** ความจำปลอมที่เก็บใน Map — แทนตาราง tracking_couriers */
+function makeCourierStore(seed: Record<string, string> = {}) {
+  const rows = new Map(Object.entries(seed));
+  const writes: string[] = [];
+
+  return {
+    rows,
+    writes,
+    read: (trackingNumber: string) =>
+      Promise.resolve(rows.get(trackingNumber) ?? null),
+    remember: (trackingNumber: string, courierCode: string, by: string) => {
+      writes.push(`${trackingNumber}=${courierCode}@${by}`);
+      rows.set(trackingNumber, courierCode);
+      return Promise.resolve();
+    },
+  };
+}
+
+test("จำขนส่งไว้ในตารางถาวร → ใช้เป็น hint ได้แม้ cache จะว่างเปล่า", async () => {
+  // นี่คือบั๊กที่เจอจริง: ลบแถวออกจาก tracking_cache แล้วค้นใหม่ ระบบไม่มี
+  // ความจำเรื่องขนส่งเลย ทั้งที่ "เลขนี้เป็นของ SPX" ไม่มีวันเปลี่ยน
+  const trackingNumber = uniqueTrackingNumber();
+  const courierStore = makeCourierStore({
+    [trackingNumber]: "shopeexpressth",
+  });
+  const backup = makeBackup();
+
+  const resolved = await resolveTracking(trackingNumber, {
+    primary: primaryAlwaysNotFound,
+    fallback: makeTrack123({ autoDetectSucceeds: true }),
+    backup,
+    persistentCache: noCache,
+    courierStore,
+  });
+
+  assert.equal(resolved.provider, "backup");
+  assert.deepEqual(
+    backup.calls,
+    ["shopeexpressth"],
+    "รหัสที่ normalize แล้วต้องยังใช้เทียบได้",
+  );
+});
+
+test("ค้นเจอ → จำไว้ว่าเลขนี้เป็นของขนส่งเจ้าไหน", async () => {
+  const trackingNumber = uniqueTrackingNumber();
+  const courierStore = makeCourierStore();
+
+  await resolveTracking(trackingNumber, {
+    primary: primaryAlwaysNotFound,
+    fallback: makeTrack123({ autoDetectSucceeds: true }),
+    backup: null,
+    persistentCache: noCache,
+    courierStore,
+  });
+
+  assert.deepEqual(courierStore.writes, [`${trackingNumber}=mock@fallback`]);
+});
+
+test("ตารางถาวรชนะ cache เมื่อทั้งคู่มีค่า", async () => {
+  // cache หายได้เมื่อแถวถูกกวาด ตารางถาวรไม่หาย จึงเชื่อถือได้กว่า
+  const trackingNumber = uniqueTrackingNumber();
+  const cache = makeFakeCache();
+  cache.rows.set(trackingNumber, cachedAs(trackingNumber, "flashexpress"));
+
+  const courierStore = makeCourierStore({
+    [trackingNumber]: "shopeexpressth",
+  });
+  const backup = makeBackup();
+
+  await resolveTracking(trackingNumber, {
+    primary: primaryAlwaysNotFound,
+    fallback: makeTrack123(),
+    backup,
+    persistentCache: cache,
+    courierStore,
+  });
+
+  assert.deepEqual(backup.calls, ["shopeexpressth"]);
+});
+
+test("ตารางถาวรว่าง → ตกไปใช้ courier ที่ cache จำไว้", async () => {
+  const trackingNumber = uniqueTrackingNumber();
+  const cache = makeFakeCache();
+  cache.rows.set(trackingNumber, cachedAs(trackingNumber, "shopee-xpress-th"));
+
+  const backup = makeBackup();
+
+  await resolveTracking(trackingNumber, {
+    primary: primaryAlwaysNotFound,
+    fallback: makeTrack123(),
+    backup,
+    persistentCache: cache,
+    courierStore: makeCourierStore(),
+  });
+
+  assert.deepEqual(backup.calls, ["shopee-xpress-th"]);
 });

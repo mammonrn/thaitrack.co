@@ -12,6 +12,9 @@ import { test } from "node:test";
 import {
   DEFAULT_LEAN_RATIO,
   DEFAULT_QUOTA,
+  PROVIDER_IDS,
+  PROVIDER_LABEL,
+  QUOTA_VARS,
   countProviderCall,
   currentMonth,
   isNearQuota,
@@ -212,4 +215,40 @@ test("ป้ายโควตาในรูปที่เอาไปต่�
 
   await loadProviderUsage({ store, now: AUGUST });
   assert.equal(usageLabel("track123", AUGUST), `11/${DEFAULT_QUOTA.track123}`);
+});
+
+/* ---------------- ไปรษณีย์ไทยก็มีเพดานเหมือนกัน ---------------- */
+
+test("ไปรษณีย์ไทยถูกนับด้วย ไม่ใช่เจ้าเดียวที่มองไม่เห็น", async () => {
+  // เคยไม่นับเพราะคิดว่า "ฟรีและไม่จำกัด" แต่บัญชีทั่วไปมีเพดานต่อเดือนอยู่
+  // และมันเป็นเจ้าที่ถูกถามบ่อยที่สุด (ถูกถามก่อนทุกครั้งที่ prefix เดาไม่ออก)
+  resetProviderUsage();
+  const { store } = makeStore();
+
+  assert.equal(
+    await countProviderCall("thailand-post", { store, now: AUGUST }),
+    1,
+  );
+  assert.equal(usageOf("thailand-post", AUGUST), 1);
+  assert.equal(usageOf("track123", AUGUST), 0, "แต่ละเจ้ายังนับแยกกัน");
+});
+
+test("เพดานของไปรษณีย์ไทยตั้งผ่าน env ได้เหมือนสองเจ้าแรก", (t) => {
+  t.after(() => {
+    delete process.env.THAILAND_POST_MONTHLY_CALL_LIMIT;
+  });
+
+  assert.equal(readQuota("thailand-post"), DEFAULT_QUOTA["thailand-post"]);
+
+  process.env.THAILAND_POST_MONTHLY_CALL_LIMIT = "2000";
+  assert.equal(readQuota("thailand-post"), 2_000);
+});
+
+test("ทุกเจ้าที่ประกาศไว้ต้องมีชื่อไทยและชื่อ env ครบ", () => {
+  // เพิ่มเจ้าใหม่แล้วลืมใส่ป้าย = หน้าสถิติขึ้นช่องว่างโดยไม่มีอะไรฟ้อง
+  for (const provider of PROVIDER_IDS) {
+    assert.ok(PROVIDER_LABEL[provider], provider);
+    assert.ok(QUOTA_VARS[provider], provider);
+    assert.ok(DEFAULT_QUOTA[provider] > 0, provider);
+  }
 });

@@ -1,7 +1,8 @@
 /**
- * ทางเข้าเดียวของตาราง search_events และตัวเลขสรุปที่หน้าสถิติแอดมินใช้
+ * ทางเข้าเดียวของตารางสถิติ (search_events, install_events) และตัวเลขสรุปที่
+ * หน้าสถิติแอดมินใช้
  *
- * ดู supabase/migrations/0007_search_events.sql
+ * ดู supabase/migrations/0007_search_events.sql และ 0011_stats_details.sql
  *
  * ------------------------------------------------------------------ --
  * ⚠️ ข้อบังคับด้านความเป็นส่วนตัว — อ่านก่อนแก้ไฟล์นี้ทุกครั้ง
@@ -39,6 +40,17 @@ export interface SearchEventInput {
   /** ผู้ให้บริการที่ตอบ: primary | fallback | backup | cache | none */
   provider: string;
   stale: boolean;
+  /**
+   * สาเหตุที่ตอบไม่ได้ เช่น "auth_failed" — null เมื่อค้นเจอ
+   *
+   * เป็นคุณสมบัติของคำขอ ไม่ใช่ของคน · มีเพราะเคยต้องไปงมใน pm2 log กว่าจะรู้
+   * ว่าวันนั้นระบบขัดข้องเพราะอะไร ทั้งที่ควรอยู่บนหน้าสถิติตั้งแต่แรก
+   */
+  reason?: string | null;
+  /** code ดิบของปลายทาง เช่น "A0706" หรือ "breaker_open" */
+  upstreamCode?: string | null;
+  /** ใช้เวลากี่มิลลิวินาที — ไว้ดู p50/p95 แยกตามชั้นที่ตอบ */
+  tookMs?: number | null;
 }
 
 function warn(action: string, detail: string): void {
@@ -79,6 +91,9 @@ export async function recordSearchEvent(
       source: input.source,
       provider: input.provider,
       stale: input.stale,
+      reason: input.reason ?? null,
+      upstream_code: input.upstreamCode ?? null,
+      took_ms: input.tookMs ?? null,
     });
 
     if (error) warn("บันทึกสถิติการค้นหา", error.message);
@@ -264,5 +279,192 @@ export async function readMemberStats(): Promise<MemberStats> {
   } catch (cause) {
     warn("อ่านจำนวนสมาชิก", reason(cause));
     return { total: 0, new7d: 0, new30d: 0 };
+  }
+}
+
+export interface ErrorBreakdownRow {
+  reason: string;
+  upstreamCode: string | null;
+  total: number;
+}
+
+/** สาเหตุที่ระบบตอบไม่ได้ แยกตามชนิด เรียงจากที่เจอบ่อยสุด */
+export async function readErrorBreakdown(
+  days: number,
+): Promise<ErrorBreakdownRow[]> {
+  const supabase = getServiceSupabaseClient();
+  if (supabase === null) return [];
+
+  try {
+    const { data, error } = await supabase.rpc("admin_error_breakdown", {
+      p_days: days,
+    });
+
+    if (error) {
+      warn("อ่านสาเหตุข้อผิดพลาด", error.message);
+      return [];
+    }
+
+    return (data ?? [])
+      .map((row: unknown) => {
+        const record = row as Record<string, unknown>;
+        if (typeof record.reason !== "string") return null;
+        return {
+          reason: record.reason,
+          upstreamCode:
+            typeof record.upstream_code === "string" ? record.upstream_code : null,
+          total: toCount(record.total),
+        } satisfies ErrorBreakdownRow;
+      })
+      .filter((row: ErrorBreakdownRow | null): row is ErrorBreakdownRow =>
+        row !== null,
+      );
+  } catch (cause) {
+    warn("อ่านสาเหตุข้อผิดพลาด", reason(cause));
+    return [];
+  }
+}
+
+export interface LatencyRow {
+  source: string;
+  p50Ms: number;
+  p95Ms: number;
+  total: number;
+}
+
+/** ความเร็วแยกตามชั้นที่ตอบ */
+export async function readLatency(days: number): Promise<LatencyRow[]> {
+  const supabase = getServiceSupabaseClient();
+  if (supabase === null) return [];
+
+  try {
+    const { data, error } = await supabase.rpc("admin_latency", { p_days: days });
+
+    if (error) {
+      warn("อ่านความเร็ว", error.message);
+      return [];
+    }
+
+    return (data ?? [])
+      .map((row: unknown) => {
+        const record = row as Record<string, unknown>;
+        if (typeof record.source !== "string") return null;
+        return {
+          source: record.source,
+          p50Ms: toCount(record.p50_ms),
+          p95Ms: toCount(record.p95_ms),
+          total: toCount(record.total),
+        } satisfies LatencyRow;
+      })
+      .filter((row: LatencyRow | null): row is LatencyRow => row !== null);
+  } catch (cause) {
+    warn("อ่านความเร็ว", reason(cause));
+    return [];
+  }
+}
+
+export interface InstallStats {
+  total: number;
+  last7d: number;
+  last30d: number;
+  android: number;
+  ios: number;
+  desktop: number;
+}
+
+const EMPTY_INSTALLS: InstallStats = {
+  total: 0,
+  last7d: 0,
+  last30d: 0,
+  android: 0,
+  ios: 0,
+  desktop: 0,
+};
+
+/** จำนวนการติดตั้งแอพ */
+export async function readInstallStats(): Promise<InstallStats> {
+  const supabase = getServiceSupabaseClient();
+  if (supabase === null) return EMPTY_INSTALLS;
+
+  try {
+    const { data, error } = await supabase.rpc("admin_install_stats");
+
+    if (error) {
+      warn("อ่านจำนวนการติดตั้งแอพ", error.message);
+      return EMPTY_INSTALLS;
+    }
+
+    const row = (data ?? {}) as Record<string, unknown>;
+    return {
+      total: toCount(row.total),
+      last7d: toCount(row.last_7d),
+      last30d: toCount(row.last_30d),
+      android: toCount(row.android),
+      ios: toCount(row.ios),
+      desktop: toCount(row.desktop),
+    };
+  } catch (cause) {
+    warn("อ่านจำนวนการติดตั้งแอพ", reason(cause));
+    return EMPTY_INSTALLS;
+  }
+}
+
+/** หนึ่งครั้งที่มีคนติดตั้งแอพ — ไม่รู้ว่าใคร และไม่ต้องรู้ */
+export async function recordInstallEvent(platform: string): Promise<void> {
+  const supabase = getServiceSupabaseClient();
+  if (supabase === null) return;
+
+  try {
+    const { error } = await supabase
+      .from("install_events")
+      .insert({ platform });
+
+    if (error) warn("บันทึกการติดตั้งแอพ", error.message);
+  } catch (cause) {
+    warn("บันทึกการติดตั้งแอพ", reason(cause));
+  }
+}
+
+export interface MemberActivity {
+  active7d: number;
+  activePrev7d: number;
+  returned: number;
+  saves7d: number;
+}
+
+/**
+ * การกลับมาใช้ซ้ำของสมาชิก — วัดจาก **การบันทึกพัสดุ** ไม่ใช่การค้นหา
+ *
+ * ⚠️ ข้อจำกัดที่ตั้งใจ: search_events ไม่มี user_id (และจะไม่มี) จึงตอบไม่ได้ว่า
+ * ใครกลับมาค้นซ้ำ สิ่งที่ตอบได้โดยไม่ผิดคำสัญญาคือการบันทึกพัสดุ ซึ่งเป็นการ
+ * กระทำที่ผู้ใช้ตั้งใจผูกกับบัญชีตัวเองอยู่แล้ว
+ *
+ * ตัวเลขจึงต่ำกว่าความจริงเสมอ — หน้าสถิติต้องเขียนกำกับให้ชัด ห้ามเรียกมันว่า
+ * "คนที่กลับมาค้นหา"
+ */
+export async function readMemberActivity(): Promise<MemberActivity> {
+  const supabase = getServiceSupabaseClient();
+  if (supabase === null) {
+    return { active7d: 0, activePrev7d: 0, returned: 0, saves7d: 0 };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc("admin_member_activity");
+
+    if (error) {
+      warn("อ่านการใช้งานของสมาชิก", error.message);
+      return { active7d: 0, activePrev7d: 0, returned: 0, saves7d: 0 };
+    }
+
+    const row = (data ?? {}) as Record<string, unknown>;
+    return {
+      active7d: toCount(row.active_7d),
+      activePrev7d: toCount(row.active_prev_7d),
+      returned: toCount(row.returned),
+      saves7d: toCount(row.saves_7d),
+    };
+  } catch (cause) {
+    warn("อ่านการใช้งานของสมาชิก", reason(cause));
+    return { active7d: 0, activePrev7d: 0, returned: 0, saves7d: 0 };
   }
 }

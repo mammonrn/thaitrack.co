@@ -11,6 +11,8 @@
  * API key อ่านจาก process.env.THAILAND_POST_API_KEY เท่านั้น — ห้าม hardcode
  */
 
+import { CircuitBreaker } from "../circuit-breaker";
+import { countProviderCall } from "../provider-usage";
 import {
   CarrierError,
   TRACKING_STATUS_TEXT,
@@ -22,6 +24,42 @@ import {
 
 const API_BASE = "https://trackapi.thailandpost.co.th/post/api/v1";
 const CARRIER_CODE = "thailand-post";
+
+/**
+ * เกณฑ์ของ circuit breaker
+ *
+ * จำเป็นตั้งแต่วันที่ resolve เปลี่ยนให้ "เจ้าหนึ่งพังแล้วข้ามไปเจ้าถัดไป" —
+ * ก่อนหน้านั้นการพังของเจ้านี้จบทั้งคำขอ จึงไม่มีค่าใช้จ่ายอะไรตามมา ตอนนี้
+ * การพังทุกครั้งแปลว่ามีการยิง Track123 เพิ่มหนึ่งครั้ง ถ้าเจ้านี้ล่มยาว
+ * โควตาของ Track123 จะถูกเผาไปกับการรอ timeout ของเจ้าที่รู้อยู่แล้วว่าไม่ตอบ
+ *
+ * ตัดวงจรแล้วยิ่งเร็วขึ้นด้วย เพราะข้ามการรอ timeout ไปตรงๆ
+ */
+const BREAKER_FAILURE_THRESHOLD = 5;
+const BREAKER_WINDOW_MS = 60_000;
+const BREAKER_COOLDOWN_MS = 30_000;
+
+export const thailandPostBreaker = new CircuitBreaker({
+  name: CARRIER_CODE,
+  failureThreshold: BREAKER_FAILURE_THRESHOLD,
+  windowMs: BREAKER_WINDOW_MS,
+  cooldownMs: BREAKER_COOLDOWN_MS,
+});
+
+/**
+ * error ที่นับว่า "ปลายทางมีปัญหา"
+ *
+ * เกณฑ์เดียวกับเจ้าอื่น — ไม่รวม not_found กับ invalid_tracking_number เพราะ
+ * สองอันนั้นคือคำตอบที่ถูกต้องของปลายทางที่ทำงานปกติดี และเลขของขนส่งเจ้าอื่น
+ * ที่ถูกส่งมาถามที่นี่ก็ได้ not_found เป็นปกติอยู่แล้ว
+ */
+const BREAKER_FAILURES: ReadonlySet<string> = new Set([
+  "rate_limited",
+  "network_error",
+  "upstream_error",
+  "auth_failed",
+  "config_error",
+]);
 const CARRIER_NAME = "ไปรษณีย์ไทย";
 
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -354,7 +392,7 @@ async function requestTracking(
  * ทุกความผิดพลาดถูกโยนเป็น CarrierError ที่มี code ระบุสาเหตุ — ไม่มี error ดิบหลุดออกไป
  * เพื่อให้ฝั่งเรียกใช้จัดการได้เสมอและแอปไม่ crash
  */
-export async function track(trackingNumber: string): Promise<TrackingResult> {
+async function trackOnce(trackingNumber: string): Promise<TrackingResult> {
   const barcode = normalizeTrackingNumber(trackingNumber ?? "");
 
   // ใช้ช่วงความยาวกว้างเท่ากับ adapter อื่น เพื่อให้เลขของขนส่งเจ้าอื่นถูกส่งมาถามจริง
@@ -365,6 +403,10 @@ export async function track(trackingNumber: string): Promise<TrackingResult> {
       "รูปแบบเลขพัสดุไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง",
     );
   }
+
+  // นับหลังตรวจรูปแบบเลข แต่ก่อนยิงจริง — เลขที่รูปแบบผิดไม่เคยออกไปถึงปลายทาง
+  // จึงไม่ควรนับเป็นโควตาที่ใช้ไป
+  await countProviderCall("thailand-post");
 
   let token = await getToken();
   let response = await requestTracking(token, barcode);
@@ -414,6 +456,45 @@ export async function track(trackingNumber: string): Promise<TrackingResult> {
   }
 
   return toTrackingResult(barcode, items);
+}
+
+/**
+ * ติดตามพัสดุผ่านไปรษณีย์ไทย พร้อม circuit breaker
+ *
+ * วงจรถูกตัดอยู่ → ปฏิเสธทันทีโดยไม่ยิงและไม่นับโควตา ผู้เรียก (resolve) จะข้าม
+ * ไปเจ้าถัดไปเอง ซึ่งทั้งเร็วกว่าและไม่เผาโควตาของเจ้าถัดไปไปกับการรอ timeout
+ * ของเจ้าที่รู้อยู่แล้วว่าไม่ตอบ
+ */
+export async function track(trackingNumber: string): Promise<TrackingResult> {
+  if (!thailandPostBreaker.allows()) {
+    const snapshot = thailandPostBreaker.snapshot();
+    throw new CarrierError(
+      "upstream_error",
+      "ระบบไปรษณีย์ไทยขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้ง",
+      {
+        debugMessage:
+          "ข้ามการยิงไปรษณีย์ไทยเพราะ circuit breaker เปิดอยู่ " +
+          `(เหลืออีก ${snapshot.cooldownRemainingMs}ms ถึงจะลองแตะดู)`,
+        upstreamCode: "breaker_open",
+      },
+    );
+  }
+
+  try {
+    const result = await trackOnce(trackingNumber);
+    thailandPostBreaker.recordSuccess();
+    return result;
+  } catch (error) {
+    // "ไม่พบเลขนี้" คือคำตอบของปลายทางที่ทำงานปกติ — และเลขของขนส่งเจ้าอื่นที่
+    // ถูกส่งมาถามที่นี่ก็ได้คำตอบนั้นเป็นปกติ ถ้านับเป็นความล้มเหลว วงจรจะถูก
+    // ตัดตลอดเวลาทั้งที่ไปรษณีย์ไทยไม่ได้เป็นอะไรเลย
+    if (error instanceof CarrierError && BREAKER_FAILURES.has(error.code)) {
+      thailandPostBreaker.recordFailure();
+    } else {
+      thailandPostBreaker.recordSuccess();
+    }
+    throw error;
+  }
 }
 
 /** adapter object สำหรับให้ส่วนอื่นเรียกใช้แบบเดียวกันทุกขนส่ง */
