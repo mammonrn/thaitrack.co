@@ -170,6 +170,9 @@ export async function POST(request: Request) {
       ? null
       : await resolveLocation(rawLocationText, result.carrierCode, {
           trackingNumber: result.trackingNumber,
+          // ขนส่งที่เพิ่งค้นเจอ = ยืนยันแล้ว ไม่ใช่การเดา ปลดล็อกการขอที่อยู่
+          // สาขาสำหรับเลขที่ prefix บอกไม่ได้ (เช่น TH… ของ SPX)
+          courierHint: result.carrierCode,
         });
 
   const coordinates = location?.coordinates ?? null;
@@ -190,6 +193,8 @@ export async function POST(request: Request) {
         last_location_text: locationText === "" ? null : locationText,
         last_lat: coordinates?.lat ?? null,
         last_lng: coordinates?.lng ?? null,
+        // หน้าประวัติใช้ค่านี้ตัดสินว่าจะขึ้นป้าย "ตำแหน่งโดยประมาณ" หรือไม่
+        last_location_accuracy: coordinates === null ? null : location?.accuracy ?? null,
         last_updated_at: result.lastUpdated,
       },
       // บันทึกเลขเดิมซ้ำต้องอัปเดตแถวเดิม ไม่ใช่สร้างแถวใหม่

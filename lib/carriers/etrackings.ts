@@ -78,6 +78,14 @@ const STATUS_MAP: Record<string, TrackingStatus> = {
  *
  * ฝั่งซ้ายคือรหัสที่ระบบเราใช้อยู่ ซึ่งบางตัวตรงกับของ Track123 บางตัวเป็น
  * ของเราเอง เติมแถวใหม่ได้เลยเมื่อรองรับขนส่งเพิ่ม
+ *
+ * ⚠️ **ห้ามใส่ขนส่งที่ ETrackings ไม่รองรับ** ยืนยันจากการยิงจริงแล้วว่าไม่มี:
+ * thailand-post (ตอบ 400 Courier does not exist), lex, fed-ex, dhl-express,
+ * ems-international — แถวที่ไม่รองรับหนึ่งแถวคือการทิ้งโควตาหนึ่งครั้งทุกครั้ง
+ * ที่มีเลขของเจ้านั้นเข้ามา และตั้งแต่มี courier hint ตารางนี้ถูกใช้บ่อยขึ้นมาก
+ * (ไปรษณีย์ไทยต่อตรงกับ API ของเขาเองอยู่แล้ว จึงไม่ได้เสียอะไรจากการถอดออก)
+ *
+ * ยังไม่ได้ยืนยันด้วยเลขจริง: inter-express, dhl-ecommerce
  */
 const COURIER_MAP: Record<string, string> = {
   "flash-express": "flash-express",
@@ -85,7 +93,6 @@ const COURIER_MAP: Record<string, string> = {
   "kex-express": "kex-express",
   "jt-express": "jt-express",
   "jnt-express": "jt-express",
-  "thailand-post": "thailand-post",
   "shopee-xpress-th": "shopee-express",
   "shopee-express": "shopee-express",
   "best-express": "best-express",
@@ -99,7 +106,6 @@ const COURIER_NAME_TH: Record<string, string> = {
   "flash-express": "Flash Express",
   "kex-express": "Kerry Express",
   "jt-express": "J&T Express",
-  "thailand-post": "ไปรษณีย์ไทย",
   "shopee-express": "Shopee Xpress",
   "best-express": "BEST Express",
   "nim-express": "Nim Express",
@@ -788,6 +794,7 @@ export async function trackWithCourier(
 export function canTrack(trackingNumber: string, hint?: string): boolean {
   return resolveCourier(trackingNumber, hint) !== null;
 }
+
 
 /** adapter object สำหรับให้ส่วนอื่นเรียกใช้แบบเดียวกันทุกขนส่ง */
 export const etrackings: CarrierAdapter = {

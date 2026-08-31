@@ -6,6 +6,7 @@
  */
 
 import { TRACKING_STATUS_TEXT, type TrackingStatus } from "./carriers/types";
+import type { LocationAccuracy } from "./geocode";
 import type { UserFacingError } from "./tracking-view";
 
 /** หนึ่งรายการในหน้าประวัติ (แปลงจากคอลัมน์ snake_case ของฐานข้อมูลแล้ว) */
@@ -19,13 +20,21 @@ export interface SavedTracking {
   lastLocationText: string | null;
   lastLat: number | null;
   lastLng: number | null;
+  /**
+   * หมุดนี้ละเอียดแค่ไหน — null = แถวเก่าที่บันทึกก่อนมีคอลัมน์นี้
+   *
+   * "approximate" ต้องขึ้นป้ายบอกผู้ใช้ว่าเป็นตำแหน่งโดยประมาณ ส่วน null
+   * ไม่ขึ้นป้าย เพราะเราไม่รู้จริงๆ ว่าแม่นแค่ไหน การเดาว่า "ไม่แม่น" แล้ว
+   * ติดป้ายให้ทุกแถวเก่า คือการบอกสิ่งที่เราไม่รู้ ไม่ต่างจากการเดาว่าแม่น
+   */
+  lastLocationAccuracy: LocationAccuracy | null;
   lastUpdatedAt: string | null;
   createdAt: string;
 }
 
 /** ชื่อคอลัมน์ที่ดึงจากฐานข้อมูล ประกาศไว้ที่เดียวเพื่อให้ select ตรงกับ mapper */
 export const SAVED_TRACKING_COLUMNS =
-  "id, tracking_number, carrier_name, nickname, last_status, last_status_text, last_location_text, last_lat, last_lng, last_updated_at, created_at";
+  "id, tracking_number, carrier_name, nickname, last_status, last_status_text, last_location_text, last_lat, last_lng, last_location_accuracy, last_updated_at, created_at";
 
 interface SavedTrackingRow {
   id: string;
@@ -37,6 +46,7 @@ interface SavedTrackingRow {
   last_location_text: string | null;
   last_lat: number | null;
   last_lng: number | null;
+  last_location_accuracy: string | null;
   last_updated_at: string | null;
   created_at: string;
 }
@@ -65,6 +75,12 @@ export function toSavedTracking(row: SavedTrackingRow): SavedTracking {
     lastLocationText: row.last_location_text,
     lastLat: row.last_lat,
     lastLng: row.last_lng,
+    // ฐานข้อมูลมี check constraint คุมอยู่ แต่กรองซ้ำด้วยเหตุผลเดียวกับ lastStatus
+    lastLocationAccuracy:
+      row.last_location_accuracy === "exact" ||
+      row.last_location_accuracy === "approximate"
+        ? row.last_location_accuracy
+        : null,
     lastUpdatedAt: row.last_updated_at,
     createdAt: row.created_at,
   };

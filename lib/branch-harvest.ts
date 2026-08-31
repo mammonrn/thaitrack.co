@@ -35,9 +35,19 @@ import {
   normalizeGeocodeQuery,
   parseLocationText,
 } from "./branch-location";
-import { canTrack, isConfigured, track } from "./carriers/etrackings";
+import {
+  canTrack,
+  isConfigured,
+  track,
+  trackWithCourier,
+} from "./carriers/etrackings";
 import type { TrackingResult } from "./carriers/types";
-import { geocodeAddress, isPreciseEnough, type GeocodeHit } from "./geocode";
+import {
+  classifyAccuracy,
+  geocodeAddress,
+  type GeocodeHit,
+  type LocationAccuracy,
+} from "./geocode";
 import { isNearQuota } from "./provider-usage";
 import {
   supabaseLocationStore,
@@ -140,15 +150,16 @@ export async function harvestBranchCoordinates(
       );
       if (existing !== null) continue;
 
-      const hit = await lookupAddress(candidate.address, store, geocode);
-      if (hit === null) continue;
+      const found = await lookupAddress(candidate.address, store, geocode);
+      if (found === null) continue;
 
       const written = await store.saveHarvestedBranch({
         carrierCode: result.carrierCode,
         branchCode: candidate.branchCode,
         branchName: candidate.branchName,
-        lat: hit.coordinates.lat,
-        lng: hit.coordinates.lng,
+        lat: found.hit.coordinates.lat,
+        lng: found.hit.coordinates.lng,
+        accuracy: found.accuracy,
         address: candidate.address,
       });
 
@@ -156,7 +167,9 @@ export async function harvestBranchCoordinates(
         saved += 1;
         console.info(
           `[branch-harvest] เติมพิกัดสาขา carrier=${result.carrierCode}` +
-            ` branch=${candidate.branchCode} precision=${hit.precision}`,
+            ` branch=${candidate.branchCode} accuracy=${found.accuracy}` +
+            ` radius=${Math.round(found.hit.accuracyMeters)}m` +
+            ` precision=${found.hit.precision}`,
         );
       }
     } catch (cause) {
@@ -170,38 +183,70 @@ export async function harvestBranchCoordinates(
   return saved;
 }
 
+/** พิกัดที่ผ่านเกณฑ์แล้ว พร้อมชั้นที่จะติดไว้กับแถว */
+interface AcceptedAddress {
+  hit: GeocodeHit;
+  accuracy: Exclude<LocationAccuracy, "area">;
+}
+
 /**
- * หาพิกัดของที่อยู่หนึ่งอัน ผ่าน cache — null เมื่อไม่ได้พิกัดที่ "แม่นพอ"
+ * หาพิกัดของที่อยู่หนึ่งอัน ผ่าน cache — null เมื่อไม่ได้พิกัดที่ดีพอ
  *
- * แถวเก่าใน cache ที่ไม่รู้ความละเอียด (precision = null ดู migration 0006)
- * ถูกปฏิเสธด้วย ไม่ใช่เดาว่าแม่น และไม่ยิงถาม Google ใหม่เพื่อหาความละเอียด
- * เพราะข้อความพวกนั้นเข้ามาทางเส้นแสดงผลปกติ ไม่ใช่ที่อยู่สาขาแบบนี้
+ * ปฏิเสธสองกรณี และทั้งคู่ด้วยเหตุผลเดียวกันคือ "ไม่ยืนยันสิ่งที่ไม่รู้":
+ *
+ *   1. ชั้น area — เป็นหมุดกลางอำเภอ/จังหวัด ห่างจากสาขาจริงได้เป็นสิบกิโล
+ *   2. แถวเก่าใน cache ที่ไม่มีผลการวัด (accuracyMeters เป็น null ดู migration
+ *      0008) — ต่างจากเส้นทางแสดงผลที่ยอมปักหมุดให้พร้อมป้าย "โดยประมาณ"
+ *      ตรงนี้เขียนลงตารางที่ทั้งระบบเชื่อว่าถูก ของที่ไม่รู้ที่มาไม่ควรเข้าไป
+ *      และไม่ยิงถาม Google ใหม่เพื่อหาค่าให้มันด้วย เพราะข้อความพวกนั้นเข้ามา
+ *      ทางเส้นแสดงผลปกติ ไม่ใช่ที่อยู่สาขาแบบนี้
  */
 async function lookupAddress(
   address: string,
   store: LocationStore,
   geocode: (text: string) => Promise<GeocodeHit | null>,
-): Promise<GeocodeHit | null> {
+): Promise<AcceptedAddress | null> {
   const query = normalizeGeocodeQuery(address);
 
   const cached = await store.readGeocode(query);
   if (cached !== null) {
     if (!cached.found || cached.coordinates === null) return null;
-    if (!isPreciseEnough(cached.precision)) return null;
-    return { coordinates: cached.coordinates, precision: cached.precision! };
+    if (cached.accuracyMeters === null) return null;
+
+    const accuracy = classifyAccuracy(cached);
+    if (accuracy === "area") return null;
+
+    return {
+      hit: {
+        coordinates: cached.coordinates,
+        precision: cached.precision ?? "approximate",
+        accuracyMeters: cached.accuracyMeters,
+        areaOnly: cached.areaOnly ?? false,
+      },
+      accuracy,
+    };
   }
 
   const hit = await geocode(address);
-  await store.writeGeocode(query, hit?.coordinates ?? null, hit?.precision ?? null);
+  await store.writeGeocode(query, {
+    coordinates: hit?.coordinates ?? null,
+    precision: hit?.precision ?? null,
+    accuracyMeters: hit?.accuracyMeters ?? null,
+    areaOnly: hit?.areaOnly ?? null,
+  });
 
   if (hit === null) return null;
-  if (!isPreciseEnough(hit.precision)) {
+
+  const accuracy = classifyAccuracy(hit);
+  if (accuracy === "area") {
     console.info(
-      `[branch-harvest] ข้ามที่อยู่เพราะพิกัดหยาบเกินไป (${hit.precision})`,
+      `[branch-harvest] ข้ามที่อยู่เพราะเป็นพิกัดระดับพื้นที่` +
+        ` (radius=${Math.round(hit.accuracyMeters)}m areaOnly=${hit.areaOnly})`,
     );
     return null;
   }
-  return hit;
+
+  return { hit, accuracy };
 }
 
 /* ------------------------------------------------------------------ *
@@ -263,9 +308,12 @@ function spendBudget(now: number): boolean {
 export interface ProbeOptions extends HarvestOptions {
   now?: number;
   /** ตัวยิงถามขนส่ง (ค่าเริ่มต้น: ETrackings) — ใส่เองได้ในเทสต์ */
-  fetchResult?: (trackingNumber: string) => Promise<TrackingResult>;
-  /** ETrackings ตามเลขนี้ได้ไหม (ค่าเริ่มต้น: ตาราง prefix ของ ETrackings) */
-  canProbe?: (trackingNumber: string) => boolean;
+  fetchResult?: (
+    trackingNumber: string,
+    courierHint?: string,
+  ) => Promise<TrackingResult>;
+  /** ETrackings ตามเลขนี้ได้ไหม (ค่าเริ่มต้น: ตาราง prefix + courier hint) */
+  canProbe?: (trackingNumber: string, courierHint?: string) => boolean;
   /** โควตาของ ETrackings ใกล้เต็มหรือยัง */
   nearQuota?: () => boolean;
 }
@@ -277,7 +325,12 @@ export interface ProbeOptions extends HarvestOptions {
  *
  * ⚠️ กลไกกันเผาโควตา — สี่ด่านซ้อนกัน เรียงจากถูกไปแพง:
  *
- *   1. เลขนี้ ETrackings ตามได้ไหม (ตาราง prefix) — ตอบไม่ได้ก็ไม่เสียอะไรเลย
+ *   1. เลขนี้ ETrackings ตามได้ไหม (ตาราง prefix **หรือ courier ที่ยืนยันแล้ว**)
+ *      — ตอบไม่ได้ก็ไม่เสียอะไรเลย
+ *
+ *      courierHint สำคัญมากในทางปฏิบัติ: เลข SPX ในไทยส่วนใหญ่ขึ้นต้นด้วย
+ *      `TH` ซึ่งใช้ร่วมกับ Flash จึงฟันธงจาก prefix ไม่ได้ตลอดกาล ถ้าไม่มี
+ *      hint ด่านนี้จะตกเสมอและการเติมพิกัดสาขาจะไม่เคยทำงานกับเลขส่วนใหญ่เลย
  *   2. โควตาของ ETrackings ใกล้เต็มหรือยัง — ใกล้เต็มแล้วต้องเก็บไว้ให้การ
  *      ค้นหาจริงของผู้ใช้ก่อน การเติมพิกัดรอวันหลังได้
  *   3. งบต่อวันของโปรเซสนี้ (BRANCH_PROBE_DAILY_LIMIT) — เพดานบนแบบหยาบๆ
@@ -293,20 +346,26 @@ export async function probeBranchAddress(input: {
   trackingNumber: string;
   carrierCode: string;
   branchCode: string;
+  /** ขนส่งที่ยืนยันแล้วของเลขนี้ — ปลดล็อกเลขที่ prefix เดาไม่ออก */
+  courierHint?: string;
   store: LocationStore;
   options?: ProbeOptions;
 }): Promise<boolean> {
   const options = input.options ?? {};
   const now = options.now ?? Date.now();
-  const fetchResult = options.fetchResult ?? track;
-  const allowedByPrefix = options.canProbe ?? ((no: string) => canTrack(no));
+  const fetchResult =
+    options.fetchResult ??
+    ((no: string, hint?: string) =>
+      hint === undefined ? track(no) : trackWithCourier(no, hint));
+  const canProbe =
+    options.canProbe ?? ((no: string, hint?: string) => canTrack(no, hint));
   const nearQuota = options.nearQuota ?? (() => isNearQuota("etrackings", now));
 
   // ด่าน 0: ยังไม่ได้ตั้งค่าเจ้านี้ → ไม่มีอะไรให้ถาม
   if (options.fetchResult === undefined && !isConfigured()) return false;
 
   // ด่าน 1
-  if (!allowedByPrefix(input.trackingNumber)) return false;
+  if (!canProbe(input.trackingNumber, input.courierHint)) return false;
 
   // ด่าน 2
   if (nearQuota()) {
@@ -334,7 +393,7 @@ export async function probeBranchAddress(input: {
 
   let result: TrackingResult;
   try {
-    result = await fetchResult(input.trackingNumber);
+    result = await fetchResult(input.trackingNumber, input.courierHint);
   } catch (cause) {
     console.info(
       `[branch-harvest] ถามที่อยู่สาขา ${input.branchCode} ไม่สำเร็จ: ` +

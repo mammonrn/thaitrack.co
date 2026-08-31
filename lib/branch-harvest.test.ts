@@ -20,7 +20,7 @@ import {
   resetProbeBudget,
 } from "./branch-harvest.ts";
 import type { TrackingResult } from "./carriers/types.ts";
-import type { Coordinates, GeocodeHit, GeocodePrecision } from "./geocode.ts";
+import type { Coordinates, GeocodeHit } from "./geocode.ts";
 import type {
   CachedGeocode,
   CarrierBranch,
@@ -55,11 +55,13 @@ function makeStore(): FakeStore {
       Promise.resolve(branches.get(`${carrierCode}::${branchCode}`) ?? null),
     recordUnknownBranch: () => Promise.resolve(),
     readGeocode: (query) => Promise.resolve(geocodes.get(query) ?? null),
-    writeGeocode: (query, coordinates, precision) => {
+    writeGeocode: (query, hit) => {
       geocodes.set(query, {
-        found: coordinates !== null,
-        coordinates,
-        precision: coordinates === null ? null : precision,
+        found: hit.coordinates !== null,
+        coordinates: hit.coordinates,
+        precision: hit.coordinates === null ? null : hit.precision,
+        accuracyMeters: hit.accuracyMeters,
+        areaOnly: hit.areaOnly,
       });
       return Promise.resolve();
     },
@@ -77,6 +79,7 @@ function makeStore(): FakeStore {
         branchName: input.branchName,
         lat: input.lat,
         lng: input.lng,
+        accuracy: input.accuracy,
         note: input.address,
         updatedBy: "auto:etrackings",
         updatedAt: null,
@@ -88,17 +91,31 @@ function makeStore(): FakeStore {
   return store;
 }
 
+/**
+ * ตัวหาพิกัดปลอม — คุมด้วย "รัศมีความคลาดเคลื่อน" ซึ่งเป็นตัวที่ระบบใช้ตัดสิน
+ *
+ * 80 ม. = ระดับบ้านเลขที่ (exact) · 3 กม. = ระดับตำบล (approximate)
+ * · 25 กม. = ระดับอำเภอ (area — ต้องถูกปฏิเสธ)
+ */
 function makeGeocoder(
-  precision: GeocodePrecision | null = "rooftop",
+  accuracyMeters: number | null = 80,
   coordinates: Coordinates | null = CHIANG_RAI,
+  areaOnly = false,
 ) {
   const calls: string[] = [];
   return {
     calls,
     geocode: (text: string): Promise<GeocodeHit | null> => {
       calls.push(text);
-      if (coordinates === null || precision === null) return Promise.resolve(null);
-      return Promise.resolve({ coordinates, precision });
+      if (coordinates === null || accuracyMeters === null) {
+        return Promise.resolve(null);
+      }
+      return Promise.resolve({
+        coordinates,
+        precision: "center",
+        accuracyMeters,
+        areaOnly,
+      });
     },
   };
 }
@@ -168,27 +185,42 @@ test("ที่อยู่ที่หาพิกัดได้แม่น �
   const branch = store.branches.get(`${CARRIER}::ACRAI-B`);
   assert.equal(branch?.lat, CHIANG_RAI.lat);
   assert.equal(branch?.branchName, "เมืองเชียงราย");
+  assert.equal(branch?.accuracy, "exact");
 });
 
-test("พิกัดหยาบ (กลางพื้นที่) → ห้ามเขียนลงตารางสาขาเด็ดขาด", async () => {
+test("พิกัดระดับตำบล → บันทึกได้ แต่ติดชั้น approximate ไว้", async () => {
+  // เกณฑ์เดิมรับเฉพาะ ROOFTOP ซึ่งที่อยู่ไทยไม่เคยได้เลย การเก็บพิกัดสาขาจึง
+  // ตายสนิท ตอนนี้รับระดับตำบลได้ แต่ต้องติดชั้นไว้ให้ UI ขึ้นป้ายบอกผู้ใช้
+  const store = makeStore();
+
+  const saved = await harvestBranchCoordinates(makeResult([branchEvent()]), {
+    store,
+    geocode: makeGeocoder(3_000).geocode,
+  });
+
+  assert.equal(saved, 1);
+  assert.equal(store.branches.get(`${CARRIER}::ACRAI-B`)?.accuracy, "approximate");
+});
+
+test("พิกัดระดับอำเภอ → ห้ามเขียนลงตารางสาขาเด็ดขาด", async () => {
   // นี่คือหน้าตาของบั๊กเดิม: Google เดาจากคำที่พอเดาได้แล้วคืนหมุดกลางอำเภอ
   const store = makeStore();
 
   const saved = await harvestBranchCoordinates(makeResult([branchEvent()]), {
     store,
-    geocode: makeGeocoder("approximate").geocode,
+    geocode: makeGeocoder(25_000).geocode,
   });
 
   assert.equal(saved, 0);
   assert.deepEqual(store.saved, []);
 });
 
-test("พิกัดระดับถนน (center) ก็ยังหยาบเกินไปสำหรับตารางสาขา", async () => {
+test("Google บอกเองว่าเป็นเขตปกครอง → ปฏิเสธ ต่อให้กรอบจะเล็ก", async () => {
   const store = makeStore();
 
   const saved = await harvestBranchCoordinates(makeResult([branchEvent()]), {
     store,
-    geocode: makeGeocoder("center").geocode,
+    geocode: makeGeocoder(80, CHIANG_RAI, true).geocode,
   });
 
   assert.equal(saved, 0);
@@ -202,6 +234,7 @@ test("มีพิกัดอยู่แล้ว → ไม่ทับ แ�
     branchName: "สาขาที่แอดมินกรอกเอง",
     lat: 1,
     lng: 2,
+    accuracy: "exact",
     note: null,
     updatedBy: "boss@example.com",
     updatedAt: null,
@@ -242,6 +275,8 @@ test("แถวเก่าใน cache ที่ไม่รู้ความ�
     found: true,
     coordinates: CHIANG_RAI,
     precision: null,
+    accuracyMeters: null,
+    areaOnly: null,
   });
 
   const saved = await harvestBranchCoordinates(makeResult([branchEvent()]), {
@@ -427,4 +462,74 @@ test("ยิงแล้วไม่มีที่อยู่ติดมา �
 
   assert.equal(filled, false);
   assert.deepEqual(store.claims, [`${CARRIER}::ACRAI-B`]);
+});
+
+/* ------------- courier ที่ยืนยันแล้วปลดล็อกเลขที่ prefix บอกไม่ได้ ------------- */
+
+test("ด่าน 1 — เลข TH… ที่ไม่มี hint → ตกด่านแรก (ยิงไปก็ทิ้งโควตา)", async () => {
+  // ไม่ override canProbe จึงได้ตัวจริงของ ETrackings มาตัดสิน
+  resetProbeBudget();
+  const store = makeStore();
+
+  const filled = await probeBranchAddress({
+    trackingNumber: "TH264511339099F",
+    carrierCode: CARRIER,
+    branchCode: "ACRAI-B",
+    store,
+    options: {
+      fetchResult: () => Promise.resolve(makeResult([branchEvent()])),
+      nearQuota: () => false,
+      geocode: makeGeocoder().geocode,
+    },
+  });
+
+  assert.equal(filled, false);
+  assert.deepEqual(store.claims, []);
+});
+
+test("ด่าน 1 — เลข TH… พร้อม courier ที่ยืนยันแล้ว → ผ่าน และยิงโดยระบุขนส่ง", async () => {
+  // นี่คือเคสของเลข SPX ส่วนใหญ่ในไทย ถ้าด่านนี้ไม่ผ่าน การเติมพิกัดสาขา
+  // จะไม่ทำงานเลยกับเลขกลุ่มนั้น
+  resetProbeBudget();
+  const store = makeStore();
+  const hints: (string | undefined)[] = [];
+
+  const filled = await probeBranchAddress({
+    trackingNumber: "TH264511339099F",
+    carrierCode: CARRIER,
+    branchCode: "ACRAI-B",
+    courierHint: "shopee-xpress-th",
+    store,
+    options: {
+      fetchResult: (_no, hint) => {
+        hints.push(hint);
+        return Promise.resolve(makeResult([branchEvent()]));
+      },
+      nearQuota: () => false,
+      geocode: makeGeocoder().geocode,
+    },
+  });
+
+  assert.equal(filled, true);
+  assert.deepEqual(hints, ["shopee-xpress-th"]);
+});
+
+test("ด่าน 1 — hint เป็นเจ้าที่ ETrackings ไม่รองรับ → ยังตกด่านแรก", async () => {
+  resetProbeBudget();
+  const store = makeStore();
+
+  const filled = await probeBranchAddress({
+    trackingNumber: "EY145587896TH",
+    carrierCode: "thailand-post",
+    branchCode: "SOCN",
+    courierHint: "thailand-post",
+    store,
+    options: {
+      fetchResult: () => Promise.resolve(makeResult([branchEvent()])),
+      nearQuota: () => false,
+      geocode: makeGeocoder().geocode,
+    },
+  });
+
+  assert.equal(filled, false);
 });

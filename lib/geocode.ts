@@ -6,6 +6,10 @@
  *
  * เรียกเฉพาะตอนบันทึกประวัติเท่านั้น แล้วเก็บพิกัดลงฐานข้อมูลไปเลย หน้าประวัติ
  * จึงอ่านพิกัดจากฐานข้อมูลได้ตรงๆ ไม่ต้องยิงถาม Google ซ้ำทุกครั้งที่แสดงผล
+ *
+ * ⚠️ ไฟล์นี้ไม่ได้คืนแค่พิกัด แต่คืน **ผลการวัดว่าพิกัดนั้นละเอียดแค่ไหน** ด้วย
+ * เพราะหลักการของทั้งระบบคือ "เมื่อไม่แน่ใจ ห้ามปักหมุด" — และการจะรู้ว่าแน่ใจ
+ * หรือไม่ ต้องวัดได้ ไม่ใช่เดาจากชนิดของคำตอบ (ดู GeocodePrecision)
  */
 
 export interface Coordinates {
@@ -14,28 +18,80 @@ export interface Coordinates {
 }
 
 /**
- * ความละเอียดของพิกัดที่ Google คืนมา (แปลงจาก geometry.location_type)
+ * geometry.location_type ดิบของ Google — เก็บไว้เพื่อวินิจฉัยเท่านั้น
  *
- *   rooftop      ตรงตัวอาคาร — แม่นที่สุด
- *   range        ประมาณจากช่วงเลขที่บนถนน — ยังถือว่าแม่นพอ
- *   center       จุดกึ่งกลางของสิ่งที่หาเจอ เช่น ถนนทั้งเส้น
- *   approximate  จุดกึ่งกลางของ "พื้นที่" เช่น ตำบล อำเภอ จังหวัด
+ * ⚠️ **ห้ามใช้ค่านี้ตัดสินว่าพิกัดดีพอหรือไม่** เคยใช้แล้วและพังมาแล้ว:
+ * มันบอกแค่ *วิธี* ที่ Google ได้พิกัดมา ไม่ได้บอก *ขนาด* ของสิ่งที่มันจับได้
+ * GEOMETRIC_CENTER เป็นได้ทั้ง "กลางถนนซอยหนึ่ง" และ "กลางตำบล" ส่วน
+ * APPROXIMATE เป็นได้ทั้งตำบลและทั้งจังหวัด
  *
- * ⚠️ approximate คือหน้าตาของบั๊กที่โปรเจกต์นี้แก้ไปแล้วรอบหนึ่ง (ดู
- * supabase/migrations/0004_carrier_branches.sql) — Google เดาจากคำที่พอเดาได้
- * แล้วคืนหมุดกลางอำเภอมา ผู้ใช้เห็นแล้วเข้าใจว่าพัสดุอยู่ตรงนั้นจริง
- *
- * เส้นทางที่เขียนพิกัดลง carrier_branches อัตโนมัติจึงต้องปฏิเสธค่านี้เสมอ
- * (ดู lib/branch-harvest.ts) ส่วนเส้นทางแสดงผลปกติยังใช้ได้ เพราะที่นั่นเรา
- * แสดงพิกัดของ "ข้อความที่ดูเหมือนที่อยู่จริง" ซึ่งกลางพื้นที่ก็ยังสื่อความหมาย
+ * ตัวที่ใช้ตัดสินจริงคือ accuracyMeters กับ areaOnly ข้างล่าง
  */
 export type GeocodePrecision = "rooftop" | "range" | "center" | "approximate";
 
-/** ผลการหาพิกัดหนึ่งครั้ง พร้อมความละเอียด */
+/** ผลการหาพิกัดหนึ่งครั้ง พร้อมสิ่งที่บอกได้ว่าละเอียดแค่ไหน */
 export interface GeocodeHit {
   coordinates: Coordinates;
   precision: GeocodePrecision;
+  /**
+   * รัศมีความคลาดเคลื่อนโดยประมาณ (เมตร) — ครึ่งเส้นทแยงมุมของ viewport
+   *
+   * นี่คือตัววัด "ขนาดของสิ่งที่ Google จับได้" ซึ่งเทียบกันได้ตรงๆ
+   * บ้านเลขที่ราว 100 ม. · ตำบลราว 3–8 กม. · อำเภอ 15–40 กม. · จังหวัด 50 กม.+
+   */
+  accuracyMeters: number;
+  /**
+   * true = ผลลัพธ์เป็น "พื้นที่" ไม่ใช่ "จุด" ห้ามเอาไปปักหมุดไม่ว่าขนาดจะเท่าไร
+   *
+   * มาจากสองสัญญาณที่เด็ดขาดกว่าขนาด: types ของผลลัพธ์เป็นเขตปกครองระดับ
+   * อำเภอขึ้นไป หรือ Google บอกเองว่า partial_match (จับได้ไม่ครบ ต้องเดา)
+   */
+  areaOnly: boolean;
 }
+
+/** ชั้นความละเอียดที่ระบบใช้ตัดสินใจ */
+export type LocationAccuracy =
+  /** แม่นพอจะบอกว่า "อยู่ตรงนี้" — ปักหมุดได้ตามปกติ */
+  | "exact"
+  /** ระดับตำบล/หมู่บ้าน — ปักหมุดได้ แต่ต้องบอกผู้ใช้ว่าเป็นตำแหน่งโดยประมาณ */
+  | "approximate"
+  /** ระดับอำเภอขึ้นไป — ห้ามปักหมุด เพราะผู้ใช้จะเข้าใจว่าพัสดุอยู่ตรงนั้นจริง */
+  | "area";
+
+/** ชื่อตัวแปร env ของเพดานที่ยังยอมปักหมุด */
+export const MAX_ACCURACY_VAR = "GEOCODE_MAX_ACCURACY_METERS";
+
+/**
+ * ละเอียดกว่านี้ถือว่า "จุด" ไม่ต้องขึ้นป้ายเตือน
+ *
+ * 150 ม. ครอบคลุมบ้านเลขที่กับหัวมุมถนนได้สบาย แต่แคบพอที่หมู่บ้านทั้งหมู่บ้าน
+ * จะไม่ผ่าน ค่านี้ไม่เปิดให้ปรับ เพราะมันคือนิยามของคำว่า "เป๊ะ" ไม่ใช่ policy
+ */
+export const EXACT_MAX_METERS = 150;
+
+/**
+ * เพดานที่ยังยอมปักหมุด (พร้อมป้ายบอกว่าโดยประมาณ)
+ *
+ * 5 กม. = ระดับตำบล/หมู่บ้าน ซึ่งยังตอบคำถาม "พัสดุอยู่แถวไหน" ได้จริง
+ * ส่วนอำเภอ (15–40 กม.) ตอบไม่ได้แล้ว — หมุดกลางอำเภออยู่ห่างจากสาขาจริงได้
+ * เป็นสิบกิโล ซึ่งคือบั๊กเดิมที่ทั้งระบบนี้ตั้งใจแก้
+ */
+export const DEFAULT_MAX_ACCURACY_METERS = 5_000;
+
+/**
+ * types ที่แปลว่า "นี่คือเขตปกครอง ไม่ใช่สถานที่"
+ *
+ * ปฏิเสธเด็ดขาดไม่ว่า viewport จะเล็กแค่ไหน — อำเภอเล็กๆ ที่ viewport บังเอิญ
+ * ต่ำกว่าเพดานก็ยังเป็นอำเภอ จุดกึ่งกลางของมันไม่ใช่ที่ตั้งของอะไรทั้งนั้น
+ *
+ * ตั้งใจไม่ใส่ locality กับ postal_code เพราะสองอันนั้นเล็กใหญ่ต่างกันมาก
+ * แล้วแต่พื้นที่ ปล่อยให้เพดานขนาดเป็นคนตัดสินตามจริงดีกว่า
+ */
+const AREA_TYPES: ReadonlySet<string> = new Set([
+  "country",
+  "administrative_area_level_1",
+  "administrative_area_level_2",
+]);
 
 /** geometry.location_type ของ Google → คำที่เราใช้ */
 const PRECISION_MAP: Record<string, GeocodePrecision> = {
@@ -45,9 +101,80 @@ const PRECISION_MAP: Record<string, GeocodePrecision> = {
   APPROXIMATE: "approximate",
 };
 
-/** ละเอียดพอจะเชื่อว่าเป็น "จุดนั้นจริง" ไม่ใช่กลางพื้นที่ */
-export function isPreciseEnough(precision: GeocodePrecision | null): boolean {
-  return precision === "rooftop" || precision === "range";
+/** เพดานจาก env — คืนค่าเริ่มต้นเมื่อไม่ได้ตั้งหรือตั้งค่าที่ใช้ไม่ได้ */
+export function readMaxAccuracyMeters(): number {
+  const value = Number((process.env.GEOCODE_MAX_ACCURACY_METERS ?? "").trim());
+  return Number.isFinite(value) && value > 0
+    ? value
+    : DEFAULT_MAX_ACCURACY_METERS;
+}
+
+/**
+ * ตัดสินชั้นความละเอียดจากผลการวัด — ฟังก์ชันบริสุทธิ์
+ *
+ * ใช้ทั้งกับผลที่เพิ่งถาม Google มาและกับแถวที่อ่านจาก cache การปรับเพดานผ่าน
+ * env จึงมีผลกับของที่ cache ไว้แล้วทันที ไม่ต้องล้าง cache
+ *
+ * accuracyMeters เป็น null = แถวเก่าที่บันทึกก่อนมีคอลัมน์นี้ (ดู migration
+ * 0008) ถือว่า "ไม่รู้" ซึ่งได้ approximate — ปักหมุดได้แต่ต้องบอกผู้ใช้ว่าไม่
+ * ยืนยันความแม่น การเดาว่าแม่นคือการรับรองสิ่งที่เราไม่รู้
+ */
+export function classifyAccuracy(input: {
+  accuracyMeters: number | null;
+  areaOnly: boolean | null;
+}): LocationAccuracy {
+  if (input.areaOnly === true) return "area";
+  if (input.accuracyMeters === null) return "approximate";
+  if (input.accuracyMeters <= EXACT_MAX_METERS) return "exact";
+  return input.accuracyMeters <= readMaxAccuracyMeters() ? "approximate" : "area";
+}
+
+/** หนึ่งองศาละติจูดเป็นเมตร (ค่าเฉลี่ยทั้งโลก คลาดเคลื่อนไม่ถึง 0.5%) */
+const METERS_PER_DEGREE = 111_320;
+
+interface Viewport {
+  northeast?: { lat?: unknown; lng?: unknown };
+  southwest?: { lat?: unknown; lng?: unknown };
+}
+
+/**
+ * ครึ่งเส้นทแยงมุมของกรอบที่ Google คืนมา หน่วยเมตร
+ *
+ * ใช้สูตรแบน (equirectangular) พอ เพราะกรอบพวกนี้เล็กเมื่อเทียบกับโลก และเรา
+ * ต้องการแค่ลำดับขนาดเพื่อเทียบกับเพดาน ไม่ได้ต้องการระยะทางที่แม่นถึงเมตร
+ *
+ * อ่านกรอบไม่ได้ → คืนค่าที่แปลว่า "ใหญ่มาก" ไม่ใช่ 0 เพราะการเดาว่าเล็ก
+ * แปลว่าเรารับรองความแม่นที่ไม่เคยวัด
+ */
+export function viewportRadiusMeters(viewport: unknown): number {
+  const box = (viewport ?? {}) as Viewport;
+  const { northeast: ne, southwest: sw } = box;
+
+  const values = [ne?.lat, ne?.lng, sw?.lat, sw?.lng];
+  if (!values.every((value) => typeof value === "number" && Number.isFinite(value))) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const [neLat, neLng, swLat, swLng] = values as number[];
+
+  const latSpan = Math.abs(neLat - swLat) * METERS_PER_DEGREE;
+  const midLat = ((neLat + swLat) / 2) * (Math.PI / 180);
+  const lngSpan =
+    Math.abs(neLng - swLng) * METERS_PER_DEGREE * Math.cos(midLat);
+
+  return Math.hypot(latSpan, lngSpan) / 2;
+}
+
+/** ผลลัพธ์นี้เป็น "พื้นที่" ไม่ใช่ "จุด" หรือไม่ */
+export function isAreaResult(input: {
+  types: unknown;
+  partialMatch: unknown;
+}): boolean {
+  if (input.partialMatch === true) return true;
+  if (!Array.isArray(input.types)) return false;
+  return input.types.some(
+    (type) => typeof type === "string" && AREA_TYPES.has(type),
+  );
 }
 
 const GEOCODE_ENDPOINT = "https://maps.googleapis.com/maps/api/geocode/json";
@@ -131,25 +258,37 @@ export async function geocodeAddress(
 
     if (!Array.isArray(results) || results.length === 0) return null;
 
-    const geometry = (
-      results[0] as {
-        geometry?: {
-          location?: { lat?: unknown; lng?: unknown };
-          location_type?: unknown;
-        };
-      }
-    )?.geometry;
+    const top = results[0] as {
+      geometry?: {
+        location?: { lat?: unknown; lng?: unknown };
+        location_type?: unknown;
+        viewport?: unknown;
+        bounds?: unknown;
+      };
+      types?: unknown;
+      partial_match?: unknown;
+    };
 
-    const location = geometry?.location;
+    const location = top.geometry?.location;
     if (!isFiniteNumber(location?.lat) || !isFiniteNumber(location?.lng)) {
       return null;
     }
+
+    // bounds คือขอบเขตจริงของสิ่งที่จับได้ ส่วน viewport คือกรอบที่แนะนำให้
+    // แสดงผล ซึ่งมักกว้างกว่าเล็กน้อย ใช้ bounds ก่อนถ้ามี จะได้ไม่ตัดสินว่า
+    // หยาบทั้งที่ Google แค่เผื่อขอบให้ดูสวย
+    const box = top.geometry?.bounds ?? top.geometry?.viewport;
 
     return {
       coordinates: { lat: location.lat, lng: location.lng },
       // ไม่รู้จักค่าที่ส่งมา → ถือว่าหยาบที่สุดไว้ก่อน ปลอดภัยกว่าเดาว่าแม่น
       precision:
-        PRECISION_MAP[String(geometry?.location_type ?? "")] ?? "approximate",
+        PRECISION_MAP[String(top.geometry?.location_type ?? "")] ?? "approximate",
+      accuracyMeters: viewportRadiusMeters(box),
+      areaOnly: isAreaResult({
+        types: top.types,
+        partialMatch: top.partial_match,
+      }),
     };
   } catch (error) {
     console.error(
