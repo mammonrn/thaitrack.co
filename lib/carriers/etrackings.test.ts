@@ -500,3 +500,48 @@ test("ที่อยู่ถูกส่งต่อไปอยู่ใน�
   assert.equal(result.events[0].location, "ACRAI-B - เมืองเชียงราย");
   assert.match(result.events[0].address ?? "", /ตำบลบ้านดู่/);
 });
+
+test("รองรับครบทั้ง 15 เจ้าที่เอกสารบอกว่ายิงได้", () => {
+  // รายชื่อจากคอลัมน์ API ในหน้า /docs/couriers/all
+  // ตารางที่ขาดเจ้าไหน = เลขของเจ้านั้นจะไม่มีวันถูกส่งไปหา ETrackings เลย
+  // ต่อให้เรารู้อยู่แล้วว่าเป็นเจ้าไหนก็ตาม (ดู canTrack)
+  const supported = [
+    "kex-express",
+    "shopee-express",
+    "flash-express",
+    "jt-express",
+    "best-express",
+    "speed-d",
+    "nim-express",
+    "inter-express",
+    "tnt-express",
+    "shippop",
+    "tp-logistics",
+    "sky-box",
+    "business-idea-transport",
+    "quantium-solutions",
+    "dhl-ecommerce",
+  ];
+
+  for (const courier of supported) {
+    assert.equal(
+      resolveCourier("TH123456", courier),
+      courier,
+      `ยังไม่รองรับ ${courier}`,
+    );
+  }
+});
+
+test("ขนส่งที่ยิงแล้วโดนปฏิเสธ ต้องไม่กลับเข้าตารางอีก", () => {
+  // ยืนยันด้วยการยิงจริงแล้วว่า ETrackings ไม่รู้จัก — แถวที่ไม่รองรับหนึ่งแถว
+  // คือการทิ้งโควตาหนึ่งครั้งทุกครั้งที่มีเลขของเจ้านั้นเข้ามา
+  for (const courier of [
+    "thailand-post",
+    "lex",
+    "fed-ex",
+    "dhl-express",
+    "ems-international",
+  ]) {
+    assert.equal(resolveCourier("TH123456", courier), null, `${courier} ไม่ควรอยู่ในตาราง`);
+  }
+});

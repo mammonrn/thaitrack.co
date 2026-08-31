@@ -98,9 +98,20 @@ const STATUS_MAP: Record<string, TrackingStatus> = {
  * ที่มีเลขของเจ้านั้นเข้ามา และตั้งแต่มี courier hint ตารางนี้ถูกใช้บ่อยขึ้นมาก
  * (ไปรษณีย์ไทยต่อตรงกับ API ของเขาเองอยู่แล้ว จึงไม่ได้เสียอะไรจากการถอดออก)
  *
- * ยังไม่ได้ยืนยันด้วยเลขจริง: inter-express, dhl-ecommerce
+ * ตอนนี้ครบทั้ง 15 เจ้าที่คอลัมน์ API ในเอกสารบอกว่ารองรับแล้ว
+ *
+ * ⚠️ "รองรับ" ในที่นี้แปลว่า **ยิงไปแล้วไม่โดนปฏิเสธว่าไม่รู้จักขนส่งเจ้านี้**
+ * ไม่ได้แปลว่าเราเคยยืนยันด้วยเลขจริงของทุกเจ้า — ที่ยืนยันแล้วด้วยเลขจริงมี
+ * flash-express, kex-express, shopee-express และ jt-express เท่านั้น
+ * ที่เหลือรอเลขตัวอย่างมายืนยัน
+ *
+ * การเติมแถวตรงนี้ไม่ได้ทำให้ยิงเพิ่มโดยอัตโนมัติ — ตารางนี้แค่ตอบว่า "ถ้ารู้ว่า
+ * เป็นเจ้านี้ ETrackings ตามให้ได้ไหม" ส่วนการรู้ว่าเป็นเจ้าไหนมาจากตาราง prefix
+ * (lib/carriers/courier-prefix.ts) หรือความจำรายเลข ซึ่งเข้มงวดกว่าและยังไม่ได้
+ * เติมเจ้าใหม่เข้าไป จึงไม่มีความเสี่ยงเรื่องเผาโควตาจากการเติมแถวเหล่านี้
  */
 const COURIER_MAP: Record<string, string> = {
+  // ยืนยันด้วยเลขจริงแล้ว
   "flash-express": "flash-express",
   "kerry-express": "kex-express",
   "kex-express": "kex-express",
@@ -108,9 +119,18 @@ const COURIER_MAP: Record<string, string> = {
   "jnt-express": "jt-express",
   "shopee-xpress-th": "shopee-express",
   "shopee-express": "shopee-express",
+
+  // รองรับตามเอกสาร แต่ยังไม่เคยยืนยันด้วยเลขจริง
   "best-express": "best-express",
+  "speed-d": "speed-d",
   "nim-express": "nim-express",
   "inter-express": "inter-express",
+  "tnt-express": "tnt-express",
+  shippop: "shippop",
+  "tp-logistics": "tp-logistics",
+  "sky-box": "sky-box",
+  "business-idea-transport": "business-idea-transport",
+  "quantium-solutions": "quantium-solutions",
   "dhl-ecommerce": "dhl-ecommerce",
 };
 
@@ -128,8 +148,15 @@ const COURIER_NAME_TH: Record<string, string> = {
   "jt-express": "J&T Express",
   "shopee-express": "Shopee Xpress",
   "best-express": "BEST Express",
+  "speed-d": "Speed-D",
   "nim-express": "Nim Express",
   "inter-express": "Inter Express",
+  "tnt-express": "TNT Express",
+  shippop: "Shippop",
+  "tp-logistics": "TP Logistics",
+  "sky-box": "SKY Box",
+  "business-idea-transport": "Business Idea Transport",
+  "quantium-solutions": "Quantium Solutions",
   "dhl-ecommerce": "DHL eCommerce",
 };
 
