@@ -213,6 +213,17 @@ export type TrackingErrorCode =
  *
  * ห้ามใส่ API key หรือ token ลงใน message เด็ดขาด เพราะ message ถูกส่งกลับไปหา client
  */
+/**
+ * ค่า upstreamCode ที่ทุก adapter ต้องติดไปกับ error ตอนยิงแล้วปลายทางไม่ตอบจนหมดเวลา
+ *
+ * มีเป็นค่าคงที่กลางเพราะมีคนอ่านค่านี้จริงสองที่ และทั้งสองที่ตัดสินใจต่างกัน
+ * ถ้าเป็นแค่ string ลอยๆ:
+ *   - gateway ของ Track123 ใช้ตัดสินว่า **ไม่ลองใหม่** (รอมา 20 วิแล้ว ลองอีกก็เกิน 40)
+ *   - หน้าสถิติแอดมินใช้แยก "ปลายทางช้าจนหมดเวลา" ออกจาก "ต่อไม่ติด"
+ *     ซึ่งเป็นคนละปัญหาและแก้คนละทาง
+ */
+export const TIMEOUT_UPSTREAM_CODE = "timeout";
+
 export class CarrierError extends Error {
   readonly code: TrackingErrorCode;
   /** ข้อความภาษาไทยที่แสดงให้ผู้ใช้เห็นได้ */

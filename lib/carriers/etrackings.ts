@@ -44,6 +44,7 @@ import {
 import { courierFromPrefix } from "./courier-prefix";
 import {
   CarrierError,
+  TIMEOUT_UPSTREAM_CODE,
   TRACKING_STATUS_TEXT,
   type CarrierAdapter,
   type SensitiveDetails,
@@ -222,12 +223,18 @@ export const etrackingsBreaker = new CircuitBreaker({
  *
  * เกณฑ์เดียวกับของ Track123 — ไม่รวม not_found กับ invalid_tracking_number
  * เพราะสองอันนั้นคือคำตอบที่ถูกต้องของปลายทางที่ทำงานปกติดี
+ *
+ * config_error อยู่ในชุดเพื่อให้เกณฑ์ตรงกับ Track123 จริงๆ ไม่ใช่แค่พูดว่าตรง
+ * ในทางปฏิบัติเส้นทางเดียวที่โยน code นี้คือการไม่ได้ตั้ง env ซึ่งเช็คก่อนถึง
+ * breaker อยู่แล้ว (ดู query) จึงยังไม่มีวันถูกนับ — แต่ถ้าวันหนึ่งมี code นี้
+ * โผล่มาจากทางอื่น เราไม่อยากให้มันหลุดด่านเพราะรายการนี้ตกหล่น
  */
 const BREAKER_FAILURES: ReadonlySet<string> = new Set([
   "rate_limited",
   "network_error",
   "upstream_error",
   "auth_failed",
+  "config_error",
 ]);
 
 
@@ -667,6 +674,12 @@ function logCall(fields: {
  * ซึ่งเราไม่มีทางไปถึงอยู่แล้ว ถ้าเจอแปลว่ามีอย่างอื่นผิดปกติ การถล่มยิงซ้ำ
  * มีแต่จะแย่ลง
  *
+ * ⚠️ ตั้งใจต่างจาก Track123 ที่ลองใหม่ได้ (ดู SYSTEM_RETRY_DELAY_MS ใน
+ * lib/carriers/track123-gateway.ts) ไม่ใช่เพราะที่นี่ตกหล่น — เพดานของ Track123
+ * คือ 1,000/เดือน ของเจ้านี้ 50/เดือน การลองใหม่หนึ่งครั้งที่นั่นคือ 0.1% ของ
+ * เดือน แต่ที่นี่คือ 2% ราคาต่างกัน 20 เท่าจนตัดสินใจต่างกันได้อย่างมีเหตุผล
+ * ถ้าวันหนึ่งโควตาเจ้านี้ขยับขึ้นมาก ให้กลับมาทบทวนข้อนี้ใหม่
+ *
  * circuit breaker ห่ออยู่ชั้นนอกสุด: วงจรเปิดอยู่ = ปฏิเสธทันทีโดยไม่ยิงและ
  * ไม่นับโควตา ผู้เรียก (resolve) จะได้สลับไปใช้อีกเจ้าทันทีโดยไม่ต้องรอ timeout
  */
@@ -736,7 +749,12 @@ async function query(
       timedOut
         ? "ระบบผู้ให้บริการสำรองตอบกลับช้าเกินไป กรุณาลองใหม่อีกครั้ง"
         : "เชื่อมต่อผู้ให้บริการสำรองไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
-      { cause, debugMessage: "เรียก ETrackings /tracks/find ไม่สำเร็จ" },
+      {
+        cause,
+        debugMessage: "เรียก ETrackings /tracks/find ไม่สำเร็จ",
+        // หน้าสถิติแยก "ช้าจนหมดเวลา" ออกจาก "ต่อไม่ติด" ได้จากป้ายนี้
+        upstreamCode: timedOut ? TIMEOUT_UPSTREAM_CODE : undefined,
+      },
     );
   }
 

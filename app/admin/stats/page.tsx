@@ -34,6 +34,7 @@ import {
   readSearchDaily,
   readSearchOverview,
   readTopCarriers,
+  readUnknownCourierFailures,
 } from "@/lib/supabase/search-events";
 
 /** ต้องรันบน Node.js runtime และห้าม cache — ตัวเลขเปลี่ยนตลอดเวลา */
@@ -123,6 +124,7 @@ export default async function AdminStatsPage() {
     errors,
     latency,
     installs,
+    unknownCourier,
   ] = await Promise.all([
     readMemberStats(),
     readMemberActivity(),
@@ -135,6 +137,7 @@ export default async function AdminStatsPage() {
     readErrorBreakdown(WINDOW_DAYS),
     readLatency(WINDOW_DAYS),
     readInstallStats(),
+    readUnknownCourierFailures(WINDOW_DAYS),
   ]);
 
   const answered = recent.found + recent.notFound;
@@ -253,6 +256,21 @@ export default async function AdminStatsPage() {
             title="สาเหตุที่ตอบไม่ได้"
             note="รวมทั้งที่ค้นไม่เจอและที่ระบบขัดข้อง — ไม่ต้องไปงมใน log อีก"
           >
+            {unknownCourier > 0 ? (
+              <p className="mb-4 rounded-xl border border-line bg-white/60 p-4 text-xs leading-relaxed text-faint">
+                <span className="font-mono text-ink">
+                  {count(unknownCourier)} ครั้ง
+                </span>{" "}
+                ในจำนวนนี้ล้มตอนที่เหลือผู้ให้บริการเจ้าเดียว เพราะเดาไม่ออกว่า
+                เลขนั้นเป็นขนส่งเจ้าไหน (เลขทรง TH… ใช้ร่วมกันระหว่าง SPX กับ
+                Flash และยังไม่เคยค้นเลขนั้นสำเร็จมาก่อน) ETrackings จึงถูกตัด
+                ออกจากลำดับตั้งแต่ต้น
+                <br />
+                นับเป็นรายคำขอ ไม่ใช่รายเลขพัสดุ — เลขเดิมที่ค้นซ้ำถูกนับซ้ำ
+                เพราะเราไม่ได้เก็บเลขพัสดุไว้ ตัวเลขนี้จึงเป็นเพดานบน
+              </p>
+            ) : null}
+
             {errors.length === 0 ? (
               <Empty>ยังไม่มีคำขอที่ตอบไม่ได้ในช่วงนี้</Empty>
             ) : (

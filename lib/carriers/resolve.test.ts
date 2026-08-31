@@ -14,7 +14,11 @@ import { test } from "node:test";
 import { clearCache, type CacheEntry } from "../cache.ts";
 import type { PersistentTrackingCache } from "../supabase/tracking-cache.ts";
 import { normalizeCourierCode } from "./courier-code.ts";
-import { chooseProviderOrder, resolveTracking } from "./resolve.ts";
+import {
+  chooseProviderOrder,
+  isUnknownCourierFailure,
+  resolveTracking,
+} from "./resolve.ts";
 import {
   CarrierError,
   type CarrierAdapter,
@@ -997,6 +1001,89 @@ test("ไม่ได้ตั้งค่า ETrackings → ระบบทำ�
   });
 
   assert.equal(resolved.provider, "fallback");
+});
+
+/* ------ ป้ายบอกว่าล้มตอนเหลือผู้ให้บริการเจ้าเดียว (ไว้ทำสถิติ) ------ */
+
+/*
+ * เคสจริงที่ทำให้ต้องมีป้ายนี้: เลข TH54018X21H76P ไม่มี prefix ที่ฟันธงได้
+ * (TH… ใช้ร่วมกันระหว่าง SPX กับ Flash จึงตั้งใจไม่ใส่ในตาราง prefix) และยัง
+ * ไม่เคยค้นสำเร็จมาก่อนจึงไม่มีความจำเรื่องขนส่ง ETrackings เลยถูกตัดออกจาก
+ * ลำดับตั้งแต่ต้น พอ Track123 ล้มก็จบทั้งคำขอทันที
+ *
+ * หน้าสถิติต้องนับเคสนี้ได้ เพราะมันคือตัวเลขเดียวที่บอกได้ว่าคุ้มจะลงทุนทำ
+ * กลไกเดาขนส่งตอนจนตรอกไหม (โควตา ETrackings มีแค่ 50 ครั้ง/เดือน)
+ */
+test("ไม่รู้ขนส่ง + เจ้าเดียวที่เหลือล้ม → error ติดป้ายไว้ให้สถิตินับได้", async () => {
+  await assert.rejects(
+    resolveTracking(uniqueTrackingNumber(), {
+      primary: primaryAlwaysNotFound,
+      fallback: makeBrokenFallback(
+        new CarrierError("upstream_error", "Track123 ล่ม"),
+      ),
+      backup: makeBackup(),
+      persistentCache: noCache,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof CarrierError);
+      assert.equal(error.code, "upstream_error", "code เดิมต้องไม่ถูกกลืนหาย");
+      assert.equal(isUnknownCourierFailure(error), true);
+      return true;
+    },
+  );
+});
+
+test("รู้ขนส่งจาก prefix แต่ทั้งสองเจ้าล้ม → ไม่ติดป้าย เพราะได้ลองครบแล้ว", async () => {
+  await assert.rejects(
+    resolveTracking(uniquePrefixedNumber(), {
+      primary: primaryAlwaysNotFound,
+      fallback: makeBrokenFallback(
+        new CarrierError("upstream_error", "Track123 ล่ม"),
+      ),
+      backup: makeBackup(new CarrierError("network_error", "เน็ตล่ม")),
+      persistentCache: noCache,
+    }),
+    (error: unknown) => {
+      assert.equal(isUnknownCourierFailure(error), false);
+      return true;
+    },
+  );
+});
+
+test("ยังไม่ได้ตั้งค่า ETrackings → ไม่ติดป้าย เพราะไม่ใช่ปัญหาการเดาขนส่ง", async () => {
+  // ป้ายนี้ต้องหมายถึง "มีเจ้าที่สองอยู่แต่ใช้ไม่ได้" เท่านั้น ไม่งั้นตัวเลข
+  // บนหน้าสถิติจะพองขึ้นด้วยเคสที่กลไกเดาขนส่งช่วยอะไรไม่ได้เลย
+  await assert.rejects(
+    resolveTracking(uniqueTrackingNumber(), {
+      primary: primaryAlwaysNotFound,
+      fallback: makeBrokenFallback(
+        new CarrierError("upstream_error", "Track123 ล่ม"),
+      ),
+      backup: null,
+      persistentCache: noCache,
+    }),
+    (error: unknown) => {
+      assert.equal(isUnknownCourierFailure(error), false);
+      return true;
+    },
+  );
+});
+
+test("ค้นไม่เจอจริงๆ (ไม่ใช่ระบบล้ม) → ไม่ติดป้าย", async () => {
+  await assert.rejects(
+    resolveTracking(uniqueTrackingNumber(), {
+      primary: primaryAlwaysNotFound,
+      fallback: makeTrack123(),
+      backup: makeBackup(),
+      persistentCache: noCache,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof CarrierError);
+      assert.equal(error.code, "not_found");
+      assert.equal(isUnknownCourierFailure(error), false);
+      return true;
+    },
+  );
 });
 
 test("ทั้งสองเจ้าพัง + มี cache เก่า → คืนข้อมูลเก่าตามกลไกเดิม", async () => {
