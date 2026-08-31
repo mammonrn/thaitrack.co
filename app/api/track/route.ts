@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 
-import { normalizeTrackingNumber, resolveTracking } from "@/lib/carriers/resolve";
+import {
+  isUnknownCourierFailure,
+  normalizeTrackingNumber,
+  resolveTracking,
+} from "@/lib/carriers/resolve";
 import {
   CarrierError,
   type TrackingErrorCode,
@@ -211,6 +215,9 @@ export async function POST(request: Request) {
       upstreamCode:
         error instanceof CarrierError ? (error.upstreamCode ?? null) : null,
       tookMs: Date.now() - startedAt,
+      // ล้มตอนที่เหลือผู้ให้บริการเจ้าเดียวหรือเปล่า — ตัวเลขที่ต้องใช้ตัดสินใจ
+      // ว่าจะทำกลไกเดาขนส่งตอนจนตรอกไหม (ดู lib/carriers/resolve.ts)
+      unknownCourier: isUnknownCourierFailure(error),
     });
 
     if (error instanceof CarrierError) {

@@ -51,6 +51,14 @@ export interface SearchEventInput {
   upstreamCode?: string | null;
   /** ใช้เวลากี่มิลลิวินาที — ไว้ดู p50/p95 แยกตามชั้นที่ตอบ */
   tookMs?: number | null;
+  /**
+   * true = คำขอนี้ล้มตอนที่เหลือผู้ให้บริการเจ้าเดียว เพราะเดาไม่ออกว่าเลขนี้
+   * เป็นขนส่งเจ้าไหน (ดู isUnknownCourierFailure ใน lib/carriers/resolve.ts)
+   *
+   * เป็นคุณสมบัติของคำขอล้วนๆ ไม่ได้บอกอะไรเกี่ยวกับคนที่ค้นเลย มีเพราะเป็น
+   * ตัวเลขเดียวที่ใช้ตัดสินได้ว่าควรลงทุนทำกลไกเดาขนส่งตอนจนตรอกหรือไม่
+   */
+  unknownCourier?: boolean;
 }
 
 function warn(action: string, detail: string): void {
@@ -94,6 +102,7 @@ export async function recordSearchEvent(
       reason: input.reason ?? null,
       upstream_code: input.upstreamCode ?? null,
       took_ms: input.tookMs ?? null,
+      unknown_courier: input.unknownCourier ?? false,
     });
 
     if (error) warn("บันทึกสถิติการค้นหา", error.message);
@@ -322,6 +331,35 @@ export async function readErrorBreakdown(
   } catch (cause) {
     warn("อ่านสาเหตุข้อผิดพลาด", reason(cause));
     return [];
+  }
+}
+
+/**
+ * จำนวนคำขอที่ล้มเพราะเหลือผู้ให้บริการเจ้าเดียว (ไม่รู้ว่าเลขเป็นขนส่งเจ้าไหน)
+ *
+ * ⚠️ นับเป็น **รายคำขอ ไม่ใช่รายเลขพัสดุ** เพราะเราไม่ได้เก็บเลขพัสดุไว้เลย
+ * (และจะไม่เก็บ — ดูข้อบังคับที่หัวไฟล์) คนที่กดค้นเลขเดิมซ้ำสามครั้งจึงถูกนับ
+ * สามครั้ง ตัวเลขนี้เป็น "เพดานบน" ของจำนวนเลขที่ได้ประโยชน์จากกลไกเดาขนส่ง
+ * ไม่ใช่จำนวนจริง — หน้าสถิติต้องเขียนกำกับไว้ ห้ามเอาไปคูณโควตาตรงๆ
+ */
+export async function readUnknownCourierFailures(days: number): Promise<number> {
+  const supabase = getServiceSupabaseClient();
+  if (supabase === null) return 0;
+
+  try {
+    const { data, error } = await supabase.rpc("admin_unknown_courier_failures", {
+      p_days: days,
+    });
+
+    if (error) {
+      warn("อ่านจำนวนคำขอที่ไม่รู้ขนส่ง", error.message);
+      return 0;
+    }
+
+    return toCount(data);
+  } catch (cause) {
+    warn("อ่านจำนวนคำขอที่ไม่รู้ขนส่ง", reason(cause));
+    return 0;
   }
 }
 

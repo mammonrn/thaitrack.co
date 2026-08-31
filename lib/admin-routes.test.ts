@@ -318,6 +318,33 @@ test("ฟังก์ชันใหม่ต้องถูก revoke จาก
   }
 });
 
+test("ฟังก์ชันสรุปที่เพิ่มทีหลังต้องล็อกสิทธิ์แบบเดียวกัน", () => {
+  // ฟังก์ชันสถิติทุกตัวต้องยิงได้จาก service_role เท่านั้น ถ้าลืม revoke
+  // ผู้ใช้ที่ล็อกอินคนไหนก็เรียกผ่าน PostgREST ได้ตรงๆ โดยไม่ผ่าน requireAdmin()
+  const cases = [
+    {
+      file: "supabase/migrations/0012_unknown_courier.sql",
+      signature: "public\\.admin_unknown_courier_failures\\(integer\\)",
+    },
+  ];
+
+  for (const { file, signature } of cases) {
+    const sql = readFileSync(join(PROJECT_DIR, file), "utf8");
+
+    assert.match(
+      sql,
+      new RegExp(`revoke all on function ${signature} from anon, authenticated, public`),
+      `ยังไม่ได้ revoke ${signature}`,
+    );
+    assert.match(
+      sql,
+      new RegExp(`grant execute on function ${signature} to service_role`),
+      `ยังไม่ได้ grant ${signature}`,
+    );
+    assert.doesNotMatch(sql, /security\s+definer/i);
+  }
+});
+
 test("ฟังก์ชันของกลางต้องไม่เป็น security definer", () => {
   // ข้อยกเว้นเดียวคือ admin_member_stats ใน 0007 ซึ่งมีเหตุผลเขียนกำกับไว้
   // และถูกตรวจแยกที่ lib/admin-privacy.test.ts

@@ -39,6 +39,7 @@ const STATS_MIGRATION = join(
   PROJECT_DIR,
   "supabase/migrations/0011_stats_details.sql",
 );
+const MIGRATIONS_DIR = join(PROJECT_DIR, "supabase/migrations");
 
 interface SourceFile {
   path: string;
@@ -402,6 +403,41 @@ test("โค้ดที่อ้างชื่อตารางสถิต�
 
     assert.deepEqual(users, [owner], `${table} ถูกแตะจากหลายไฟล์`);
   }
+});
+
+/*
+ * ด่านนี้ไล่ดู migration **ทุกไฟล์** ไม่ใช่ไฟล์ที่จดชื่อไว้
+ *
+ * ตั้งใจต่างจากเทสต์ข้างบนที่ระบุไฟล์ตรงๆ เพราะการเพิ่มคอลัมน์ให้ search_events
+ * รอบหน้าจะอยู่ในไฟล์ที่ยังไม่มีใครรู้ชื่อ ถ้าด่านต้องรอให้คนมาจดชื่อไฟล์ใหม่
+ * ก่อน มันจะกันได้เฉพาะคนที่ระวังตัวอยู่แล้ว ซึ่งไม่ใช่คนที่ด่านนี้มีไว้กัน
+ */
+test("ทุก migration ที่เพิ่มคอลัมน์ให้ search_events ต้องเพิ่มได้แค่คุณสมบัติของคำขอ", () => {
+  const added: string[] = [];
+
+  for (const name of readdirSync(MIGRATIONS_DIR)) {
+    if (!name.endsWith(".sql")) continue;
+
+    const sql = withoutSqlComments(
+      readFileSync(join(MIGRATIONS_DIR, name), "utf8"),
+    );
+
+    for (const block of sql.matchAll(
+      /alter table\s+public\.search_events([\s\S]*?);/g,
+    )) {
+      const column = /add column(?:\s+if not exists)?\s+(\w+)/.exec(block[1]);
+      if (column !== null) added.push(column[1]);
+    }
+  }
+
+  // ทุกชื่อในรายการนี้ต้องตอบได้ว่า "เป็นเรื่องของคำขอ ไม่ใช่เรื่องของคน"
+  // การเพิ่มชื่อใหม่เข้ามาคือการตัดสินใจที่ต้องตั้งใจ ไม่ใช่ผลข้างเคียง
+  assert.deepEqual(added.sort(), [
+    "reason",
+    "took_ms",
+    "unknown_courier",
+    "upstream_code",
+  ]);
 });
 
 test("endpoint นับการติดตั้งแอพต้องไม่เก็บอะไรที่ระบุตัวคน", () => {

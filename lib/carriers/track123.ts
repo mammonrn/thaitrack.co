@@ -17,6 +17,7 @@
 import { callTrack123 } from "./track123-gateway";
 import {
   CarrierError,
+  TIMEOUT_UPSTREAM_CODE,
   TRACKING_STATUS_TEXT,
   type CarrierAdapter,
   type TrackingEvent,
@@ -141,7 +142,12 @@ async function postJson(path: string, body: unknown): Promise<Response> {
       timedOut
         ? "ระบบ Track123 ตอบกลับช้าเกินไป กรุณาลองใหม่อีกครั้ง"
         : "เชื่อมต่อระบบ Track123 ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
-      { cause, debugMessage: `เรียก ${path} ไม่สำเร็จ` },
+      {
+        cause,
+        debugMessage: `เรียก ${path} ไม่สำเร็จ`,
+        // ป้ายนี้มีคนอ่านจริง — gateway ใช้ตัดสินว่าจะไม่ลองใหม่ (ดู TIMEOUT_UPSTREAM_CODE)
+        upstreamCode: timedOut ? TIMEOUT_UPSTREAM_CODE : undefined,
+      },
     );
   }
 }

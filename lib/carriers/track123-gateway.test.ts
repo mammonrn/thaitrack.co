@@ -5,7 +5,8 @@
  * และ flaky บนเครื่องที่โหลดหนัก
  *
  * ประเด็นที่ต้องไม่หลุด:
- *   1. ลองใหม่เฉพาะตอนชนลิมิต — error อื่นลองอีกกี่ครั้งก็ได้คำตอบเดิม เปลือง quota เปล่า
+ *   1. ลองใหม่เฉพาะสองกลุ่ม (ชนลิมิต / ระบบสะดุดชั่วคราว) ด้วยเพดานคนละตัว —
+ *      error อื่นลองอีกกี่ครั้งก็ได้คำตอบเดิม เปลือง quota เปล่า
  *   2. การลองใหม่ต้องกลับไปเข้าคิว ไม่ใช่ยิงตรง ไม่งั้นจะไปซ้ำเติมปลายทางที่บอกว่ารับไม่ไหว
  *   3. ทุก request ที่ออกไปจริงต้องมี log หนึ่งบรรทัด ไม่มีตกหล่น
  */
@@ -13,9 +14,14 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 
+import { CircuitBreaker } from "../circuit-breaker.ts";
 import { RateLimitQueue } from "../rate-limit-queue.ts";
-import { BACKOFF_DELAYS_MS, callTrack123 } from "./track123-gateway.ts";
-import { CarrierError } from "./types.ts";
+import {
+  BACKOFF_DELAYS_MS,
+  SYSTEM_RETRY_DELAY_MS,
+  callTrack123,
+} from "./track123-gateway.ts";
+import { CarrierError, TIMEOUT_UPSTREAM_CODE } from "./types.ts";
 
 const BACKOFF = [500, 1_000, 2_000] as const;
 const TRACK_NO = "SPXTH046012345678";
@@ -160,11 +166,21 @@ test("ชนลิมิตไม่หยุด → ยิงครบ 4 คร
   assert.equal(lines.length, 4);
 });
 
-test("error ที่ไม่ใช่การชนลิมิต → ไม่ลองใหม่เลย ไม่เปลือง quota", async (t) => {
+test("error ที่ยิงอีกกี่ครั้งก็ได้คำตอบเดิม → ไม่ลองใหม่เลย ไม่เปลือง quota", async (t) => {
   useFakeClock(t);
   const lines: string[] = [];
 
-  for (const code of ["not_found", "auth_failed", "network_error"] as const) {
+  // สองกลุ่มที่ไม่ควรลองใหม่ด้วยเหตุผลคนละอย่าง:
+  //   not_found / invalid_tracking_number  = คำตอบที่แท้จริงของปลายทางที่ปกติดี
+  //   auth_failed / config_error           = ปัญหาฝั่งเรา ยิงอีกก็ผลเดิม
+  const codes = [
+    "not_found",
+    "invalid_tracking_number",
+    "auth_failed",
+    "config_error",
+  ] as const;
+
+  for (const code of codes) {
     let attempts = 0;
 
     // คิวใหม่ทุกรอบ เพราะนาฬิกาถูกแช่ไว้ที่ 0 ถ้าใช้คิวเดิม รอบที่สองจะติดรอ
@@ -188,10 +204,174 @@ test("error ที่ไม่ใช่การชนลิมิต → ไม
     assert.equal(attempts, 1, `${code} ต้องไม่ถูกลองใหม่`);
   }
 
-  assert.equal(lines.length, 3);
+  assert.equal(lines.length, codes.length);
   assert.match(lines[0] ?? "", /result=not_found$/);
-  assert.match(lines[1] ?? "", /result=auth_failed$/);
-  assert.match(lines[2] ?? "", /result=network_error$/);
+  assert.match(lines[2] ?? "", /result=auth_failed$/);
+});
+
+/*
+ * เคสที่เป็นเหตุให้เพิ่มการลองใหม่กลุ่มนี้เข้ามา (จาก log จริง):
+ * เลข TH54018X21H76P โดน upstream_error หลัง 6.1 วินาที แล้วทั้งคำขอจบทันที
+ * เพราะเลขนั้นเดา courier ไม่ได้จึงไม่มีเจ้าที่สองให้ไปต่อ · ค้นซ้ำด้วยมือ
+ * 13 วินาทีถัดมาสำเร็จใน 194ms — การลองใหม่ครั้งเดียวก็เอาอยู่
+ */
+test("ระบบสะดุดชั่วคราว → ลองใหม่ครั้งเดียวแล้วผ่าน", async (t) => {
+  useFakeClock(t);
+  const { lines, options } = harness();
+
+  const firedAt: number[] = [];
+  let attempts = 0;
+
+  const promise = callTrack123(
+    { trackNo: TRACK_NO },
+    async () => {
+      firedAt.push(Date.now());
+      attempts += 1;
+      if (attempts === 1) {
+        throw new CarrierError("upstream_error", "ปลายทางสะดุด", {
+          upstreamCode: "B0100",
+        });
+      }
+      return "ผ่านรอบสอง";
+    },
+    options,
+  );
+
+  await flush();
+  assert.deepEqual(firedAt, [0], "รอบแรกยิงทันที");
+
+  t.mock.timers.tick(SYSTEM_RETRY_DELAY_MS);
+  await flush();
+
+  assert.equal(await promise, "ผ่านรอบสอง");
+  assert.deepEqual(
+    firedAt,
+    [0, SYSTEM_RETRY_DELAY_MS],
+    "หน่วงสั้นๆ ก่อนลองใหม่ ไม่ใช้ backoff ยาวแบบตอนชนลิมิต",
+  );
+  assert.equal(lines.length, 2);
+  assert.match(lines[0] ?? "", /result=upstream_error upstream=B0100$/);
+  assert.match(lines[1] ?? "", /result=ok$/);
+});
+
+test("ระบบสะดุดไม่หยุด → ลองใหม่แค่ครั้งเดียวเท่านั้น ไม่ไล่ยิงต่อ", async (t) => {
+  useFakeClock(t);
+  const { lines, options } = harness();
+
+  let attempts = 0;
+  const promise = callTrack123(
+    { trackNo: TRACK_NO },
+    async () => {
+      attempts += 1;
+      throw new CarrierError("network_error", "ต่อไม่ติด");
+    },
+    options,
+  );
+
+  const settled = assert.rejects(promise, (error: unknown) => {
+    assert.ok(error instanceof CarrierError);
+    assert.equal(error.code, "network_error");
+    return true;
+  });
+
+  await flush();
+  t.mock.timers.tick(SYSTEM_RETRY_DELAY_MS);
+  await flush();
+
+  await settled;
+
+  assert.equal(attempts, 2, "ยิงครั้งแรก + ลองใหม่อีกครั้งเดียว");
+  assert.equal(lines.length, 2);
+});
+
+test("หมดเวลารอ (timeout) → ไม่ลองใหม่ เพราะผู้ใช้รอไปแล้ว 20 วินาที", async (t) => {
+  useFakeClock(t);
+  const { lines, options } = harness();
+
+  let attempts = 0;
+  await assert.rejects(
+    callTrack123(
+      { trackNo: TRACK_NO },
+      async () => {
+        attempts += 1;
+        throw new CarrierError("network_error", "ปลายทางตอบช้าเกินไป", {
+          upstreamCode: TIMEOUT_UPSTREAM_CODE,
+        });
+      },
+      options,
+    ),
+  );
+
+  assert.equal(attempts, 1, "timeout ต้องไม่ถูกลองใหม่ ไม่งั้นรอรวมเกิน 40 วินาที");
+  assert.equal(lines.length, 1);
+});
+
+test("ชนลิมิตแล้วระบบสะดุด → ใช้เพดานคนละตัว แต่รวมกันไม่เกินเพดานรวม", async (t) => {
+  useFakeClock(t);
+  const { lines, options } = harness();
+
+  const firedAt: number[] = [];
+  let attempts = 0;
+
+  const promise = callTrack123(
+    { trackNo: TRACK_NO },
+    async () => {
+      firedAt.push(Date.now());
+      attempts += 1;
+      if (attempts === 1) throw rateLimited();
+      if (attempts === 2) throw new CarrierError("upstream_error", "สะดุด");
+      return "ผ่านรอบสาม";
+    },
+    options,
+  );
+
+  await flush();
+  t.mock.timers.tick(500);
+  await flush();
+  t.mock.timers.tick(SYSTEM_RETRY_DELAY_MS);
+  await flush();
+
+  assert.equal(await promise, "ผ่านรอบสาม");
+  assert.deepEqual(firedAt, [0, 500, 500 + SYSTEM_RETRY_DELAY_MS]);
+  assert.equal(lines.length, 3);
+});
+
+test("วงจรถูกตัดระหว่างที่กำลังลองใหม่ → หยุดทันที ไม่ลอดด่าน breaker", async (t) => {
+  useFakeClock(t);
+  const { lines } = harness();
+
+  const breaker = new CircuitBreaker({
+    name: "ทดสอบ",
+    failureThreshold: 1,
+    windowMs: 60_000,
+    cooldownMs: 60_000,
+  });
+
+  let attempts = 0;
+  await assert.rejects(
+    callTrack123(
+      { trackNo: TRACK_NO },
+      async () => {
+        attempts += 1;
+        throw new CarrierError("upstream_error", "ปลายทางล่ม");
+      },
+      {
+        queue: new RateLimitQueue(3),
+        backoffMs: BACKOFF,
+        log: (line) => lines.push(line),
+        breaker,
+      },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof CarrierError);
+      // error ของปลายทางจริง ไม่ใช่ breaker_open — คำขอนี้ยิงไปแล้วและได้คำตอบ
+      assert.equal(error.upstreamCode, undefined);
+      return true;
+    },
+  );
+
+  assert.equal(attempts, 1, "วงจรตัดแล้วต้องไม่ลองใหม่");
+  assert.equal(lines.length, 1);
 });
 
 test("error ที่ไม่ใช่ CarrierError → log ว่า error แล้วส่งต่อดิบๆ", async (t) => {
@@ -261,6 +441,52 @@ test("การลองใหม่ต้องกลับไปเข้า�
     (firedAt[3] ?? 0) >= 668,
     `รอบลองใหม่ยิงตอน ${firedAt[3]}ms ซึ่งแซงคิวของ ข/ค`,
   );
+});
+
+/*
+ * config_error ต้องเปิดวงจรได้ ไม่งั้นวันที่ลืมตั้ง TRACK123_API_KEY ผู้ใช้ทุกคน
+ * จะต้องรอเข้าคิวแล้วพังทีละคน ทั้งที่รู้ผลล่วงหน้าอยู่แล้วว่าจะพังทุกครั้ง
+ */
+test("ตั้งค่าผิดจนพังทุกครั้ง → วงจรต้องเปิด ไม่ปล่อยให้ทุกคนรอเสียเวลาซ้ำ", async (t) => {
+  useFakeClock(t);
+  const lines: string[] = [];
+
+  const breaker = new CircuitBreaker({
+    name: "ทดสอบ",
+    failureThreshold: 1,
+    windowMs: 60_000,
+    cooldownMs: 60_000,
+  });
+
+  const options = {
+    queue: new RateLimitQueue(3),
+    backoffMs: BACKOFF,
+    log: (line: string) => lines.push(line),
+    breaker,
+  };
+
+  let attempts = 0;
+  const fire = () =>
+    callTrack123(
+      { trackNo: TRACK_NO },
+      async () => {
+        attempts += 1;
+        throw new CarrierError("config_error", "ยังไม่ได้ตั้งค่า");
+      },
+      options,
+    );
+
+  await assert.rejects(fire());
+  assert.equal(attempts, 1);
+
+  await assert.rejects(fire(), (error: unknown) => {
+    assert.ok(error instanceof CarrierError);
+    assert.equal(error.upstreamCode, "breaker_open");
+    return true;
+  });
+
+  assert.equal(attempts, 1, "คำขอที่สองต้องถูกปฏิเสธก่อนยิงจริง");
+  assert.match(lines[1] ?? "", /result=breaker_open$/);
 });
 
 test("ค่าหน่วงเริ่มต้นเป็น exponential backoff และไม่ยาวจนผู้ใช้ทิ้งหน้าไปก่อน", () => {

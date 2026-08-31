@@ -1,11 +1,11 @@
 /**
- * ประตูทางออกเดียวของการยิง Track123 — คิว, ลองใหม่เมื่อชนลิมิต, และ log
+ * ประตูทางออกเดียวของการยิง Track123 — คิว, ลองใหม่, และ log
  *
  * ทุก request ที่ออกไปหา Track123 ต้องผ่าน callTrack123() ที่นี่ที่เดียว จะได้
  * มั่นใจว่าไม่มีทางลัดไหนหลุดออกไปยิงโดยไม่ผ่านคิว และทุกครั้งที่ยิงมี log ครบ
  *
  * สามชั้นที่ซ้อนกันอยู่ (จากนอกเข้าใน):
- *   1. ลองใหม่แบบ exponential backoff — เจอ A0706 (ชนลิมิต) แล้วหน่วงก่อนลองใหม่
+ *   1. ลองใหม่สองแบบที่มีเหตุผลคนละอย่างกัน (ดู SYSTEM_RETRY_DELAY_MS)
  *      การลองใหม่แต่ละรอบต้องกลับไปเข้าคิวใหม่ ไม่ใช่ยิงตรง ไม่งั้นจะไปซ้ำเติม
  *      สถานการณ์ที่ปลายทางกำลังบอกว่ารับไม่ไหวอยู่แล้ว
  *   2. คิวจำกัดอัตรา — ไม่เกิน MAX_REQUESTS_PER_SECOND ครั้งต่อวินาที
@@ -19,7 +19,11 @@
 import { CircuitBreaker } from "../circuit-breaker";
 import { countProviderCall } from "../provider-usage";
 import { RateLimitQueue, delay } from "../rate-limit-queue";
-import { CarrierError, type TrackingErrorCode } from "./types";
+import {
+  CarrierError,
+  TIMEOUT_UPSTREAM_CODE,
+  type TrackingErrorCode,
+} from "./types";
 
 /**
  * เพดานที่เราจำกัดตัวเอง (ครั้ง/วินาที)
@@ -38,6 +42,51 @@ export const MAX_REQUESTS_PER_SECOND = 3;
  * ของ request เดียว (20 วินาที) มาก
  */
 export const BACKOFF_DELAYS_MS: readonly number[] = [500, 1_000, 2_000];
+
+/**
+ * ระยะหน่วงก่อนลองใหม่เมื่อปลายทางล้มด้วยเหตุระบบชั่วคราว (ms)
+ *
+ * ------------------------------------------------------------------
+ * ทำไมต้องแยกจาก BACKOFF_DELAYS_MS ทั้งที่เป็นการลองใหม่เหมือนกัน
+ *
+ * การชนลิมิตกับปลายทางสะดุด เป็นคนละอาการที่ต้องการการรอคนละแบบ:
+ *
+ *   ชนลิมิต    หายเองแน่นอนถ้ารอนานพอ การรอเพิ่มเป็นเท่าตัวจึงคุ้ม
+ *              ลองได้หลายรอบ (3 รอบ ตาม BACKOFF_DELAYS_MS)
+ *   ระบบสะดุด  ถ้าปลายทางล่มจริง รออีก 2 วินาทีก็ไม่หาย การลองหลายรอบมีแต่จะ
+ *              ทำให้ผู้ใช้รอ 6+6+6 วินาทีแล้วล้มอยู่ดี **ลองครั้งเดียวพอ**
+ *              และหน่วงสั้นๆ แค่พอให้ไม่ยิงติดกันจนดูเหมือนการถล่ม
+ *
+ * เจอจาก log จริง: เลข TH54018X21H76P โดน upstream_error หลังรอ 6.1 วินาที
+ * (ไม่ใช่ timeout — timeout ของเราคือ 20 วินาที แปลว่าปลายทางตอบกลับมาจริงแต่
+ * ตอบเป็น error) แล้วทั้งคำขอจบทันทีเพราะเลขนี้เดา courier ไม่ได้ จึงไม่มี
+ * เจ้าที่สองให้ไปต่อ · การค้นซ้ำด้วยมือ 13 วินาทีถัดมาสำเร็จใน 194ms
+ * = อาการชั่วคราวแท้ๆ ที่การลองใหม่ครั้งเดียวก็เอาอยู่
+ *
+ * ก่อนหน้านี้ error กลุ่มนี้ไม่เคยถูกลองใหม่เลยแม้แต่ครั้งเดียว เพราะเงื่อนไข
+ * เดิมเช็คแค่ isRateLimited()
+ * ------------------------------------------------------------------
+ */
+export const SYSTEM_RETRY_DELAY_MS = 400;
+
+/**
+ * error ที่ถือว่า "ปลายทางสะดุดชั่วคราว" จึงลองใหม่ได้อีกครั้งเดียว
+ *
+ * ตั้งใจไม่รวม auth_failed กับ config_error — สิทธิ์ผิดหรือตั้งค่าผิดยิงอีกกี่ครั้ง
+ * ก็ได้คำตอบเดิม การลองใหม่มีแต่จะเปลืองโควตาและถ่วงเวลาผู้ใช้
+ * และไม่รวม not_found กับ invalid_tracking_number ซึ่งเป็นคำตอบที่แท้จริง
+ */
+const RETRYABLE_SYSTEM_ERRORS: ReadonlySet<TrackingErrorCode> = new Set([
+  "upstream_error",
+  "network_error",
+]);
+
+/**
+ * เพดานการลองใหม่ของ error กลุ่มระบบ ต่อหนึ่งคำขอ
+ *
+ * หนึ่งครั้งโดยตั้งใจ — ดูเหตุผลที่ SYSTEM_RETRY_DELAY_MS
+ */
+const SYSTEM_RETRY_LIMIT = 1;
 
 /** คิวกลางที่ทุกการยิง Track123 ในโปรเซสนี้ใช้ร่วมกัน */
 export const track123Queue = new RateLimitQueue(MAX_REQUESTS_PER_SECOND);
@@ -79,12 +128,18 @@ export const track123Breaker = new CircuitBreaker({
  *
  * auth_failed นับด้วย เพราะสิทธิ์พังแปลว่ายิงไปกี่ครั้งก็ไม่ผ่าน การหยุดยิง
  * ชั่วคราวแล้วข้ามไปเจ้าสำรองคือสิ่งที่ถูกต้อง
+ *
+ * config_error ด้วยเหตุผลเดียวกันเป๊ะ (เช่น ลืมตั้ง TRACK123_API_KEY — readApiKey()
+ * โยน error นี้จากในตัว request จึงมาถึงตรงนี้จริง) ถ้าไม่นับ วันที่ตั้งค่าผิดจน
+ * ยิงพังทุกครั้ง วงจรจะไม่มีวันเปิด ผู้ใช้ทุกคนต้องรอเสียเวลาซ้ำๆ ทั้งที่รู้ผล
+ * ล่วงหน้าอยู่แล้วว่าจะพัง
  */
 const BREAKER_FAILURES: ReadonlySet<TrackingErrorCode> = new Set([
   "rate_limited",
   "network_error",
   "upstream_error",
   "auth_failed",
+  "config_error",
 ]);
 
 /** error ที่แจ้งว่าวงจรถูกตัดอยู่ — ผู้เรียกใช้เป็นสัญญาณให้ข้ามไปเจ้าสำรอง */
@@ -181,19 +236,35 @@ function resultLabel(error: unknown): string {
   return error instanceof CarrierError ? error.code : "error";
 }
 
-/** ชนลิมิตหรือ quota หมด = กรณีเดียวที่ลองใหม่แล้วมีโอกาสได้ผลต่างเดิม */
+/** ชนลิมิตหรือ quota หมด — ลองใหม่ได้หลายรอบด้วย exponential backoff */
 function isRateLimited(error: unknown): boolean {
   return error instanceof CarrierError && error.code === "rate_limited";
 }
 
 /**
- * ยิง Track123 หนึ่งคำขอผ่านคิว พร้อมลองใหม่อัตโนมัติเมื่อชนลิมิต
+ * ปลายทางสะดุดชั่วคราว — ลองใหม่ได้อีกครั้งเดียว (ดู SYSTEM_RETRY_DELAY_MS)
  *
- * error ที่ไม่ใช่การชนลิมิตถูกส่งต่อขึ้นไปทันทีโดยไม่ลองใหม่ — "ไม่พบเลขนี้"
- * หรือ "สิทธิ์ไม่ผ่าน" ยิงอีกกี่ครั้งก็ได้คำตอบเดิม มีแต่จะเปลือง quota
+ * ยกเว้น timeout ทั้งที่ code เป็น network_error เหมือนกัน เพราะ timeout หนึ่งครั้ง
+ * แปลว่าผู้ใช้รอไปแล้ว 20 วินาที การลองใหม่จะทำให้รอรวมเกิน 40 วินาที ซึ่งไม่มีใคร
+ * รอ — คนกดปิดหน้าไปก่อนแน่นอน (ตัวยิงติดป้าย upstreamCode="timeout" มาให้)
+ */
+function isRetryableSystemError(error: unknown): boolean {
+  if (!(error instanceof CarrierError)) return false;
+  if (error.upstreamCode === TIMEOUT_UPSTREAM_CODE) return false;
+  return RETRYABLE_SYSTEM_ERRORS.has(error.code);
+}
+
+/**
+ * ยิง Track123 หนึ่งคำขอผ่านคิว พร้อมลองใหม่อัตโนมัติในสองกรณี
  *
- * ถ้าลองครบแล้วยังชนลิมิตอยู่ จะโยน CarrierError ตัวสุดท้ายออกไปตามเดิม
- * ให้ชั้นบนตัดสินใจว่าจะบอกผู้ใช้ยังไง
+ *   ชนลิมิต     ลองได้ตามความยาวของ backoffMs (หน่วงเพิ่มเป็นเท่าตัว)
+ *   ระบบสะดุด   ลองได้อีกครั้งเดียว หน่วงสั้นๆ (ดู SYSTEM_RETRY_DELAY_MS)
+ *
+ * error อื่นถูกส่งต่อขึ้นไปทันทีโดยไม่ลองใหม่ — "ไม่พบเลขนี้" หรือ "สิทธิ์ไม่ผ่าน"
+ * ยิงอีกกี่ครั้งก็ได้คำตอบเดิม มีแต่จะเปลือง quota
+ *
+ * ลองครบแล้วยังไม่ผ่าน จะโยน CarrierError ตัวสุดท้ายออกไปตามเดิม ให้ชั้นบน
+ * ตัดสินใจว่าจะบอกผู้ใช้ยังไง
  */
 export async function callTrack123<T>(
   meta: Track123CallMeta,
@@ -232,10 +303,19 @@ export async function callTrack123<T>(
   const countUsage =
     options.countUsage ?? (() => countProviderCall("track123"));
 
+  // นับแยกกันเพราะเพดานคนละตัว: ชนลิมิตลองได้ตามความยาวของ backoffMs
+  // ส่วนระบบสะดุดลองได้ SYSTEM_RETRY_LIMIT ครั้ง
+  let rateLimitRetries = 0;
+  let systemRetries = 0;
+
   for (let attempt = 1; ; attempt += 1) {
     // นับก่อนเข้าคิว ไม่ใช่ในคิว — การรอฐานข้อมูลตอบไม่ควรไปกินช่องของคิว
     // ที่จำกัดอัตราการยิงไว้ และการลองใหม่แต่ละรอบคือ request จริงอีกหนึ่งครั้ง
     // จึงต้องนับทุกรอบ ไม่ใช่นับครั้งเดียวต่อคำขอ
+    //
+    // ตั้งใจนับการลองใหม่เต็มๆ ทุกรอบ แม้จะยังไม่ยืนยันว่า Track123 คิดเงินตาม
+    // จำนวน request หรือตามจำนวนเลขพัสดุ — นับเกินแล้วเราแค่ระวังเกินไป
+    // แต่นับขาดแล้วโควตาหมดโดยไม่รู้ตัว
     await countUsage();
 
     try {
@@ -285,12 +365,34 @@ export async function callTrack123<T>(
         }
       });
     } catch (error) {
-      // backoffMs[attempt - 1] คือระยะหน่วงหลังความพยายามครั้งที่ attempt
-      // undefined = ลองครบแล้ว ยอมแพ้
-      const wait = backoffMs[attempt - 1];
-      if (wait === undefined || !isRateLimited(error)) throw error;
+      // เพดานรวมของทุกชนิดการลองใหม่ กันไม่ให้การผสมสองแบบยืดยาวเกินที่ตั้งใจ
+      if (attempt >= maxAttempts) throw error;
 
-      await delay(wait);
+      // วงจรเพิ่งถูกตัดระหว่างที่เรากำลังลองอยู่ (คำขออื่นในโปรเซสเดียวกันพังจน
+      // ครบเกณฑ์) → หยุดทันที การลองใหม่ตรงนี้จะเป็นการลอดด่าน breaker
+      // ซึ่งทำให้ด่านที่ตั้งไว้ไม่มีความหมาย
+      if (breaker !== null && !breaker.allows()) throw error;
+
+      if (isRateLimited(error)) {
+        // backoffMs[rateLimitRetries] คือระยะหน่วงก่อนการลองใหม่รอบถัดไป
+        // undefined = ลองครบแล้ว ยอมแพ้
+        const wait = backoffMs[rateLimitRetries];
+        if (wait === undefined) throw error;
+
+        rateLimitRetries += 1;
+        await delay(wait);
+        continue;
+      }
+
+      if (isRetryableSystemError(error) && systemRetries < SYSTEM_RETRY_LIMIT) {
+        systemRetries += 1;
+        await delay(SYSTEM_RETRY_DELAY_MS);
+        continue;
+      }
+
+      // ที่เหลือคือคำตอบที่แท้จริง (ไม่พบ / เลขผิดรูป) หรือปัญหาที่ยิงอีกกี่ครั้ง
+      // ก็เหมือนเดิม (สิทธิ์ / ตั้งค่า) — ส่งต่อขึ้นไปทันที
+      throw error;
     }
   }
 }

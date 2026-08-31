@@ -205,6 +205,50 @@ function toCarrierError(error: unknown): CarrierError {
 }
 
 /**
+ * error ของ resolve ที่พ่วง "ทำไมถึงไม่มีเจ้าที่สองให้ไปต่อ" มาด้วย
+ *
+ * มีไว้ตอบคำถามเดียวที่ log ปกติตอบไม่ได้: **ระบบล้มเพราะเหลือผู้ให้บริการ
+ * เจ้าเดียวบ่อยแค่ไหน** ซึ่งเป็นตัวเลขที่ต้องใช้ตัดสินใจว่าจะลงทุนทำกลไก
+ * "เดา courier แล้วยิง ETrackings ตอนจนตรอก" หรือไม่ (ยังไม่ทำ รอตัวเลขก่อน)
+ *
+ * เป็น subclass ของ CarrierError เพื่อให้ทุกที่ที่เช็ค `instanceof CarrierError`
+ * อยู่แล้วทำงานเหมือนเดิมทุกประการ และเพื่อให้ฟิลด์นี้ไม่ต้องไปโผล่ในสัญญากลาง
+ * ของ adapter ทุกเจ้า (lib/carriers/types.ts) ทั้งที่เป็นเรื่องของการจัดลำดับ
+ * ซึ่งเป็นงานของไฟล์นี้ที่เดียว
+ *
+ * สร้างใหม่แทนการยัดฟิลด์ใส่ error เดิม เพราะ error เดิมเป็นของ adapter ที่
+ * อาจถูกอ้างถึงจากที่อื่น การไปแก้ไขของคนอื่นกลางทางคือบั๊กที่ตามยาก
+ */
+export class ResolveError extends CarrierError {
+  /**
+   * true = ล้มทั้งที่ตั้งค่าเจ้าสำรองไว้แล้ว แต่ใช้ไม่ได้เพราะไม่รู้ว่าเลขนี้
+   * เป็นขนส่งเจ้าไหน (ETrackings บังคับให้ระบุขนส่ง) จึงเหลือ Track123 เจ้าเดียว
+   * แล้วเจ้านั้นก็ล้มพอดี
+   */
+  readonly unknownCourier: boolean;
+
+  constructor(source: CarrierError, init: { unknownCourier: boolean }) {
+    super(source.code, source.userMessage, {
+      cause: source.cause,
+      debugMessage: source.message,
+      upstreamCode: source.upstreamCode,
+    });
+    this.name = "ResolveError";
+    this.unknownCourier = init.unknownCourier;
+  }
+}
+
+/**
+ * คำขอนี้ล้มเพราะเหลือผู้ให้บริการเจ้าเดียวหรือเปล่า
+ *
+ * ผู้เรียก (/api/track) ใช้บันทึกลงสถิติ — ดูหมายเหตุความเป็นส่วนตัวใน
+ * lib/supabase/search-events.ts: ค่านี้เป็นคุณสมบัติของคำขอ ไม่ใช่ของคน
+ */
+export function isUnknownCourierFailure(error: unknown): boolean {
+  return error instanceof ResolveError && error.unknownCourier;
+}
+
+/**
  * ยิงหนึ่งครั้งแล้วบอกว่า "เจอ" หรือ "ไม่พบ"
  *
  * error ที่ไม่ใช่ "ไม่พบ" ถูกโยนต่อขึ้นไปทันที เพราะภายในเจ้าเดียวกัน ถ้าขั้นแรก
@@ -487,7 +531,15 @@ async function resolveFresh(
   // ตัดสินเรื่องการคืนข้อมูลเก่าจาก cache และ Track123 คือเจ้าที่ครอบคลุมกว่า
   if (!fallbackSaidNotFound) {
     const error = errors.get("fallback") ?? errors.get("backup");
-    if (error !== undefined) throw error;
+    if (error !== undefined) {
+      // ติดป้ายไว้ว่าคำขอนี้ล้มตอนที่ไม่มีเจ้าที่สองให้ไปต่อ — เกิดเมื่อ
+      // ตั้งค่า ETrackings ไว้แล้ว แต่เดาไม่ออกว่าเลขนี้เป็นขนส่งเจ้าไหน
+      // (เลข TH… ใช้ร่วมกันระหว่าง SPX กับ Flash และเลขนี้ยังไม่เคยค้นสำเร็จ)
+      // หน้าสถิติแอดมินนับตัวเลขนี้ไว้ตัดสินใจว่าคุ้มจะทำกลไกเดา courier ไหม
+      throw new ResolveError(error, {
+        unknownCourier: backup !== null && backupCourier === undefined,
+      });
+    }
   }
 
   // ไม่พบจริงๆ ทุกทาง → บอกให้ชัดว่าค้นครบแล้ว
