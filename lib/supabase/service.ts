@@ -17,8 +17,13 @@
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-import { readSupabaseEnv, readSupabaseServiceRoleKey } from "./env";
+import {
+  SUPABASE_SERVICE_ROLE_KEY_VAR,
+  readSupabaseEnv,
+  readSupabaseServiceRoleKey,
+} from "./env";
 import { createTimeoutFetch } from "./fetch";
+import { describeKeyProblem, readKeyRole } from "./key-role";
 
 /** สร้างครั้งเดียวต่อโปรเซส — ไม่มี state ของผู้ใช้จึงแชร์ได้ */
 let cached: SupabaseClient | null = null;
@@ -50,10 +55,45 @@ export function getServiceSupabaseClient(): SupabaseClient | null {
     if (!warned) {
       warned = true;
       console.warn(
-        "[track-cache] ยังไม่ได้ตั้ง SUPABASE_SERVICE_ROLE_KEY — cache ถาวรถูกปิด ใช้ cache ใน memory อย่างเดียว",
+        `[supabase] ยังไม่ได้ตั้ง ${SUPABASE_SERVICE_ROLE_KEY_VAR} — cache ถาวรถูกปิด ใช้ cache ใน memory อย่างเดียว`,
       );
     }
     return null;
+  }
+
+  /* ---- ตรวจว่า key ที่ได้มาเป็นของ service_role จริงหรือไม่ ----
+   *
+   * key ของ anon กับ service_role หน้าตาเหมือนกันทุกประการ ต่างกันแค่ claim
+   * ข้างใน การวางสลับช่องจึงเกิดได้ง่ายและไม่มีอะไรเตือน ระบบจะดูเหมือน
+   * ตั้งค่าครบแต่ทุก request โดน permission denied — ซึ่งเกิดขึ้นจริงมาแล้ว
+   * บน production หลัง deploy #13
+   *
+   * ตรวจตรงนี้ทำให้รู้ตั้งแต่ครั้งแรกที่ใช้งาน แทนที่จะต้องไปเจอ error
+   * รายคำขอแล้วค่อยไล่หาสาเหตุ
+   */
+  const keyRole = readKeyRole(serviceRoleKey);
+  const problem = describeKeyProblem(serviceRoleKey, SUPABASE_SERVICE_ROLE_KEY_VAR);
+
+  if (keyRole.kind === "client_role") {
+    // รู้แน่ว่าผิด → ไม่สร้าง client เลย ดีกว่าปล่อยให้ยิงแล้วโดนปฏิเสธทุกครั้ง
+    // ผลคือระบบตกไปใช้ cache ใน memory ซึ่งยังทำงานได้ ไม่ใช่พังทั้งเว็บ
+    if (!warned) {
+      warned = true;
+      console.error(`[supabase] ${problem}`);
+    }
+    return null;
+  }
+
+  if (!warned) {
+    warned = true;
+    // อ่าน role ไม่ออกไม่ใช่ความผิดพลาดเสมอไป (key รูปแบบใหม่อาจไม่ใช่ JWT)
+    // จึงแค่บอกไว้แล้วใช้งานต่อ ไม่ปฏิเสธ
+    if (problem !== null) console.warn(`[supabase] ${problem}`);
+    else {
+      console.info(
+        `[supabase] service client พร้อมใช้งาน role=${keyRole.role} — cache ถาวรและตารางของกลางใช้ได้`,
+      );
+    }
   }
 
   cached = createClient(env.env.url, serviceRoleKey, {

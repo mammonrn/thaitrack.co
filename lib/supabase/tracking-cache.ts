@@ -16,6 +16,7 @@
 
 import type { TrackingResult } from "../carriers/types";
 import type { CacheEntry } from "../cache";
+import { explainPermissionDenied } from "./key-role";
 import { getServiceSupabaseClient } from "./service";
 
 const TABLE = "tracking_cache";
@@ -69,9 +70,18 @@ function toEntry(row: unknown): CacheEntry | null {
   return { result, fetchedAt, expiresAt };
 }
 
-/** log ปัญหาของ cache แบบสั้นๆ — ไม่ใช่ error ของการค้นหา จึงเป็น warn ไม่ใช่ error */
+/**
+ * log ปัญหาของ cache แบบสั้นๆ — ไม่ใช่ error ของการค้นหา จึงเป็น warn ไม่ใช่ error
+ *
+ * ต่อคำอธิบายให้เองเมื่อเป็นเรื่องสิทธิ์ เพราะ "permission denied for table"
+ * เฉยๆ ไม่ได้บอกว่าต้องไปแก้ตรงไหน และเคยทำให้ปัญหานี้ถูกมองข้ามมาแล้ว
+ */
 function warn(action: string, trackingNumber: string, detail: string): void {
-  console.warn(`[track-cache] ${action} no=${trackingNumber} ล้มเหลว: ${detail}`);
+  const hint = explainPermissionDenied(detail);
+  console.warn(
+    `[track-cache] ${action} no=${trackingNumber} ล้มเหลว: ${detail}` +
+      (hint === null ? "" : ` — ${hint}`),
+  );
 }
 
 /** ชั้นถาวรตัวจริง — เป็น no-op ทั้งหมดถ้ายังไม่ได้ตั้ง service role key */
