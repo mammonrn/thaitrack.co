@@ -13,8 +13,11 @@
  *   2. ยังไม่เจอ → ให้ Track123 ตรวจจับขนส่งเอง
  *   3. ตรวจจับเองแล้วยังไม่พบ ค่อยยิงซ้ำโดยระบุขนส่งเจาะจงจากรายชื่อที่รู้ว่า
  *      การตรวจจับอัตโนมัติมักเดาผิด (ข้ามเจ้าที่ลองไปแล้วในขั้นที่ 1ก)
- *   4. ถ้าไปรษณีย์ไทยพังด้วยสาเหตุอื่น (ระบบล่ม, timeout, ยิงถี่เกินไป ฯลฯ)
- *      จะไม่ fallback — คืน error ไปเลย เพื่อไม่ให้เปลือง quota ของ Track123
+ *   4. ถ้า Track123 พังด้วยเหตุระบบ (ล่ม, โควตาหมด, circuit breaker ตัดวงจร)
+ *      ค่อยข้ามไปผู้ให้บริการสำรอง ETrackings — เฉพาะตอน "พัง" เท่านั้น
+ *      ไม่ใช่ตอนตอบว่า "ไม่พบ" เพราะแผนฟรีให้แค่ 50 ครั้ง/เดือน
+ *   5. ถ้าไปรษณีย์ไทยพังด้วยสาเหตุอื่น (ระบบล่ม, timeout, ยิงถี่เกินไป ฯลฯ)
+ *      จะไม่ fallback — คืน error ไปเลย เพื่อไม่ให้เปลือง quota ของเจ้าอื่น
  *
  * เก็บลง cache เฉพาะผลที่ค้นเจอ — ไม่ cache error เพราะพัสดุที่วันนี้ยังไม่พบ
  * พรุ่งนี้อาจเข้าระบบแล้ว
@@ -35,6 +38,7 @@ import {
   type CacheSource,
 } from "../tracking-cache";
 import { courierFromPrefix } from "./courier-prefix";
+import { etrackings, isConfigured as isBackupConfigured } from "./etrackings";
 import { thailandPost } from "./thailand-post";
 import { track123 } from "./track123";
 import {
@@ -62,13 +66,20 @@ const MAX_COURIER_RETRIES = 3;
  * ใช้ร่วมกันทั้งโปรเซส เพราะเป้าหมายคือกันการยิงซ้ำข้าม request ของ Next
  * ไม่ใช่กันซ้ำภายใน request เดียว
  */
-const inflightResolves = new InflightMap<TrackingResult>();
+const inflightResolves = new InflightMap<FreshResult>();
 
 export interface ResolveOptions {
   /** ขนส่งที่ถามก่อน (ค่าเริ่มต้น: ไปรษณีย์ไทย) */
   primary?: CarrierAdapter;
   /** ขนส่งสำรองที่ถามต่อเมื่อเจ้าแรกไม่พบ (ค่าเริ่มต้น: Track123) */
   fallback?: CarrierAdapter;
+  /**
+   * ผู้ให้บริการสำรองชั้นสุดท้าย ใช้เมื่อ fallback พังด้วยเหตุระบบ
+   * (ค่าเริ่มต้น: ETrackings ถ้าตั้ง env ไว้ ไม่งั้นเป็น null)
+   *
+   * null = ไม่มีเจ้าสำรอง ระบบจะตกไปที่ cache ตามกลไก degradation ตามปกติ
+   */
+  backup?: CarrierAdapter | null;
   /** true = ข้าม cache แล้วยิง API สดๆ (ยังบันทึกผลลง cache ตามปกติ) */
   skipCache?: boolean;
   /** ชั้น cache ถาวร (ค่าเริ่มต้น: ตาราง tracking_cache ใน Supabase) */
@@ -77,6 +88,19 @@ export interface ResolveOptions {
 
 /** ชั้นที่ตอบคำค้นนี้ — "api" คือยิงถามขนส่งจริง */
 export type ResolveSource = CacheSource | "api";
+
+/** ผู้ให้บริการที่ตอบคำค้นนี้ — ไว้ดูจาก log ว่าคำค้นไหนใช้เจ้าไหน */
+export type ResolveProvider =
+  /** ไปรษณีย์ไทย */
+  | "primary"
+  /** Track123 */
+  | "fallback"
+  /** ผู้ให้บริการสำรอง (ETrackings) */
+  | "backup"
+  /** ตอบจาก cache ไม่ได้ยิงใคร */
+  | "cache"
+  /** ไม่มีใครตอบได้ */
+  | "none";
 
 export interface ResolvedTracking {
   result: TrackingResult;
@@ -90,6 +114,8 @@ export interface ResolvedTracking {
   stale: boolean;
   /** เวลาที่ดึงข้อมูลชุดนี้มาจากขนส่ง (ISO 8601) — null เมื่อเพิ่งยิงสดๆ */
   fetchedAt: string | null;
+  /** ผู้ให้บริการที่ตอบคำค้นนี้ */
+  provider: ResolveProvider;
   /**
    * true = ไปเกาะคำขอของเลขเดียวกันที่กำลังรอผลอยู่ ไม่ได้ยิง API เพิ่ม
    *
@@ -220,6 +246,33 @@ function prefixShortcut(
   };
 }
 
+/** ผลของการไล่ถามจริง พร้อมบอกว่าเจ้าไหนเป็นคนตอบ */
+interface FreshResult {
+  result: TrackingResult;
+  provider: ResolveProvider;
+}
+
+/**
+ * ยิงหนึ่งครั้งแล้วกลืน error ทุกชนิด — ใช้กับเจ้าสำรองเท่านั้น
+ *
+ * ต่างจาก attempt() ที่ปล่อย error ที่ไม่ใช่ "ไม่พบ" ทะลุขึ้นไป ตรงนี้ต้อง
+ * กลืนทั้งหมด เพราะความล้มเหลวของเจ้าสำรองไม่ควรไปบัง error เดิมของ Track123
+ * ซึ่งเป็นตัวที่ชั้นบนใช้ตัดสินใจเรื่องการคืนข้อมูลเก่าจาก cache
+ */
+async function attemptQuietly(
+  call: () => Promise<TrackingResult>,
+): Promise<TrackingResult | null> {
+  try {
+    return await call();
+  } catch (error) {
+    const carrierError = toCarrierError(error);
+    console.warn(
+      `[resolve] ผู้ให้บริการสำรองช่วยไม่ได้ (${carrierError.code}): ${carrierError.message}`,
+    );
+    return null;
+  }
+}
+
 /**
  * ไล่ถามขนส่งจริงๆ ตามลำดับที่ประหยัดที่สุด — เรียกได้ก็ต่อเมื่อ cache ไม่มีของ
  * และไม่มีคำขอของเลขเดียวกันกำลังบินอยู่
@@ -228,8 +281,9 @@ async function resolveFresh(
   normalized: string,
   primary: CarrierAdapter,
   fallback: CarrierAdapter,
+  backup: CarrierAdapter | null,
   cache: PersistentTrackingCache | undefined,
-): Promise<TrackingResult> {
+): Promise<FreshResult> {
   // เจ้าที่ยิงไปแล้ว ไว้กันไม่ให้ขั้นถัดไปถามซ้ำคำถามเดิม และไว้อธิบายใน log
   const tried: string[] = [];
   const shortcut = prefixShortcut(normalized, fallback);
@@ -238,7 +292,9 @@ async function resolveFresh(
     // prefix ไม่ฟันธงว่าเป็นเจ้าไหน → ลำดับเดิม ถามไปรษณีย์ไทยก่อนเพราะฟรี
     // และไม่จำกัดจำนวนครั้ง จะได้ไม่ไปแตะ quota ของ Track123 โดยไม่จำเป็น
     const fromPrimary = await attempt(() => primary.track(normalized));
-    if (fromPrimary !== null) return store(normalized, fromPrimary, cache);
+    if (fromPrimary !== null) {
+      return { result: await store(normalized, fromPrimary, cache), provider: "primary" };
+    }
   } else {
     // prefix ฟันธงว่าเป็นขนส่งเจ้าอื่น → ข้ามไปรษณีย์ไทยไปเลย
     //
@@ -247,24 +303,53 @@ async function resolveFresh(
     // ของผู้ใช้ไปหนึ่งรอบเปล่าๆ ที่กล้าข้ามได้เพราะตาราง prefix รับเฉพาะแถวที่
     // ผ่านเกณฑ์ "ฟันธงได้จริง" (ดูเกณฑ์ในหัว lib/carriers/courier-prefix.ts)
     tried.push(shortcut.courierCode);
-
-    const byPrefix = await attempt(shortcut.track);
-    if (byPrefix !== null) return store(normalized, byPrefix, cache);
   }
 
-  // ยังไม่เจอ → ให้ Track123 ตรวจจับขนส่งเอง
-  // ยังต้องลองขั้นนี้แม้ prefix จะพลาด เพราะพัสดุข้ามประเทศอาจเปลี่ยนมือไปให้
-  // ขนส่งเจ้าอื่นเดินช่วงสุดท้าย ซึ่ง prefix ต้นทางบอกไม่ได้
-  const autoDetected = await attempt(() => fallback.track(normalized));
-  if (autoDetected !== null) return store(normalized, autoDetected, cache);
+  // ---- Track123 ----
+  // ห่อทั้งก้อนไว้ เพราะถ้าพังด้วยเหตุระบบต้องข้ามไปเจ้าสำรอง ไม่ใช่เลิกทันที
+  let fallbackError: CarrierError | null = null;
 
-  // ขั้นสุดท้าย — การตรวจจับขนส่งอัตโนมัติเดาผิดได้ เช่นเลขของ Shopee Xpress
-  // ที่ถูกเดาเป็น Flash Express แล้วตอบว่าไม่พบทั้งที่พัสดุมีอยู่จริง
-  // จึงลองยิงซ้ำโดยระบุขนส่งเจาะจงจากรายชื่อที่รู้ว่ามีปัญหา
-  const retried = await retryWithCourierCodes(normalized, fallback, tried);
-  if (retried.result !== null) return store(normalized, retried.result, cache);
+  try {
+    if (shortcut !== null) {
+      const byPrefix = await attempt(shortcut.track);
+      if (byPrefix !== null) {
+        return { result: await store(normalized, byPrefix, cache), provider: "fallback" };
+      }
+    }
 
-  tried.push(...retried.codes);
+    // ยังไม่เจอ → ให้ Track123 ตรวจจับขนส่งเอง
+    // ยังต้องลองขั้นนี้แม้ prefix จะพลาด เพราะพัสดุข้ามประเทศอาจเปลี่ยนมือไปให้
+    // ขนส่งเจ้าอื่นเดินช่วงสุดท้าย ซึ่ง prefix ต้นทางบอกไม่ได้
+    const autoDetected = await attempt(() => fallback.track(normalized));
+    if (autoDetected !== null) {
+      return { result: await store(normalized, autoDetected, cache), provider: "fallback" };
+    }
+
+    // การตรวจจับขนส่งอัตโนมัติเดาผิดได้ เช่นเลขของ Shopee Xpress ที่ถูกเดาเป็น
+    // Flash Express แล้วตอบว่าไม่พบทั้งที่พัสดุมีอยู่จริง จึงลองยิงซ้ำโดยระบุ
+    // ขนส่งเจาะจงจากรายชื่อที่รู้ว่ามีปัญหา
+    const retried = await retryWithCourierCodes(normalized, fallback, tried);
+    tried.push(...retried.codes);
+    if (retried.result !== null) {
+      return { result: await store(normalized, retried.result, cache), provider: "fallback" };
+    }
+  } catch (error) {
+    fallbackError = toCarrierError(error);
+  }
+
+  // ---- ผู้ให้บริการสำรอง ----
+  // ใช้เฉพาะตอน Track123 "พัง" เท่านั้น ไม่ใช่ตอนตอบว่า "ไม่พบ" เพราะแผนฟรี
+  // ให้แค่ 50 ครั้ง/เดือน การยิงทุกครั้งที่ค้นไม่เจอจะกินหมดภายในไม่กี่วัน
+  if (fallbackError !== null && backup !== null) {
+    const viaBackup = await attemptQuietly(() => backup.track(normalized));
+    if (viaBackup !== null) {
+      return { result: await store(normalized, viaBackup, cache), provider: "backup" };
+    }
+  }
+
+  // เจ้าสำรองก็ช่วยไม่ได้ → ส่ง error เดิมของ Track123 ขึ้นไป
+  // เพื่อให้ชั้นบนตัดสินใจเรื่องการคืนข้อมูลเก่าจาก cache ได้ถูกต้องตาม code จริง
+  if (fallbackError !== null) throw fallbackError;
 
   // ไม่พบจริงๆ ทุกทาง → บอกให้ชัดว่าค้นครบแล้ว
   throw new CarrierError(
@@ -294,6 +379,13 @@ export async function resolveTracking(
 ): Promise<ResolvedTracking> {
   const primary = options.primary ?? thailandPost;
   const fallback = options.fallback ?? track123;
+  // ยังไม่ได้ตั้ง env ของเจ้าสำรอง → ทำงานเหมือนเดิมทุกประการ ไม่มีเจ้าสำรอง
+  const backup =
+    options.backup === undefined
+      ? isBackupConfigured()
+        ? etrackings
+        : null
+      : options.backup;
 
   const normalized = normalizeTrackingNumber(trackingNumber);
 
@@ -316,6 +408,7 @@ export async function resolveTracking(
       source: cached.source,
       stale: false,
       fetchedAt: new Date(cached.entry.fetchedAt).toISOString(),
+      provider: "cache",
       shared: false,
     };
   }
@@ -324,15 +417,17 @@ export async function resolveTracking(
   // ยังไม่ถูกบันทึกจนกว่าคำขอแรกจะเสร็จ ช่วงที่คำขอแรกกำลังบินคือช่องว่างที่
   // คนกดปุ่มรัวหรือคนละคนที่ค้นเลขเดียวกันจะหลุดออกไปยิงซ้ำได้
   const run = inflightResolves.start(normalized, () =>
-    resolveFresh(normalized, primary, fallback, options.persistentCache),
+    resolveFresh(normalized, primary, fallback, backup, options.persistentCache),
   );
 
   try {
+    const fresh = await run.promise;
     return {
-      result: await run.promise,
+      result: fresh.result,
       source: "api",
       stale: false,
       fetchedAt: null,
+      provider: fresh.provider,
       shared: run.joined,
     };
   } catch (error) {
@@ -347,6 +442,7 @@ export async function resolveTracking(
       source: cached.source,
       stale: true,
       fetchedAt: new Date(cached.entry.fetchedAt).toISOString(),
+      provider: "cache",
       shared: run.joined,
     };
   }

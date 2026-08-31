@@ -21,6 +21,7 @@ import {
   formatStaleSince,
   formatThaiDateTime,
   requestTracking,
+  toShipmentFacts,
   type UserFacingError,
 } from "@/lib/tracking-view";
 
@@ -154,6 +155,10 @@ export default function Home() {
   const timelineGroups = groupEventsByLocation(
     result === null ? [] : [...result.events].reverse(),
   );
+
+  // ขนส่งบางเจ้าส่งต้นทาง/ปลายทาง/พนักงานนำจ่ายมาด้วย เจ้าที่ไม่ส่งก็ได้รายการว่าง
+  // แล้วแถบนี้จะไม่ขึ้นเลย ไม่ใช่ขึ้นมาแล้วว่างเปล่า
+  const shipmentFacts = toShipmentFacts(result?.shipment);
 
   return (
     <div className="flex flex-1 flex-col">
@@ -304,6 +309,27 @@ export default function Home() {
                   </p>
                 </div>
               </div>
+
+              {/* รายละเอียดการจัดส่ง — ขึ้นเฉพาะเจ้าที่ส่งข้อมูลพวกนี้มาจริง
+                  วางคั่นระหว่างหัวการ์ดกับไทม์ไลน์ เพราะเป็นข้อมูลของ "พัสดุชิ้นนี้"
+                  ไม่ใช่ของเหตุการณ์ใดเหตุการณ์หนึ่ง
+
+                  ไม่มีชื่อผู้รับหรือผู้เซ็นรับในนี้โดยตั้งใจ — ใครที่เห็นเลขพัสดุ
+                  ก็ค้นได้โดยไม่ต้องพิสูจน์ตัวตน (ดู ShipmentDetails) */}
+              {shipmentFacts.length > 0 && (
+                <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-line bg-paper/60 px-5 py-4 sm:grid-cols-3 sm:px-6">
+                  {shipmentFacts.map((fact) => (
+                    <div key={fact.label} className="min-w-0">
+                      <dt className="text-[11px] font-medium tracking-[0.04em] text-faint sm:text-xs">
+                        {fact.label}
+                      </dt>
+                      <dd className="mt-0.5 truncate text-sm font-medium text-body sm:text-base">
+                        {fact.value}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
 
               {/* ไทม์ไลน์ — จัดกลุ่มตามสถานที่ ให้กวาดตาหาว่า "ตอนนี้อยู่ไหน" ได้เร็ว
                   ส่วนนี้ต้องเงียบ ปล่อยให้ตราประทับเป็นจุดเดียวที่เด่น (ดู DESIGN.md) */}

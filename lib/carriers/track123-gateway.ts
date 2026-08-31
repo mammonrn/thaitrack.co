@@ -16,8 +16,9 @@
  * เดียวกันอยู่ ลิมิตยังชนได้อยู่ดี backoff จึงเป็นตาข่ายชั้นสุดท้าย
  */
 
+import { CircuitBreaker } from "../circuit-breaker";
 import { RateLimitQueue, delay } from "../rate-limit-queue";
-import { CarrierError } from "./types";
+import { CarrierError, type TrackingErrorCode } from "./types";
 
 /**
  * เพดานที่เราจำกัดตัวเอง (ครั้ง/วินาที)
@@ -40,6 +41,65 @@ export const BACKOFF_DELAYS_MS: readonly number[] = [500, 1_000, 2_000];
 /** คิวกลางที่ทุกการยิง Track123 ในโปรเซสนี้ใช้ร่วมกัน */
 export const track123Queue = new RateLimitQueue(MAX_REQUESTS_PER_SECOND);
 
+/**
+ * เกณฑ์ของ circuit breaker
+ *
+ * 5 ครั้งใน 1 นาที = ปลายทางล่มจริง ไม่ใช่ความซวยรายครั้ง ด้วยเพดาน 3 req/s
+ * ของคิว การพัง 5 ครั้งติดกันใช้เวลาอย่างน้อยประมาณ 1.7 วินาที จึงเป็นสัญญาณ
+ * ที่ชัดพอโดยไม่ไวเกินไป
+ *
+ * พัก 30 วินาทีก่อนลองแตะดู — นานพอให้ปลายทางที่กำลัง deploy หรือ restart
+ * ได้ฟื้น แต่สั้นพอที่ผู้ใช้ที่กดค้นใหม่หลังเห็นข้อความ error จะเจอระบบที่
+ * กลับมาทำงานแล้ว
+ */
+export const BREAKER_FAILURE_THRESHOLD = 5;
+export const BREAKER_WINDOW_MS = 60_000;
+export const BREAKER_COOLDOWN_MS = 30_000;
+
+/**
+ * breaker กลางของ Track123 ในโปรเซสนี้
+ *
+ * ตอนเปิดวงจร คำขอจะถูกปฏิเสธทันทีโดยไม่ยิงจริงและไม่เข้าคิว ผู้ใช้จึงไม่ต้อง
+ * รอ timeout 20 วินาทีทีละคน และคิวไม่ถูกอุดด้วยคำขอที่รู้อยู่แล้วว่าจะพัง
+ */
+export const track123Breaker = new CircuitBreaker({
+  name: "track123",
+  failureThreshold: BREAKER_FAILURE_THRESHOLD,
+  windowMs: BREAKER_WINDOW_MS,
+  cooldownMs: BREAKER_COOLDOWN_MS,
+});
+
+/**
+ * error ที่นับว่า "ปลายทางมีปัญหา" สำหรับ breaker
+ *
+ * ตั้งใจไม่รวม not_found กับ invalid_tracking_number เพราะสองอันนั้นคือคำตอบ
+ * ที่ถูกต้องของปลายทางที่ทำงานปกติดี ถ้านับด้วย วันที่คนค้นเลขผิดกันเยอะๆ
+ * วงจรจะถูกตัดทั้งที่ Track123 ไม่ได้เป็นอะไรเลย
+ *
+ * auth_failed นับด้วย เพราะสิทธิ์พังแปลว่ายิงไปกี่ครั้งก็ไม่ผ่าน การหยุดยิง
+ * ชั่วคราวแล้วข้ามไปเจ้าสำรองคือสิ่งที่ถูกต้อง
+ */
+const BREAKER_FAILURES: ReadonlySet<TrackingErrorCode> = new Set([
+  "rate_limited",
+  "network_error",
+  "upstream_error",
+  "auth_failed",
+]);
+
+/** error ที่แจ้งว่าวงจรถูกตัดอยู่ — ผู้เรียกใช้เป็นสัญญาณให้ข้ามไปเจ้าสำรอง */
+function breakerOpenError(remainingMs: number): CarrierError {
+  return new CarrierError(
+    "upstream_error",
+    "ระบบ Track123 ขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้ง",
+    {
+      debugMessage:
+        `ข้ามการยิง Track123 เพราะ circuit breaker เปิดอยู่ ` +
+        `(เหลืออีก ${remainingMs}ms ถึงจะลองแตะดู)`,
+      upstreamCode: "breaker_open",
+    },
+  );
+}
+
 /** ข้อมูลของ request ที่จะโผล่ใน log */
 export interface Track123CallMeta {
   /** เลขพัสดุที่ normalize แล้ว */
@@ -55,6 +115,8 @@ export interface Track123CallOptions {
   backoffMs?: readonly number[];
   /** ปลายทางของ log (ค่าเริ่มต้น: console.info) */
   log?: (line: string) => void;
+  /** circuit breaker (ค่าเริ่มต้น: ตัวกลางของโปรเซส) — null = ไม่ใช้ */
+  breaker?: CircuitBreaker | null;
 }
 
 /** ฟิลด์ทั้งหมดของ log หนึ่งบรรทัด */
@@ -133,9 +195,31 @@ export async function callTrack123<T>(
   const queue = options.queue ?? track123Queue;
   const backoffMs = options.backoffMs ?? BACKOFF_DELAYS_MS;
   const log = options.log ?? ((line: string) => console.info(line));
+  const breaker =
+    options.breaker === undefined ? track123Breaker : options.breaker;
 
   const courier = meta.courierCode ?? "auto";
   const maxAttempts = backoffMs.length + 1;
+
+  // วงจรถูกตัดอยู่ → ปฏิเสธทันทีโดยไม่ยิงและไม่เข้าคิว
+  // ผู้ใช้จึงไม่ต้องรอ timeout ทีละคน และผู้เรียกข้ามไปเจ้าสำรองได้เลย
+  if (breaker !== null && !breaker.allows()) {
+    const remaining = breaker.snapshot().cooldownRemainingMs;
+    log(
+      formatCallLog({
+        ts: Date.now(),
+        trackNo: meta.trackNo,
+        courier,
+        attempt: 0,
+        maxAttempts,
+        queued: 0,
+        waitMs: 0,
+        tookMs: 0,
+        result: "breaker_open",
+      }),
+    );
+    throw breakerOpenError(remaining);
+  }
 
   for (let attempt = 1; ; attempt += 1) {
     try {
@@ -162,12 +246,25 @@ export async function callTrack123<T>(
         try {
           const value = await request();
           write("ok");
+          breaker?.recordSuccess();
           return value;
         } catch (error) {
           write(
             resultLabel(error),
             error instanceof CarrierError ? error.upstreamCode : undefined,
           );
+
+          // นับเฉพาะความล้มเหลวที่แปลว่าปลายทางมีปัญหา ไม่ใช่ทุก error
+          if (
+            error instanceof CarrierError &&
+            BREAKER_FAILURES.has(error.code)
+          ) {
+            breaker?.recordFailure();
+          } else {
+            // ปลายทางตอบได้ตามปกติ (เช่น "ไม่พบเลขนี้") = ยังไม่ได้ล่ม
+            breaker?.recordSuccess();
+          }
+
           throw error;
         }
       });

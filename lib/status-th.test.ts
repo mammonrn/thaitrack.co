@@ -267,3 +267,80 @@ test("คำแปลในไทม์ไลน์ต้องใช้คำ�
     assert.equal(translateStatusText(input), expected, `คำไม่ตรงกันที่: ${input}`);
   }
 });
+
+/* ------------------------------------------------------------------ *
+ * คำแปลที่เติมรอบนี้ (งาน D3)
+ * ------------------------------------------------------------------ */
+
+test("tag ที่เคยค้างเป็นภาษาอังกฤษ ต้องแปลได้ครบทุกตัว", () => {
+  const cases: [string, string][] = [
+    ["[In transit Update]", "อัปเดตระหว่างขนส่ง"],
+    ["[Domestic Line Haul Transportation]", "ขนส่งระหว่างเมืองในประเทศ"],
+    ["[Pickup From Domestic Seller]", "รับพัสดุจากผู้ขายในประเทศแล้ว"],
+    ["[Dropoff Done By Domestic Seller]", "ผู้ขายนำพัสดุมาส่งที่จุดรับแล้ว"],
+    ["[Cross Border Line Haul Transportation]", "ขนส่งข้ามประเทศ"],
+    ["[Dropoff Done By Cross Border Seller]", "ผู้ขายต่างประเทศนำพัสดุมาส่งที่จุดรับแล้ว"],
+  ];
+
+  for (const [raw, expected] of cases) {
+    assert.equal(translateStatusText(raw), expected, raw);
+  }
+});
+
+test("tag ชุดใหม่แยก 'ในประเทศ' กับ 'ข้ามประเทศ' ออกจากกัน", () => {
+  // ถ้าแปลรวมเป็น "ขนส่ง" เฉยๆ ผู้ใช้จะแยกไม่ออกว่าพัสดุถึงไทยหรือยัง
+  const domestic = translateStatusText("[Domestic Line Haul Transportation]");
+  const crossBorder = translateStatusText("[Cross Border Line Haul Transportation]");
+
+  assert.notEqual(domestic, crossBorder);
+  assert.match(domestic, /ในประเทศ/);
+  assert.match(crossBorder, /ข้ามประเทศ/);
+});
+
+test("tag ใหม่ที่มาพร้อมประโยคที่แปลได้ ต้องใช้คำแปลของประโยค", () => {
+  assert.equal(
+    translateStatusText(
+      "[In transit Update] [China]Parcel has arrived at :Shenzhen sorting centre",
+    ),
+    "ถึงศูนย์คัดแยก Shenzhen (จีน)",
+  );
+});
+
+test("ไม่มีคำแปลตัวไหนที่เติมเข้าไปแล้วยังเหลือตัวอักษรอังกฤษ", () => {
+  const tags = [
+    "[In transit Update]",
+    "[Domestic Line Haul Transportation]",
+    "[Pickup From Domestic Seller]",
+    "[Dropoff Done By Domestic Seller]",
+  ];
+
+  for (const tag of tags) {
+    assert.doesNotMatch(translateStatusText(tag), /[A-Za-z]/, tag);
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * ข้อความไทยจากผู้ให้บริการสำรอง ต้องผ่านไปโดยไม่เพี้ยน (งาน D5)
+ * ------------------------------------------------------------------ */
+
+test("ข้อความไทยล้วนจาก ETrackings ต้องไม่ถูกแตะเลย", () => {
+  // ETrackings ส่งข้อมูลเป็นไทยอยู่แล้วเมื่อขอด้วย Accept-Language: th
+  // ถ้าโมดูลแปลไปยุ่ง ข้อความจะเพี้ยนโดยไม่มีใครสังเกต
+  const fromBackup = [
+    "พัสดุของคุณอยู่ระหว่างขนส่ง",
+    "เคอรี่จัดส่งพัสดุของคุณเรียบร้อยแล้ว",
+    "พนักงานกำลังจัดส่งพัสดุของคุณ",
+    "เคอรี่เข้ารับพัสดุแล้ว",
+    "พัสดุของคุณถึงสาขาปลายทางแล้ว เตรียมจัดส่ง",
+    "พัสดุของคุณถูกตีกลับไปยังต้นทาง",
+  ];
+
+  for (const text of fromBackup) {
+    assert.equal(translateStatusText(text), text, text);
+  }
+});
+
+test("ข้อความไทยที่มีชื่อสถานที่ปน ก็ต้องไม่ถูกแตะ", () => {
+  const withPlace = "พัสดุของคุณอยู่ระหว่างขนส่ง - ศูนย์คัดแยกสินค้าสมุทรสาคร, กรุงเทพมหานคร";
+  assert.equal(translateStatusText(withPlace), withPlace);
+});

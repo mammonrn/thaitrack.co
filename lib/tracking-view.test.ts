@@ -16,6 +16,7 @@ import {
   formatStaleSince,
   readStaleSince,
   requestTracking,
+  toShipmentFacts,
 } from "./tracking-view.ts";
 
 const RESULT: TrackingResult = {
@@ -144,4 +145,105 @@ test("ไม่มีข้อมูลเก่าให้แสดง → ย
   assert.equal(outcome.ok, false);
   assert.ok(!outcome.ok);
   assert.deepEqual(outcome.error, ERROR_MESSAGE.rate_limited);
+});
+
+/* ------------------------------------------------------------------ *
+ * รายละเอียดการจัดส่งบนการ์ดสถานะ (งาน D4)
+ * ------------------------------------------------------------------ */
+
+test("มีทั้งต้นทางและปลายทาง → รวมเป็นบรรทัดเส้นทางเดียว", () => {
+  const facts = toShipmentFacts({
+    originProvince: "นนทบุรี",
+    destinationProvince: "พระนครศรีอยุธยา",
+    deliveryStaffName: null,
+    dueDate: null,
+    cashOnDelivery: null,
+  });
+
+  assert.deepEqual(facts, [
+    { label: "เส้นทาง", value: "นนทบุรี → พระนครศรีอยุธยา" },
+  ]);
+});
+
+test("มีข้างเดียว → แสดงข้างที่มี ไม่เติมคำว่าไม่ระบุ", () => {
+  const originOnly = toShipmentFacts({
+    originProvince: "นนทบุรี",
+    destinationProvince: null,
+    deliveryStaffName: null,
+    dueDate: null,
+    cashOnDelivery: null,
+  });
+  assert.deepEqual(originOnly, [{ label: "ต้นทาง", value: "นนทบุรี" }]);
+
+  const destinationOnly = toShipmentFacts({
+    originProvince: null,
+    destinationProvince: "เชียงราย",
+    deliveryStaffName: null,
+    dueDate: null,
+    cashOnDelivery: null,
+  });
+  assert.deepEqual(destinationOnly, [{ label: "ปลายทาง", value: "เชียงราย" }]);
+});
+
+test("แสดงเฉพาะฟิลด์ที่มีค่าจริง", () => {
+  const facts = toShipmentFacts({
+    originProvince: null,
+    destinationProvince: null,
+    deliveryStaffName: "สมชาย ใจดี",
+    dueDate: null,
+    cashOnDelivery: "1250",
+  });
+
+  assert.deepEqual(facts, [
+    { label: "เก็บเงินปลายทาง", value: "1250 บาท" },
+    { label: "พนักงานนำจ่าย", value: "สมชาย ใจดี" },
+  ]);
+});
+
+test("ไม่มีข้อมูลเลย → รายการว่าง แถบจะไม่ขึ้นบนการ์ด", () => {
+  assert.deepEqual(toShipmentFacts(null), []);
+  assert.deepEqual(toShipmentFacts(undefined), []);
+  assert.deepEqual(
+    toShipmentFacts({
+      originProvince: null,
+      destinationProvince: null,
+      deliveryStaffName: null,
+      dueDate: null,
+      cashOnDelivery: null,
+    }),
+    [],
+  );
+});
+
+test("กำหนดส่งถึงแสดงเป็นวันที่แบบไทย ไม่ใช่ค่าดิบ", () => {
+  const facts = toShipmentFacts({
+    originProvince: null,
+    destinationProvince: null,
+    deliveryStaffName: null,
+    dueDate: "2021-02-10",
+    cashOnDelivery: null,
+  });
+
+  assert.equal(facts.length, 1);
+  assert.equal(facts[0].label, "กำหนดส่งถึง");
+  assert.doesNotMatch(facts[0].value, /2021-02-10/, "ห้ามโชว์ค่าดิบ");
+  assert.match(facts[0].value, /ก\.พ\./);
+});
+
+test("วันที่อ่านไม่ออก → ไม่แสดงบรรทัดนั้น แทนที่จะโชว์ค่าดิบ", () => {
+  const facts = toShipmentFacts({
+    originProvince: null,
+    destinationProvince: null,
+    deliveryStaffName: null,
+    dueDate: "ไม่ใช่วันที่",
+    cashOnDelivery: null,
+  });
+
+  assert.deepEqual(facts, []);
+});
+
+test("ข้อมูลเก่าใน cache ที่ยังไม่มีฟิลด์นี้ → ไม่พัง", () => {
+  // ฟิลด์ shipment เพิ่มทีหลัง แถวเก่าใน tracking_cache จึงไม่มี
+  const legacy = { ...RESULT } as TrackingResult;
+  assert.deepEqual(toShipmentFacts(legacy.shipment), []);
 });
