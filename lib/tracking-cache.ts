@@ -97,7 +97,24 @@ export async function rememberTracking(
   cache: PersistentTrackingCache = supabaseTrackingCache,
   now: number = Date.now(),
 ): Promise<CacheEntry> {
-  const entry = setCached(trackingNumber, result, now);
+  const entry = setCached(trackingNumber, withoutSensitive(result), now);
   await cache.write(trackingNumber, entry);
   return entry;
+}
+
+/**
+ * ตัดข้อมูลอ่อนไหวออกก่อนเก็บหรือก่อนส่งออกไป
+ *
+ * ⚠️ นี่คือจุดเดียวที่กันไม่ให้รูปถ่ายตอนนำจ่ายไหลลง cache ซึ่งเป็นของกลางที่
+ * ทุกคนที่ค้นเลขเดียวกันใช้ร่วมกัน ทั้ง cache ใน memory และใน Supabase เขียน
+ * ผ่าน rememberTracking() ทางเดียว การตัดที่นี่จึงครอบทั้งสองชั้นพร้อมกัน
+ *
+ * ไม่แก้ของเดิม เพราะผู้เรียกที่เพิ่งยิง API มายังต้องใช้ค่าเต็มต่อ (ถ้าเขามีสิทธิ์)
+ *
+ * export ไว้ให้ API route ใช้ตัดก่อนตอบกลับด้วย — ตัดด้วยฟังก์ชันเดียวกันทั้ง
+ * สองทาง จะได้ไม่มีทางที่นิยามของคำว่า "อ่อนไหว" ต่างกันระหว่างสองที่
+ */
+export function withoutSensitive(result: TrackingResult): TrackingResult {
+  if (result.sensitive == null) return result;
+  return { ...result, sensitive: null };
 }
