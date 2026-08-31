@@ -37,6 +37,8 @@ interface EditableBranch {
   hitCount: number | null;
   /** สิ่งที่จดไว้เป็นอะไร — มีเฉพาะสาขาที่ยังไม่มีพิกัด */
   kind: string | null;
+  /** พิกัดแถวนี้ละเอียดแค่ไหน — มีเฉพาะสาขาที่มีพิกัดแล้ว */
+  accuracy: string | null;
 }
 
 /**
@@ -76,6 +78,7 @@ export default function BranchesEditor({ unknown, known }: BranchesEditorProps) 
       note: null,
       hitCount: branch.hitCount,
       kind: branch.kind,
+      accuracy: null,
     }));
 
   const done = known.map<EditableBranch>((branch) => ({
@@ -87,6 +90,7 @@ export default function BranchesEditor({ unknown, known }: BranchesEditorProps) 
     note: branch.note,
     hitCount: null,
     kind: null,
+    accuracy: branch.accuracy,
   }));
 
   return (
@@ -128,7 +132,11 @@ export default function BranchesEditor({ unknown, known }: BranchesEditorProps) 
             {done.length} สาขา
           </span>
         </h2>
-        <p className="mt-1 text-xs text-faint">แก้พิกัดที่ใส่ผิดได้จากที่นี่</p>
+        <p className="mt-1 text-xs text-faint">
+          แก้พิกัดที่ใส่ผิดได้จากที่นี่ · แถวที่ติดป้าย “โดยประมาณ” คือพิกัดที่ระบบ
+          เติมเองจากที่อยู่ของขนส่ง ซึ่งละเอียดแค่ระดับตำบล กรอกทับได้ถ้าหาจุดที่
+          แน่นอนกว่าได้
+        </p>
 
         {done.length === 0 ? (
           <p className="mt-4 rounded-xl border border-dashed border-line-strong p-5 text-center text-sm text-faint">
@@ -231,6 +239,14 @@ function BranchCard({
         {branch.kind !== null && branch.kind !== "branch" && (
           <span className="rounded-full border border-line-strong px-2 py-0.5 text-[11px] text-faint">
             {KIND_LABEL[branch.kind] ?? branch.kind}
+          </span>
+        )}
+        {branch.accuracy === "approximate" && (
+          /* พิกัดที่ระบบเติมเองจากที่อยู่ของขนส่ง ซึ่งละเอียดแค่ระดับตำบล
+             ผู้ใช้เห็นเป็นหมุดพร้อมป้าย "ตำแหน่งโดยประมาณ" อยู่แล้ว แต่ถ้า
+             แอดมินหาพิกัดที่แน่นอนได้ การกรอกทับตรงนี้จะทำให้ป้ายนั้นหายไป */
+          <span className="rounded-full border border-line-strong px-2 py-0.5 text-[11px] text-faint">
+            โดยประมาณ
           </span>
         )}
         {branch.hitCount !== null && (

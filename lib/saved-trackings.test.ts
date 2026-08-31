@@ -30,6 +30,7 @@ function saved(
     lastLocationText: null,
     lastLat: null,
     lastLng: null,
+    lastLocationAccuracy: null,
     lastUpdatedAt: null,
     createdAt,
   };

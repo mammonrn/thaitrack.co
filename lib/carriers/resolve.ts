@@ -283,9 +283,12 @@ interface FreshResult {
 type PaidProvider = Extract<ResolveProvider, "fallback" | "backup">;
 
 export interface ProviderOrderInput {
-  /** prefix ฟันธงว่าเลขนี้เป็นขนส่งเจ้าไหน */
-  prefixKnown: boolean;
-  /** เจ้าสำรองตั้งค่าไว้แล้วและตามเลขนี้ได้ */
+  /**
+   * ETrackings ตั้งค่าไว้แล้ว และเรารู้ว่าเลขนี้เป็นขนส่งเจ้าไหน
+   *
+   * "รู้" มาได้สองทาง: prefix ฟันธง (เช่น SPXTH) หรือเคยค้นเลขนี้สำเร็จมาก่อน
+   * แล้ว cache จำ courier ไว้ ทางหลังคือทางที่ใช้ได้จริงกับเลขไทยส่วนใหญ่
+   */
   backupUsable: boolean;
   /** โควตาของ Track123 ใกล้เพดานแล้ว */
   fallbackNearQuota: boolean;
@@ -296,13 +299,13 @@ export interface ProviderOrderInput {
 /**
  * ตัดสินว่าจะถามเจ้าไหนก่อน — ฟังก์ชันบริสุทธิ์ แยกไว้ให้เทสต์ครอบได้ทุกทาง
  *
- * กติกาสามข้อ เรียงตามลำดับความสำคัญ:
+ * กติกาสองข้อ:
  *
- *   1. ETrackings ตามเลขนี้ไม่ได้ (ไม่ได้ตั้งค่า หรือ prefix เดาขนส่งไม่ออก)
- *      → เหลือ Track123 เจ้าเดียว ไม่มีอะไรให้เลือก
- *   2. prefix ฟันธงได้ → ETrackings ก่อน เพราะเป็นเจ้าเดียวที่ให้ที่อยู่สาขามา
- *      ซึ่งแพงกว่าความสะดวกของ auto-detect มาก (ดูหัวไฟล์)
- *   3. เจ้าที่ควรได้ไปก่อนใกล้ชนเพดานแล้ว แต่อีกเจ้ายังไม่ใกล้ → สลับ
+ *   1. รู้ courier แล้วและ ETrackings รองรับ → **ETrackings ก่อน** เพราะเป็น
+ *      เจ้าเดียวที่ให้ที่อยู่สาขามาด้วย ซึ่งมีค่ามากกว่าความสะดวกของ
+ *      auto-detect (ดูหัวไฟล์) · ไม่รู้ courier → เหลือ Track123 เจ้าเดียว
+ *      เพราะ ETrackings บังคับให้ระบุขนส่ง ยิงไปก็ทิ้งโควตาแน่นอน
+ *   2. เจ้าที่ควรได้ไปก่อนใกล้ชนเพดานแล้ว แต่อีกเจ้ายังไม่ใกล้ → สลับ
  *      "ใกล้ชนเพดาน" ไม่ใช่ "ห้ามใช้" — ยังอยู่ในลำดับที่สอง เผื่อเจ้าแรกพัง
  *      เพราะการปฏิเสธคำค้นทั้งที่ยังมีโควตาเหลือแย่กว่าการใช้โควตาที่เหลือ
  *
@@ -314,16 +317,10 @@ export function chooseProviderOrder(
 ): readonly PaidProvider[] {
   if (!input.backupUsable) return ["fallback"];
 
-  const preferred: PaidProvider = input.prefixKnown ? "backup" : "fallback";
-  const other: PaidProvider = preferred === "backup" ? "fallback" : "backup";
-
-  const preferredIsTight =
-    preferred === "backup" ? input.backupNearQuota : input.fallbackNearQuota;
-  const otherIsTight =
-    other === "backup" ? input.backupNearQuota : input.fallbackNearQuota;
-
-  if (preferredIsTight && !otherIsTight) return [other, preferred];
-  return [preferred, other];
+  if (input.backupNearQuota && !input.fallbackNearQuota) {
+    return ["fallback", "backup"];
+  }
+  return ["backup", "fallback"];
 }
 
 /**
@@ -352,6 +349,7 @@ async function resolveFresh(
   fallback: CarrierAdapter,
   backup: CarrierAdapter | null,
   cache: PersistentTrackingCache | undefined,
+  courierHint: string | undefined,
 ): Promise<FreshResult> {
   // เจ้าที่ยิงไปแล้ว ไว้กันไม่ให้ขั้นถัดไปถามซ้ำคำถามเดิม และไว้อธิบายใน log
   const tried: string[] = [];
@@ -383,13 +381,15 @@ async function resolveFresh(
   // ถ้าไม่อ่าน เราจะเชื่อว่ายังไม่ได้ใช้อะไรเลยทั้งที่โควตาอาจใกล้หมดแล้ว
   await loadProviderUsage();
 
+  // ขนส่งที่จะบอก ETrackings — จาก prefix ถ้าฟันธงได้ ไม่งั้นจากที่เคยค้นสำเร็จ
+  const backupCourier = shortcut?.courierCode ?? courierHint;
+
   const backupUsable =
     backup !== null &&
-    shortcut !== null &&
-    (backup.canTrack === undefined || backup.canTrack(normalized));
+    backupCourier !== undefined &&
+    (backup.canTrack === undefined || backup.canTrack(normalized, backupCourier));
 
   const order = chooseProviderOrder({
-    prefixKnown: shortcut !== null,
     backupUsable,
     fallbackNearQuota: isNearQuota("track123"),
     backupNearQuota: isNearQuota("etrackings"),
@@ -397,6 +397,8 @@ async function resolveFresh(
 
   console.info(
     `[resolve] no=${normalized} order=${order.join(",")}` +
+      ` courier=${backupCourier ?? "-"}` +
+      `(${shortcut !== null ? "prefix" : courierHint === undefined ? "none" : "cache"})` +
       ` track123=${usageLabel("track123")} etrackings=${usageLabel("etrackings")}`,
   );
 
@@ -407,7 +409,7 @@ async function resolveFresh(
     try {
       const found =
         slot === "backup"
-          ? await runBackup(normalized, backup, shortcut)
+          ? await runBackup(normalized, backup, backupCourier)
           : await runFallback(normalized, fallback, shortcut, tried);
 
       if (found !== null) {
@@ -463,21 +465,20 @@ async function resolveFresh(
 /**
  * ยิง ETrackings หนึ่งครั้ง — ครั้งเดียวเสมอ ไม่มีการไล่เดา
  *
- * เจ้านี้บังคับให้ระบุขนส่ง เราจึงใช้รหัสที่ prefix ฟันธงมาแล้วเท่านั้น
- * ผู้เรียกรับประกันว่ามาถึงตรงนี้ได้ก็ต่อเมื่อ backupUsable เป็นจริง
+ * เจ้านี้บังคับให้ระบุขนส่ง เราจึงใช้รหัสที่ "รู้แล้ว" เท่านั้น (จาก prefix
+ * หรือจากผลที่เคยค้นสำเร็จ) ผู้เรียกรับประกันว่ามาถึงตรงนี้ได้ก็ต่อเมื่อ
+ * backupUsable เป็นจริง ซึ่งแปลว่า courier ไม่ใช่ undefined อยู่แล้ว
  */
 async function runBackup(
   normalized: string,
   backup: CarrierAdapter | null,
-  shortcut: PrefixShortcut | null,
+  courier: string | undefined,
 ): Promise<TrackingResult | null> {
   if (backup === null) return null;
 
   const trackWithCourier = backup.trackWithCourier;
-  if (shortcut !== null && trackWithCourier !== undefined) {
-    return attempt(() =>
-      trackWithCourier.call(backup, normalized, shortcut.courierCode),
-    );
+  if (courier !== undefined && trackWithCourier !== undefined) {
+    return attempt(() => trackWithCourier.call(backup, normalized, courier));
   }
   return attempt(() => backup.track(normalized));
 }
@@ -561,8 +562,25 @@ export async function resolveTracking(
   // เลขเดียวกันที่กำลังรอผลอยู่ให้เกาะคำขอเดิม — cache ช่วยตรงนี้ไม่ได้ เพราะผล
   // ยังไม่ถูกบันทึกจนกว่าคำขอแรกจะเสร็จ ช่วงที่คำขอแรกกำลังบินคือช่องว่างที่
   // คนกดปุ่มรัวหรือคนละคนที่ค้นเลขเดียวกันจะหลุดออกไปยิงซ้ำได้
+  // ขนส่งที่ยืนยันแล้วจากครั้งก่อน — cache เก็บ carrierCode ของผลที่ค้นเจอไว้
+  // อยู่แล้ว และ lookupTracking คืนแถวที่หมดอายุแล้วด้วย (ธง stale) ตรงนี้จึง
+  // เป็นความจำ "เลขนี้คือขนส่งเจ้าไหน" ที่มีอยู่แล้วโดยไม่ต้องเก็บอะไรเพิ่ม
+  //
+  // สำคัญมากในทางปฏิบัติ เพราะเลขไทยส่วนใหญ่ดู prefix แล้วบอกไม่ได้
+  // (`TH…` ใช้ร่วมกันระหว่าง SPX กับ Flash) ถ้าไม่มีค่านี้ ETrackings แทบไม่
+  // ถูกเรียกเลย — ค่าที่ไม่ใช่รหัสขนส่งจริง (เช่น "track123") ไม่เป็นไร
+  // เพราะ adapter เป็นคนตัดสินเองว่ารหัสนั้นใช้ได้ไหม
+  const courierHint = cached?.entry.result.carrierCode;
+
   const run = inflightResolves.start(normalized, () =>
-    resolveFresh(normalized, primary, fallback, backup, options.persistentCache),
+    resolveFresh(
+      normalized,
+      primary,
+      fallback,
+      backup,
+      options.persistentCache,
+      courierHint,
+    ),
   );
 
   try {

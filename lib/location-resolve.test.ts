@@ -56,12 +56,14 @@ function makeStore(): FakeStore {
       return Promise.resolve();
     },
     readGeocode: (query) => Promise.resolve(geocodes.get(query) ?? null),
-    writeGeocode: (query, coordinates, precision) => {
-      written.push({ query, coordinates });
+    writeGeocode: (query, hit) => {
+      written.push({ query, coordinates: hit.coordinates });
       geocodes.set(query, {
-        found: coordinates !== null,
-        coordinates,
-        precision: coordinates === null ? null : precision,
+        found: hit.coordinates !== null,
+        coordinates: hit.coordinates,
+        precision: hit.coordinates === null ? null : hit.precision,
+        accuracyMeters: hit.accuracyMeters,
+        areaOnly: hit.areaOnly,
       });
       return Promise.resolve();
     },
@@ -78,6 +80,7 @@ function makeStore(): FakeStore {
         branchName: input.branchName,
         lat: input.lat,
         lng: input.lng,
+        accuracy: input.accuracy,
         note: input.address,
         updatedBy: "auto:etrackings",
         updatedAt: null,
@@ -89,8 +92,16 @@ function makeStore(): FakeStore {
   return store;
 }
 
-/** ตัวหาพิกัดปลอมที่จำว่าถูกเรียกด้วยข้อความอะไรบ้าง */
-function makeGeocoder(result: Coordinates | null = CHIANG_RAI) {
+/**
+ * ตัวหาพิกัดปลอมที่จำว่าถูกเรียกด้วยข้อความอะไรบ้าง
+ *
+ * accuracyMeters คือตัวที่ระบบใช้ตัดสิน — 80 ม. = ระดับบ้านเลขที่
+ */
+function makeGeocoder(
+  result: Coordinates | null = CHIANG_RAI,
+  accuracyMeters = 80,
+  areaOnly = false,
+) {
   const calls: string[] = [];
   return {
     calls,
@@ -99,7 +110,12 @@ function makeGeocoder(result: Coordinates | null = CHIANG_RAI) {
       return Promise.resolve(
         result === null
           ? null
-          : { coordinates: result, precision: "rooftop" as const },
+          : {
+              coordinates: result,
+              precision: "center" as const,
+              accuracyMeters,
+              areaOnly,
+            },
       );
     },
   };
@@ -112,6 +128,7 @@ function knownBranch(overrides: Partial<CarrierBranch> = {}): CarrierBranch {
     branchName: "สาขาเมืองเชียงราย",
     lat: CHIANG_RAI.lat,
     lng: CHIANG_RAI.lng,
+    accuracy: "exact",
     note: null,
     updatedBy: "boss@example.com",
     updatedAt: null,
@@ -516,4 +533,116 @@ test("ไม่ได้ส่งเลขพัสดุมา → ทำงา
 
   assert.equal(result.coordinates, null);
   assert.deepEqual(store.claims, []);
+});
+
+/* ------------- เกณฑ์ความละเอียดครอบเส้นทางที่อยู่ด้วย ------------- */
+
+test("ที่อยู่ที่ได้พิกัดระดับตำบล → ปักหมุดได้ แต่ต้องบอกว่าโดยประมาณ", async () => {
+  const store = makeStore();
+
+  const result = await resolveLocation("ศูนย์ไปรษณีย์หลักสี่", "thailand-post", {
+    store,
+    geocode: makeGeocoder(CHIANG_RAI, 3_000).geocode,
+  });
+
+  assert.deepEqual(result.coordinates, CHIANG_RAI);
+  assert.equal(result.accuracy, "approximate");
+});
+
+test("ที่อยู่ที่ได้พิกัดระดับอำเภอ → ไม่ปักหมุด และถูกจดไว้", async () => {
+  // เดิมเส้นทางนี้ปักหมุดทุกอย่างที่ Google คืนมาโดยไม่บอกอะไรเลย ซึ่งเป็น
+  // รูสุดท้ายของหลักการ "เมื่อไม่แน่ใจ ห้ามปักหมุด"
+  const store = makeStore();
+
+  const result = await resolveLocation("เมืองเชียงราย", "thailand-post", {
+    store,
+    geocode: makeGeocoder(CHIANG_RAI, 25_000).geocode,
+  });
+
+  assert.equal(result.coordinates, null);
+  assert.equal(result.accuracy, null);
+  assert.equal(store.recorded[0]?.kind, "address");
+});
+
+test("Google บอกเองว่าเป็นเขตปกครอง → ไม่ปักหมุด ต่อให้กรอบจะเล็ก", async () => {
+  const store = makeStore();
+
+  const result = await resolveLocation("เชียงราย", "thailand-post", {
+    store,
+    geocode: makeGeocoder(CHIANG_RAI, 80, true).geocode,
+  });
+
+  assert.equal(result.coordinates, null);
+});
+
+test("พิกัดระดับพื้นที่ที่ cache ไว้แล้ว → ยังไม่ปักหมุด และไม่ถาม Google ซ้ำ", async () => {
+  const store = makeStore();
+  const geocoder = makeGeocoder(CHIANG_RAI, 25_000);
+
+  await resolveLocation("เมืองเชียงราย", "thailand-post", {
+    store,
+    geocode: geocoder.geocode,
+  });
+  const second = await resolveLocation("เมืองเชียงราย", "thailand-post", {
+    store,
+    geocode: geocoder.geocode,
+  });
+
+  assert.equal(second.coordinates, null);
+  assert.equal(geocoder.calls.length, 1);
+  assert.equal(store.recorded.length, 2, "ต้องจดทุกครั้งที่เจอ");
+});
+
+test("พิกัดจากตารางสาขาส่งชั้นความละเอียดของแถวนั้นออกมาด้วย", async () => {
+  const store = makeStore();
+  store.branches.set(`${CARRIER}::ACRAI-B`, {
+    ...knownBranch(),
+    accuracy: "approximate",
+  });
+
+  const result = await resolveLocation("ACRAI-B - เมืองเชียงราย", CARRIER, {
+    store,
+    geocode: makeGeocoder().geocode,
+  });
+
+  assert.deepEqual(result.coordinates, CHIANG_RAI);
+  assert.equal(result.accuracy, "approximate");
+});
+
+test("พิกัดที่แอดมินกรอกเอง → exact ไม่ต้องขึ้นป้าย", async () => {
+  const store = makeStore();
+  store.branches.set(`${CARRIER}::ACRAI-B`, knownBranch());
+
+  const result = await resolveLocation("ACRAI-B - เมืองเชียงราย", CARRIER, {
+    store,
+    geocode: makeGeocoder().geocode,
+  });
+
+  assert.equal(result.accuracy, "exact");
+});
+
+/* ------------------ courier ที่ยืนยันแล้วส่งต่อถึงด่านขอที่อยู่ ------------------ */
+
+test("ส่ง courier ที่ยืนยันแล้วต่อไปให้ด่านขอที่อยู่สาขา", async () => {
+  // เลข TH… ของ SPX ดู prefix แล้วบอกไม่ได้ ถ้าไม่ส่งค่านี้ต่อ ด่านแรกของ
+  // การขอที่อยู่จะตกเสมอ และการเติมพิกัดสาขาจะไม่ทำงานกับเลขส่วนใหญ่เลย
+  const store = makeStore();
+  const seen: (string | undefined)[] = [];
+
+  await resolveLocation("ACRAI-B - เมืองเชียงราย", CARRIER, {
+    store,
+    geocode: makeGeocoder().geocode,
+    trackingNumber: "TH264511339099F",
+    courierHint: "shopee-xpress-th",
+    probe: {
+      canProbe: (_no, hint) => {
+        seen.push(hint);
+        return true;
+      },
+      nearQuota: () => false,
+      fetchResult: () => Promise.resolve(resultWithAddress()),
+    },
+  });
+
+  assert.deepEqual(seen, ["shopee-xpress-th"]);
 });

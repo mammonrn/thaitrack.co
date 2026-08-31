@@ -759,7 +759,9 @@ function makeBackup(result: "found" | CarrierError = "found"): CarrierAdapter & 
     carrierCode: "etrackings",
     carrierName: "ETrackings",
     calls,
-    canTrack: (trackingNumber) => trackingNumber.startsWith("SPXTH"),
+    // เหมือนตัวจริง: ตามได้เมื่อ prefix ฟันธง หรือมี courier ที่ยืนยันแล้ว
+    canTrack: (trackingNumber, hint) =>
+      trackingNumber.startsWith("SPXTH") || hint === "shopee-xpress-th",
     track(trackingNumber) {
       calls.push("auto");
       return answer(trackingNumber);
@@ -1050,7 +1052,6 @@ test("ETrackings พัง แต่ Track123 ตอบว่าไม่พบ 
 /* ------------------- การตัดสินลำดับ (ฟังก์ชันบริสุทธิ์) ------------------- */
 
 const ORDER_BASE = {
-  prefixKnown: true,
   backupUsable: true,
   fallbackNearQuota: false,
   backupNearQuota: false,
@@ -1063,15 +1064,8 @@ test("ETrackings ตามเลขนี้ไม่ได้ → เหลื�
   );
 });
 
-test("prefix ฟันธงได้ → ETrackings ก่อน", () => {
+test("รู้ courier แล้ว → ETrackings ก่อน", () => {
   assert.deepEqual(chooseProviderOrder(ORDER_BASE), ["backup", "fallback"]);
-});
-
-test("prefix ฟันธงไม่ได้ → Track123 ก่อน", () => {
-  assert.deepEqual(
-    chooseProviderOrder({ ...ORDER_BASE, prefixKnown: false }),
-    ["fallback", "backup"],
-  );
 });
 
 test("เจ้าที่ควรได้ไปก่อนใกล้ชนเพดาน → สลับไปอีกเจ้า", () => {
@@ -1081,12 +1075,9 @@ test("เจ้าที่ควรได้ไปก่อนใกล้ช�
   );
 
   assert.deepEqual(
-    chooseProviderOrder({
-      ...ORDER_BASE,
-      prefixKnown: false,
-      fallbackNearQuota: true,
-    }),
+    chooseProviderOrder({ ...ORDER_BASE, fallbackNearQuota: true }),
     ["backup", "fallback"],
+    "Track123 ใกล้เต็มแต่ ETrackings ยังว่าง → ลำดับเดิมอยู่แล้ว",
   );
 });
 
@@ -1106,4 +1097,96 @@ test("ใกล้ชนเพดานไม่ใช่ห้ามใช้ �
   // ปฏิเสธคำค้นทั้งที่ยังมีโควตาเหลือ แย่กว่าการใช้โควตาที่เหลืออยู่
   const order = chooseProviderOrder({ ...ORDER_BASE, backupNearQuota: true });
   assert.ok(order.includes("backup"));
+});
+
+/* ------------- courier ที่ยืนยันแล้วจากการค้นครั้งก่อน ------------- */
+
+/** ผลที่ cache ไว้จากการค้นสำเร็จครั้งก่อน พร้อมรหัสขนส่งที่ตรวจจับได้ */
+function cachedAs(trackingNumber: string, carrierCode: string): CacheEntry {
+  return {
+    result: { ...makeResult(trackingNumber, "Shopee Xpress"), carrierCode },
+    fetchedAt: Date.now() - 48 * 60 * 60_000,
+    // หมดอายุแล้ว → ต้องยิงถามใหม่ ไม่ใช่ตอบจาก cache
+    expiresAt: Date.now() - 46 * 60 * 60_000,
+  };
+}
+
+test("เคยค้นเลขนี้สำเร็จแล้ว → ครั้งต่อไปใช้ ETrackings ได้ แม้ prefix จะบอกไม่ได้", async () => {
+  // เลข SPX ในไทยส่วนใหญ่ขึ้นต้นด้วย TH ซึ่งใช้ร่วมกับ Flash จึงฟันธงจาก
+  // prefix ไม่ได้ตลอดกาล — cache ที่จำ courier ไว้คือทางเดียวที่ทำให้
+  // ETrackings ถูกใช้จริงกับเลขกลุ่มนี้
+  const trackingNumber = uniqueTrackingNumber();
+  const cache = makeFakeCache();
+  cache.rows.set(trackingNumber, cachedAs(trackingNumber, "shopee-xpress-th"));
+
+  const backup = makeBackup();
+  const fallback = makeTrack123({ autoDetectSucceeds: true });
+
+  const resolved = await resolveTracking(trackingNumber, {
+    primary: primaryAlwaysNotFound,
+    fallback,
+    backup,
+    persistentCache: cache,
+  });
+
+  assert.equal(resolved.provider, "backup");
+  assert.deepEqual(
+    backup.calls,
+    ["shopee-xpress-th"],
+    "ต้องยิงโดยระบุขนส่งที่ยืนยันแล้ว ไม่ใช่ปล่อยให้เดาเอง",
+  );
+  assert.deepEqual(fallback.calls, []);
+});
+
+test("courier ที่จำไว้เป็นเจ้าที่ ETrackings ไม่รองรับ → ไม่แตะ ETrackings", async () => {
+  const trackingNumber = uniqueTrackingNumber();
+  const cache = makeFakeCache();
+  cache.rows.set(trackingNumber, cachedAs(trackingNumber, "thailand-post"));
+
+  const backup = makeBackup();
+
+  const resolved = await resolveTracking(trackingNumber, {
+    primary: primaryAlwaysNotFound,
+    fallback: makeTrack123({ autoDetectSucceeds: true }),
+    backup,
+    persistentCache: cache,
+  });
+
+  assert.equal(resolved.provider, "fallback");
+  assert.deepEqual(backup.calls, [], "ยิงไปก็ได้ 400 กลับมา เสียโควตาเปล่า");
+});
+
+test("ยังไม่เคยค้นเลขนี้ → ไม่มีอะไรให้จำ ใช้ Track123 ตามเดิม", async () => {
+  const backup = makeBackup();
+
+  const resolved = await resolveTracking(uniqueTrackingNumber(), {
+    primary: primaryAlwaysNotFound,
+    fallback: makeTrack123({ autoDetectSucceeds: true }),
+    backup,
+    persistentCache: noCache,
+  });
+
+  assert.equal(resolved.provider, "fallback");
+  assert.deepEqual(backup.calls, []);
+});
+
+test("prefix ยังชนะ courier ที่จำไว้ เมื่อทั้งคู่มี", async () => {
+  const trackingNumber = uniquePrefixedNumber();
+  const cache = makeFakeCache();
+  cache.rows.set(trackingNumber, cachedAs(trackingNumber, "flash-express"));
+
+  const backup = makeBackup();
+
+  await resolveTracking(trackingNumber, {
+    primary: primaryAlwaysNotFound,
+    fallback: makeTrack123(),
+    backup,
+    persistentCache: cache,
+  });
+
+  assert.deepEqual(
+    backup.calls,
+    ["shopee-xpress-th"],
+    "prefix ที่ผ่านเกณฑ์ 'ฟันธงได้จริง' เชื่อถือได้กว่าผลตรวจจับครั้งก่อน",
+  );
 });

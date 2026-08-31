@@ -300,7 +300,13 @@ test("prefix ที่รู้จัก → ได้รหัสขนส่�
 test("ผู้เรียกระบุขนส่งมาเอง → แปลงเป็นรหัสของ ETrackings", () => {
   assert.equal(resolveCourier("TH123456", "flash-express"), "flash-express");
   assert.equal(resolveCourier("TH123456", "kerry-express"), "kex-express");
-  assert.equal(resolveCourier("EY145587896TH", "thailand-post"), "thailand-post");
+  assert.equal(resolveCourier("TH123456", "shopee-xpress-th"), "shopee-express");
+});
+
+test("ขนส่งที่ยืนยันแล้วว่า ETrackings ไม่รองรับ → คืน null ไม่ยิงทิ้งโควตา", () => {
+  // ยิงจริงแล้วได้ 400 Courier does not exist — ตั้งแต่มี courier hint
+  // ตารางนี้ถูกใช้บ่อยขึ้นมาก แถวที่ไม่รองรับหนึ่งแถวคือโควตาที่ทิ้งทุกครั้ง
+  assert.equal(resolveCourier("EY145587896TH", "thailand-post"), null);
 });
 
 test("เดาขนส่งไม่ได้ → คืน null ไม่เดามั่ว", () => {

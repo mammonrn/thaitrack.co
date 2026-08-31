@@ -36,13 +36,25 @@ const TIMEOUT_MS = 6000;
  * ซึ่ง CDN กับเบราว์เซอร์ cache ต่อได้เต็มที่
  */
 const MAP_PARAMS = {
-  zoom: "15",
   size: "640x288",
   scale: "2",
   maptype: "roadmap",
   language: "th",
   region: "TH",
 } as const;
+
+/**
+ * ระดับซูมมีสองค่าให้เลือก ไม่ใช่ค่าอิสระ — ยังเป็นชุดปิดเหมือนเดิม
+ *
+ *   15  พิกัดที่รู้แน่ว่าเป็นจุดไหน — เห็นระดับถนน
+ *   13  พิกัดระดับตำบล/หมู่บ้าน — เห็นเป็นย่าน
+ *
+ * การซูมออกไม่ใช่เรื่องความสวยงาม แต่เป็นการพูดความจริง: หมุดที่ z15 สื่อว่า
+ * "อยู่ตรงอาคารนี้" ซึ่งเราไม่รู้ ส่วนที่ z13 อ่านได้ว่า "อยู่แถวนี้" ซึ่งตรง
+ * กับสิ่งที่เรารู้จริง คู่กับป้ายข้อความในหน้าประวัติ
+ */
+const ZOOM_EXACT = "15";
+const ZOOM_APPROXIMATE = "13";
 
 /**
  * เก็บภาพไว้ที่เบราว์เซอร์และ CDN ได้นาน
@@ -72,9 +84,14 @@ export async function GET(request: Request) {
     return errorResponse(503);
   }
 
+  // รับค่าเดียวคือ "approximate" ไม่ใช่ตัวเลขซูมอิสระ — ชุดพารามิเตอร์จึงยังปิด
+  // และจำนวน URL ที่เป็นไปได้ต่อหนึ่งพิกัดมีแค่สอง ซึ่ง cache ต่อได้เหมือนเดิม
+  const approximate = params.get("accuracy") === "approximate";
+
   const point = `${coordinates.lat},${coordinates.lng}`;
   const url = new URL(STATIC_MAP_ENDPOINT);
   url.searchParams.set("center", point);
+  url.searchParams.set("zoom", approximate ? ZOOM_APPROXIMATE : ZOOM_EXACT);
   for (const [key, value] of Object.entries(MAP_PARAMS)) {
     url.searchParams.set(key, value);
   }

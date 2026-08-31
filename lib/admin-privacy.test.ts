@@ -27,6 +27,10 @@ const USAGE_MIGRATION = join(
   PROJECT_DIR,
   "supabase/migrations/0006_provider_usage_and_branch_probe.sql",
 );
+const ACCURACY_MIGRATION = join(
+  PROJECT_DIR,
+  "supabase/migrations/0008_location_accuracy.sql",
+);
 
 interface SourceFile {
   path: string;
@@ -100,6 +104,24 @@ test("ตารางของกลางที่เพิ่มใหม่�
   const sql = withoutSqlComments(readFileSync(USAGE_MIGRATION, "utf8"));
   assert.doesNotMatch(sql, /user_id/);
   assert.doesNotMatch(sql, /references auth\.users/);
+});
+
+test("migration ที่แตะตารางของผู้ใช้ ต้องเพิ่มได้แค่คุณสมบัติของหมุด", () => {
+  // 0008 แตะ saved_trackings ซึ่งเป็นตารางของผู้ใช้ (มี user_id + RLS มาแต่เดิม)
+  // การเพิ่มคอลัมน์ที่นั่นต้องเป็นเรื่องของ "หมุด" ไม่ใช่เรื่องของ "คน"
+  // เทสต์นี้กันคนแอบพ่วงคอลัมน์อื่นเข้ามาพร้อมกัน
+  const sql = withoutSqlComments(readFileSync(ACCURACY_MIGRATION, "utf8"));
+
+  const added = [...sql.matchAll(/add column if not exists\s+(\w+)/g)].map(
+    (match) => match[1],
+  );
+
+  assert.deepEqual(added.sort(), [
+    "accuracy",
+    "accuracy_meters",
+    "area_only",
+    "last_location_accuracy",
+  ]);
 });
 
 test("ฟังก์ชันเดียวที่แตะ auth.users ต้องคืนได้แค่ตัวเลขนับ", () => {

@@ -9,6 +9,10 @@
  *              ห้ามเอาชื่อสาขาไป geocode ต่อ — จะได้หมุดกลางอำเภอ คือปัญหาเดิม
  *   2. ดูเหมือนที่อยู่จริง → ดู geocode_cache ก่อน ไม่มีค่อยถาม Google
  *      แล้วเก็บผลลง cache ถาวร (เก็บผลที่หาไม่เจอด้วย จะได้ไม่ถามซ้ำ)
+ *      **ผลที่ได้ต้องผ่านเกณฑ์ความละเอียดเหมือนกัน** พิกัดระดับอำเภอ/จังหวัด
+ *      ถูกปฏิเสธ ส่วนระดับตำบลผ่านแต่ติดชั้น approximate ไว้ให้ UI ขึ้นป้าย
+ *      — เดิมเส้นทางนี้ปักหมุดทุกอย่างที่ Google คืนมาโดยไม่บอกอะไรเลย
+ *      ซึ่งเป็นรูสุดท้ายของหลักการ "เมื่อไม่แน่ใจ ห้ามปักหมุด"
  *   3. อ่านไม่ออกว่าเป็นอะไร → ไม่มีพิกัด และไม่เสีย quota ไปกับการเดา
  *
  * **ทุกทางที่จบด้วย "ไม่มีแผนที่" ถูกจดลง unknown_branches เสมอ** ไม่ใช่เฉพาะ
@@ -33,7 +37,13 @@ import {
   type LocationKind,
 } from "./branch-location";
 import { probeBranchAddress, type ProbeOptions } from "./branch-harvest";
-import { geocodeAddress, type Coordinates, type GeocodeHit } from "./geocode";
+import {
+  classifyAccuracy,
+  geocodeAddress,
+  type Coordinates,
+  type GeocodeHit,
+  type LocationAccuracy,
+} from "./geocode";
 import {
   supabaseLocationStore,
   type CarrierBranch,
@@ -62,6 +72,16 @@ export interface ResolvedLocation {
   displayText: string;
   /** รหัสสาขาที่แยกได้ — null เมื่อไม่ใช่รหัสสาขา */
   branchCode: string | null;
+  /**
+   * หมุดนี้ละเอียดแค่ไหน — null เมื่อไม่มีพิกัด
+   *
+   * "approximate" คือระดับตำบล/หมู่บ้าน ซึ่ง UI **ต้อง**ขึ้นป้ายบอกผู้ใช้ว่า
+   * เป็นตำแหน่งโดยประมาณ ไม่ใช่จุดที่ตั้งเป๊ะ — ไม่งั้นก็กลับไปเป็นหมุดที่
+   * ผู้ใช้เชื่อเกินความจริงเหมือนเดิม
+   *
+   * ค่านี้ไม่มีวันเป็น "area" เพราะพิกัดระดับพื้นที่ถูกปฏิเสธไปตั้งแต่ต้นทาง
+   */
+  accuracy: Exclude<LocationAccuracy, "area"> | null;
 }
 
 export interface ResolveLocationOptions {
@@ -74,6 +94,14 @@ export interface ResolveLocationOptions {
    * ไม่ส่งมาก็ทำงานได้ทุกอย่างตามเดิม เพียงแต่จะไม่มีการเติมพิกัดอัตโนมัติ
    */
   trackingNumber?: string;
+  /**
+   * ขนส่งที่ยืนยันแล้วของเลขนี้ (รหัสของระบบเรา เช่น "shopee-xpress-th")
+   *
+   * มาจากผลที่เพิ่งค้นได้ ซึ่งแปลว่า **ยืนยันแล้ว** ไม่ใช่การเดา ใช้ปลดล็อก
+   * การไปขอที่อยู่สาขาสำหรับเลขที่ prefix เดาขนส่งไม่ออก (เช่น TH…) ซึ่งเป็น
+   * เลขส่วนใหญ่ของ SPX ในไทย — ถ้าไม่มีค่านี้ ด่านแรกของการขอที่อยู่จะตกเสมอ
+   */
+  courierHint?: string;
   /** ตัวเลือกของการไปขอที่อยู่สาขา — ใส่เองได้ในเทสต์ */
   probe?: ProbeOptions;
   /** ปิดการไปขอที่อยู่สาขาสำหรับการเรียกครั้งนี้ */
@@ -99,6 +127,7 @@ function nothing(displayText: string, kind: LocationKind): ResolvedLocation {
     kind,
     displayText,
     branchCode: null,
+    accuracy: null,
   };
 }
 
@@ -115,7 +144,22 @@ function fromBranch(
     // ชื่อที่อยู่ในตารางถือว่าถูกต้องกว่าชื่อที่ขนส่งส่งมาในครั้งนี้
     displayText: branch.branchName ?? fallbackText,
     branchCode: branch.branchCode,
+    accuracy: branch.accuracy === "area" ? "approximate" : branch.accuracy,
   };
+}
+
+/**
+ * พิกัดชุดนี้เอาไปปักหมุดได้ไหม — null เมื่อไม่ได้
+ *
+ * รวมสองเงื่อนไขที่ต้องผ่านพร้อมกันไว้ที่เดียว: ต้องมีพิกัด และต้องไม่ใช่
+ * ระดับ "พื้นที่" การแยกเช็คคนละที่คือทางที่เผลอปล่อยให้หมุดกลางอำเภอหลุดไป
+ */
+function acceptable(
+  coordinates: Coordinates | null,
+  accuracy: LocationAccuracy,
+): { coordinates: Coordinates; accuracy: Exclude<LocationAccuracy, "area"> } | null {
+  if (coordinates === null || accuracy === "area") return null;
+  return { coordinates, accuracy };
 }
 
 /**
@@ -150,6 +194,7 @@ async function giveUp(
     kind,
     displayText,
     branchCode: kind === "branch" ? branchCode : null,
+    accuracy: null,
   };
 }
 
@@ -199,6 +244,7 @@ export async function resolveLocation(
       kind: "branch",
       displayText: parsed.displayText,
       branchCode,
+      accuracy: null,
     };
   }
 
@@ -208,16 +254,21 @@ export async function resolveLocation(
 
     const cached = await store.readGeocode(query);
     if (cached !== null) {
-      if (cached.coordinates !== null) {
+      const usable = acceptable(cached.coordinates, classifyAccuracy(cached));
+
+      if (usable !== null) {
         return {
-          coordinates: cached.coordinates,
+          coordinates: usable.coordinates,
           source: "geocode_saved",
           kind: "address",
           displayText: parsed.displayText,
           branchCode: null,
+          accuracy: usable.accuracy,
         };
       }
-      // เคยถามแล้วหาไม่เจอ — ไม่ถาม Google ซ้ำ แต่ยังต้องจดว่าจบด้วยไม่มีแผนที่
+
+      // เคยถามแล้วหาไม่เจอ หรือได้แต่พิกัดระดับพื้นที่ — ไม่ถาม Google ซ้ำ
+      // แต่ยังต้องจดว่าจบด้วยไม่มีแผนที่
       return giveUp(
         store,
         carrierCode,
@@ -241,20 +292,37 @@ export async function resolveLocation(
     }
 
     // เก็บผลที่หาไม่เจอด้วย ไม่งั้นข้อความที่ Google ไม่รู้จักจะถูกถามซ้ำตลอดไป
-    await store.writeGeocode(
-      query,
-      hit?.coordinates ?? null,
-      hit?.precision ?? null,
-    );
+    // และเก็บผลการวัดไว้ด้วย จะได้ตัดสินชั้นใหม่ได้เมื่อเพดานเปลี่ยน
+    await store.writeGeocode(query, {
+      coordinates: hit?.coordinates ?? null,
+      precision: hit?.precision ?? null,
+      accuracyMeters: hit?.accuracyMeters ?? null,
+      areaOnly: hit?.areaOnly ?? null,
+    });
 
-    if (hit !== null) {
+    const fresh =
+      hit === null
+        ? null
+        : acceptable(hit.coordinates, classifyAccuracy(hit));
+
+    if (fresh !== null) {
       return {
-        coordinates: hit.coordinates,
+        coordinates: fresh.coordinates,
         source: "geocode_fresh",
         kind: "address",
         displayText: parsed.displayText,
         branchCode: null,
+        accuracy: fresh.accuracy,
       };
+    }
+
+    if (hit !== null) {
+      // ได้พิกัดมาแต่เป็นระดับอำเภอ/จังหวัด — นี่คือหน้าตาของบั๊กเดิมเป๊ะๆ
+      // (Google เดาจากคำที่พอเดาได้แล้วคืนหมุดกลางเมือง) จึงไม่ปักหมุด
+      console.info(
+        `[locations] ไม่ปักหมุดเพราะเป็นพิกัดระดับพื้นที่` +
+          ` (radius=${Math.round(hit.accuracyMeters)}m areaOnly=${hit.areaOnly})`,
+      );
     }
 
     return giveUp(
@@ -298,6 +366,7 @@ async function tryFillBranch(
       trackingNumber,
       carrierCode,
       branchCode,
+      courierHint: options.courierHint,
       store,
       options: options.probe,
     });

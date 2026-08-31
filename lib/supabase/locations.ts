@@ -18,7 +18,11 @@
  * ไม่มีทางไหนให้ client แตะตรงๆ (ไม่ถูก grant และเปิด RLS ไว้โดยไม่มี policy)
  */
 
-import type { Coordinates, GeocodePrecision } from "../geocode";
+import type {
+  Coordinates,
+  GeocodePrecision,
+  LocationAccuracy,
+} from "../geocode";
 import { explainPermissionDenied } from "./key-role";
 import { getServiceSupabaseClient } from "./service";
 
@@ -36,6 +40,8 @@ export interface CarrierBranch {
   note: string | null;
   updatedBy: string | null;
   updatedAt: string | null;
+  /** พิกัดแถวนี้ละเอียดแค่ไหน — ที่แอดมินกรอกเองถือเป็น exact เสมอ */
+  accuracy: LocationAccuracy;
 }
 
 /**
@@ -63,8 +69,14 @@ export interface UnknownBranch {
 export interface CachedGeocode {
   found: boolean;
   coordinates: Coordinates | null;
-  /** null = แถวเก่าที่บันทึกไว้ก่อนมีคอลัมน์นี้ (ดู migration 0006) */
+  /** location_type ดิบของ Google — ไว้วินิจฉัยเท่านั้น ห้ามใช้ตัดสิน */
   precision: GeocodePrecision | null;
+  /**
+   * ผลการวัดความละเอียด — null ทั้งคู่คือแถวเก่าก่อนมีคอลัมน์นี้
+   * (ดู migration 0008) ส่งต่อให้ classifyAccuracy() ตัดสินชั้นเอา
+   */
+  accuracyMeters: number | null;
+  areaOnly: boolean | null;
 }
 
 /** สัญญาที่ตัวหาพิกัดต้องการ แยกเป็น interface เพื่อให้เทสต์ใส่ตัวปลอมแทนได้ */
@@ -80,11 +92,7 @@ export interface LocationStore {
     kind: string,
   ): Promise<void>;
   readGeocode(query: string): Promise<CachedGeocode | null>;
-  writeGeocode(
-    query: string,
-    coordinates: Coordinates | null,
-    precision: GeocodePrecision | null,
-  ): Promise<void>;
+  writeGeocode(query: string, hit: GeocodeWrite): Promise<void>;
   /**
    * ขอสิทธิ์ไปถามที่อยู่ของสาขานี้ — true เมื่อได้สิทธิ์เท่านั้น
    *
@@ -100,6 +108,14 @@ export interface LocationStore {
   saveHarvestedBranch(input: HarvestedBranchInput): Promise<boolean>;
 }
 
+/** สิ่งที่บันทึกลง geocode_cache — coordinates เป็น null เมื่อหาไม่เจอ */
+export interface GeocodeWrite {
+  coordinates: Coordinates | null;
+  precision: GeocodePrecision | null;
+  accuracyMeters: number | null;
+  areaOnly: boolean | null;
+}
+
 /** พิกัดสาขาที่ระบบหามาได้เองจากที่อยู่ในข้อความของขนส่ง */
 export interface HarvestedBranchInput {
   carrierCode: string;
@@ -107,6 +123,7 @@ export interface HarvestedBranchInput {
   branchName: string | null;
   lat: number;
   lng: number;
+  accuracy: LocationAccuracy;
   /** ที่อยู่ที่ใช้หาพิกัด — เก็บไว้ใน note ให้แอดมินตรวจย้อนได้ */
   address: string;
 }
@@ -169,6 +186,9 @@ function toBranch(row: unknown): CarrierBranch | null {
     note: typeof record.note === "string" ? record.note : null,
     updatedBy: typeof record.updated_by === "string" ? record.updated_by : null,
     updatedAt: typeof record.updated_at === "string" ? record.updated_at : null,
+    // แถวเก่าก่อน migration 0008 ไม่มีคอลัมน์นี้ — ทั้งหมดเป็นของที่แอดมิน
+    // กรอกเอง ซึ่งคือจุดที่คนไปยืนยันมาแล้ว จึงเป็น exact โดยปริยาย
+    accuracy: record.accuracy === "approximate" ? "approximate" : "exact",
   };
 }
 
@@ -250,7 +270,7 @@ export const supabaseLocationStore: LocationStore = {
     try {
       const { data, error } = await supabase
         .from(GEOCODE_TABLE)
-        .select("lat, lng, found, precision")
+        .select("lat, lng, found, precision, accuracy_meters, area_only")
         .eq("query", query)
         .maybeSingle();
 
@@ -261,17 +281,26 @@ export const supabaseLocationStore: LocationStore = {
       if (data === null) return null;
 
       const record = data as Record<string, unknown>;
-      const precision = toPrecision(record.precision);
 
       if (record.found !== true) {
-        return { found: false, coordinates: null, precision: null };
+        return {
+          found: false,
+          coordinates: null,
+          precision: null,
+          accuracyMeters: null,
+          areaOnly: null,
+        };
       }
 
       if (!isFiniteNumber(record.lat) || !isFiniteNumber(record.lng)) return null;
       return {
         found: true,
         coordinates: { lat: record.lat, lng: record.lng },
-        precision,
+        precision: toPrecision(record.precision),
+        accuracyMeters: isFiniteNumber(record.accuracy_meters)
+          ? record.accuracy_meters
+          : null,
+        areaOnly: typeof record.area_only === "boolean" ? record.area_only : null,
       };
     } catch (cause) {
       warn("อ่าน cache พิกัด", reason(cause));
@@ -279,18 +308,31 @@ export const supabaseLocationStore: LocationStore = {
     }
   },
 
-  async writeGeocode(query, coordinates, precision) {
+  async writeGeocode(query, hit) {
     const supabase = getServiceSupabaseClient();
     if (supabase === null) return;
+
+    const found = hit.coordinates !== null;
 
     try {
       const { error } = await supabase.from(GEOCODE_TABLE).upsert(
         {
           query,
-          found: coordinates !== null,
-          lat: coordinates?.lat ?? null,
-          lng: coordinates?.lng ?? null,
-          precision: coordinates === null ? null : precision,
+          found,
+          lat: hit.coordinates?.lat ?? null,
+          lng: hit.coordinates?.lng ?? null,
+          precision: found ? hit.precision : null,
+          // Infinity ลง jsonb/double ไม่ได้ และ "ใหญ่จนวัดไม่ได้" กับ "ไม่รู้"
+          // ต่างกัน — ตัวแรกต้องถูกปฏิเสธ ตัวหลังแค่ไม่ยืนยัน จึงเก็บ area_only
+          // เป็น true แทนที่จะปล่อยให้ตัวเลขหายไปเฉยๆ
+          accuracy_meters:
+            found && Number.isFinite(hit.accuracyMeters ?? NaN)
+              ? hit.accuracyMeters
+              : null,
+          area_only: found
+            ? (hit.areaOnly ?? false) ||
+              !Number.isFinite(hit.accuracyMeters ?? NaN)
+            : null,
           geocoded_at: new Date().toISOString(),
         },
         { onConflict: "query" },
@@ -340,6 +382,7 @@ export const supabaseLocationStore: LocationStore = {
         branch_name: input.branchName,
         lat: input.lat,
         lng: input.lng,
+        accuracy: input.accuracy,
         note: `เติมอัตโนมัติจากที่อยู่ในข้อความของขนส่ง: ${input.address}`.slice(0, 500),
         updated_by: HARVEST_AUTHOR,
         updated_at: new Date().toISOString(),
