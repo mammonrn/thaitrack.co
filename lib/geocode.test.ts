@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  APPROXIMATE_MAX_METERS,
   DEFAULT_MAX_ACCURACY_METERS,
   EXACT_MAX_METERS,
   classifyAccuracy,
@@ -94,10 +95,27 @@ test("เล็กกว่าเกณฑ์ 'เป๊ะ' → exact", () => {
   );
 });
 
-test("ระดับตำบล → approximate (ปักหมุดได้ แต่ต้องบอกผู้ใช้)", () => {
+test("คลาดเคลื่อนราวหนึ่งกิโล → approximate", () => {
   assert.equal(
-    classifyAccuracy({ accuracyMeters: 3_000, areaOnly: false }),
+    classifyAccuracy({ accuracyMeters: APPROXIMATE_MAX_METERS - 1, areaOnly: false }),
     "approximate",
+  );
+});
+
+test("คลาดเคลื่อนหลายกิโล → coarse (ถ้อยคำต้องต่างจาก approximate)", () => {
+  // ข้อมูลจริง: ที่อยู่ที่ละเอียดถึงบ้านเลขที่ยังได้กรอบ 8.3 กม.
+  // ถ้าใช้ถ้อยคำเดียวกับ 200 ม. ผู้ใช้จะเชื่อหมุดเกินความจริงไปหลายกิโล
+  assert.equal(
+    classifyAccuracy({ accuracyMeters: 8_299, areaOnly: false }),
+    "coarse",
+  );
+});
+
+test("ที่อยู่ไทยแบบเต็มยศต้องผ่านเกณฑ์ได้จริง", () => {
+  // เพดานรุ่นแรก 5 กม. ทำให้ค่านี้ตกทุกครั้ง การเก็บพิกัดสาขาจึงไม่เคยทำงาน
+  assert.notEqual(
+    classifyAccuracy({ accuracyMeters: 8_299, areaOnly: false }),
+    "area",
   );
 });
 
@@ -117,12 +135,10 @@ test("เป็นเขตปกครอง → area ต่อให้กร�
   assert.equal(classifyAccuracy({ accuracyMeters: 10, areaOnly: true }), "area");
 });
 
-test("ไม่รู้ความละเอียด (แถวเก่าใน cache) → approximate ไม่ใช่ exact", () => {
+test("ไม่รู้ความละเอียด (แถวเก่าใน cache) → coarse ซึ่งเป็นถ้อยคำที่คลุมเครือที่สุด", () => {
   // เดาว่าแม่นคือการรับรองสิ่งที่เราไม่รู้ — ยอมปักหมุดให้ แต่ต้องติดป้าย
-  assert.equal(
-    classifyAccuracy({ accuracyMeters: null, areaOnly: null }),
-    "approximate",
-  );
+  // และต้องเป็นป้ายที่ไม่รับประกันระยะใดๆ
+  assert.equal(classifyAccuracy({ accuracyMeters: null, areaOnly: null }), "coarse");
 });
 
 /* ------------------------------ เพดาน ------------------------------ */
@@ -137,7 +153,7 @@ test("ตั้ง env แล้วมีผลกับของที่ cache
   });
 
   const measured = { accuracyMeters: 3_000, areaOnly: false };
-  assert.equal(classifyAccuracy(measured), "approximate");
+  assert.equal(classifyAccuracy(measured), "coarse");
 
   // ชั้นถูกคำนวณสดจากค่าที่วัดไว้ ไม่ได้เก็บคำตัดสินลงฐานข้อมูล
   // การปรับเพดานจึงไม่ต้องล้าง cache และไม่ต้องยิงถาม Google ใหม่

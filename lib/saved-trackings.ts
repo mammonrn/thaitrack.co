@@ -78,13 +78,37 @@ export function toSavedTracking(row: SavedTrackingRow): SavedTracking {
     // ฐานข้อมูลมี check constraint คุมอยู่ แต่กรองซ้ำด้วยเหตุผลเดียวกับ lastStatus
     lastLocationAccuracy:
       row.last_location_accuracy === "exact" ||
-      row.last_location_accuracy === "approximate"
+      row.last_location_accuracy === "approximate" ||
+      row.last_location_accuracy === "coarse"
         ? row.last_location_accuracy
         : null,
     lastUpdatedAt: row.last_updated_at,
     createdAt: row.created_at,
   };
 }
+
+/**
+ * ป้ายบอกความคลาดเคลื่อนของหมุด — null คือไม่ต้องขึ้นป้าย
+ *
+ * ⚠️ ถ้อยคำตรงนี้คือสิ่งเดียวที่กันไม่ให้ผู้ใช้เชื่อหมุดเกินความจริง ตัวเลขที่
+ * เขียนไว้ต้องตรงกับขอบบนของแต่ละชั้นจริงๆ (ดู EXACT_MAX_METERS,
+ * APPROXIMATE_MAX_METERS, DEFAULT_MAX_ACCURACY_METERS ใน lib/geocode.ts)
+ * ถ้าขยับเพดานที่นั่น ต้องขยับถ้อยคำตรงนี้ตาม
+ *
+ * รุ่นแรกเขียนว่า "ระดับตำบล" ซึ่งผิด — คนอ่านแล้วนึกถึงไม่กี่ร้อยเมตร แต่ตำบล
+ * ในต่างจังหวัดกว้างได้ถึง 8 กม. จริง บอกเป็นระยะทางไปเลยจึงตรงกว่าและไม่ต้อง
+ * อาศัยว่าผู้อ่านรู้ว่าตำบลใหญ่แค่ไหน
+ *
+ * null (แถวเก่าก่อนมีคอลัมน์นี้) ไม่ขึ้นป้าย เพราะเราไม่รู้จริงๆ ว่าแม่นแค่ไหน
+ * การเดาว่า "ไม่แม่น" แล้วติดป้ายให้ทุกแถวเก่า คือการบอกสิ่งที่เราไม่รู้
+ */
+export const LOCATION_ACCURACY_NOTICE: Record<LocationAccuracy, string | null> = {
+  exact: null,
+  approximate: "ตำแหน่งโดยประมาณ คลาดเคลื่อนได้ราว 1 กม.",
+  coarse: "ตำแหน่งคร่าวๆ ของพื้นที่ คลาดเคลื่อนได้หลายกิโลเมตร",
+  // ไม่มีทางถูกใช้ — พิกัดชั้นนี้ไม่เคยถูกปักหมุดตั้งแต่ต้นทาง
+  area: "ตำแหน่งคร่าวๆ ของพื้นที่ คลาดเคลื่อนได้หลายกิโลเมตร",
+};
 
 /** ชื่อที่แสดงในรายการ — ชื่อเล่นถ้าตั้งไว้ ไม่งั้นใช้เลขพัสดุ */
 export function displayTitleOf(saved: SavedTracking): string {

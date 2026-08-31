@@ -537,15 +537,26 @@ test("ไม่ได้ส่งเลขพัสดุมา → ทำงา
 
 /* ------------- เกณฑ์ความละเอียดครอบเส้นทางที่อยู่ด้วย ------------- */
 
-test("ที่อยู่ที่ได้พิกัดระดับตำบล → ปักหมุดได้ แต่ต้องบอกว่าโดยประมาณ", async () => {
+test("ที่อยู่ที่ได้พิกัดคลาดเคลื่อนหลายกิโล → ปักหมุดได้ แต่ติดชั้น coarse", async () => {
   const store = makeStore();
 
   const result = await resolveLocation("ศูนย์ไปรษณีย์หลักสี่", "thailand-post", {
     store,
-    geocode: makeGeocoder(CHIANG_RAI, 3_000).geocode,
+    geocode: makeGeocoder(CHIANG_RAI, 8_299).geocode,
   });
 
   assert.deepEqual(result.coordinates, CHIANG_RAI);
+  assert.equal(result.accuracy, "coarse");
+});
+
+test("คลาดเคลื่อนราวหนึ่งกิโล → ติดชั้น approximate", async () => {
+  const store = makeStore();
+
+  const result = await resolveLocation("ศูนย์ไปรษณีย์หลักสี่", "thailand-post", {
+    store,
+    geocode: makeGeocoder(CHIANG_RAI, 900).geocode,
+  });
+
   assert.equal(result.accuracy, "approximate");
 });
 
