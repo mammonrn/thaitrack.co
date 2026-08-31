@@ -222,3 +222,45 @@ test("ตัวย่อสั้นเกินไปหรือยาวเ�
 test("ข้อความไทยไม่เข้าข่ายรหัสสาขาแบบไม่มีขีด", () => {
   assert.equal(parseLocationText("ศูนย์คัดแยกสมุทรสาคร").kind, "address");
 });
+
+/* ---- ตัดรหัสภายในออกจากชื่อสถานที่ก่อนส่งไปหาพิกัด (เจอกับ J&T) ---- */
+
+test("รหัสภายในปนหน้าชื่อสถานที่ไทย → ส่งเฉพาะส่วนไทยไปหาพิกัด", () => {
+  const parsed = parseLocationText("สาขา46Chiang Saen01 เวียง-เชียงแสน เชียงราย");
+
+  assert.equal(parsed.kind, "address");
+  // ข้อความที่ผู้ใช้เห็นยังเป็นของเดิมทั้งก้อน — เราไม่ปิดบังสิ่งที่ขนส่งบอกมา
+  assert.equal(parsed.displayText, "สาขา46Chiang Saen01 เวียง-เชียงแสน เชียงราย");
+  assert.equal(parsed.geocodeQuery, "เวียง-เชียงแสน เชียงราย");
+});
+
+test("ที่อยู่ไทยล้วน → ไม่ตัดอะไรเลย", () => {
+  const parsed = parseLocationText("ศูนย์คัดแยกสินค้าสมุทรสาคร, กรุงเทพมหานคร");
+  assert.equal(parsed.geocodeQuery, "ศูนย์คัดแยกสินค้าสมุทรสาคร, กรุงเทพมหานคร");
+});
+
+test("บ้านเลขที่นำหน้า → ห้ามตัด เพราะตัวเลขนั้นคือข้อมูลจริง", () => {
+  // เงื่อนไข "ส่วนที่ตัดต้องมีอักษรละติน" มีไว้กันเคสนี้โดยเฉพาะ
+  const parsed = parseLocationText("123 ถนนสุขุมวิท กรุงเทพมหานคร");
+  assert.equal(parsed.geocodeQuery, "123 ถนนสุขุมวิท กรุงเทพมหานคร");
+});
+
+test("เหลือคำไทยคำเดียวหลังรหัส → ไม่ตัด เพราะแคบเกินกว่าจะเชื่อ", () => {
+  // ตัดแล้วจะเหลือแค่ "เชียงราย" ซึ่งได้หมุดกลางจังหวัด — คือปัญหาที่ไฟล์นี้
+  // ตั้งใจแก้พอดี ปล่อยทั้งก้อนไปให้ Google ตัดสินเองดีกว่า
+  const parsed = parseLocationText("สาขา46Chiang Saen01 เชียงราย");
+  assert.equal(parsed.geocodeQuery, "สาขา46Chiang Saen01 เชียงราย");
+});
+
+test("รหัสภายในล้วนนำหน้าชื่อไทย → เข้ากติการหัสสาขาเดิม ไม่ใช่กติกาใหม่", () => {
+  // "HUB01" เข้ารูปรหัสสาขาตั้งแต่ด่านแรก จึงไม่ปักหมุดเลยตามกติกาเดิม
+  // (กติกาตัดรหัสใหม่ทำงานเฉพาะข้อความที่ผ่านมาถึงชั้น "ดูเหมือนที่อยู่")
+  const parsed = parseLocationText("HUB01 เชียงราย");
+  assert.equal(parsed.kind, "branch");
+  assert.equal(parsed.geocodeQuery, null);
+});
+
+test("ชื่อสถานที่ภาษาอังกฤษล้วน → ไม่ตัด", () => {
+  const parsed = parseLocationText("Shenzhen sorting centre");
+  assert.equal(parsed.geocodeQuery, "Shenzhen sorting centre");
+});

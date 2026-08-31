@@ -51,7 +51,7 @@ function makeResult(): TrackingResult {
       recipientMasked: "ภูมิ ธ***",
       signerMasked: "แผน***",
     },
-    sensitive: { proofPhotoUrl: PROOF_URL },
+    sensitive: { proofPhotoUrls: [PROOF_URL] },
   };
 }
 
@@ -101,7 +101,7 @@ test("ของที่เพิ่งยิงมาสดๆ ต้องไ�
 
   void rememberTracking("TH264511339099F", result, makeCache());
 
-  assert.equal(result.sensitive?.proofPhotoUrl, PROOF_URL);
+  assert.deepEqual(result.sensitive?.proofPhotoUrls, [PROOF_URL]);
 });
 
 test("ข้อมูลที่ไม่อ่อนไหวต้องยังอยู่ครบหลังตัด", () => {

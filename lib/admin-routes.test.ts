@@ -330,6 +330,10 @@ test("ฟังก์ชันสรุปที่เพิ่มทีหล�
       file: "supabase/migrations/0013_install_prompt_events.sql",
       signature: "public\\.admin_install_prompt_stats\\(integer\\)",
     },
+    {
+      file: "supabase/migrations/0014_tracking_shape.sql",
+      signature: "public\\.admin_unfound_shapes\\(integer, integer\\)",
+    },
   ];
 
   for (const { file, signature } of cases) {

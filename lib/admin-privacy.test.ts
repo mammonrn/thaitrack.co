@@ -308,6 +308,26 @@ test("การบันทึกสถิติต้องเกิดจา�
   }
 });
 
+test("รูปแบบเลขที่ส่งเข้าสถิติต้องผ่านตัวแปลงเสมอ ไม่ใช่เลขดิบ", () => {
+  // ด่านข้างบนกันเลขดิบไว้แล้ว ด่านนี้กันอีกทางหนึ่ง: ถ้าวันหนึ่งมีคนเปลี่ยน
+  // ให้ส่งค่าอื่นเข้าฟิลด์ trackingShape โดยไม่ผ่าน trackingShape() เทสต์นี้จะล้ม
+  const route = allFiles.find((file) => file.path === "app/api/track/route.ts");
+  assert.ok(route !== undefined, "ต้องมี route ให้ตรวจจริง");
+
+  if (!route.source.includes("trackingShape:")) return;
+
+  assert.match(
+    route.source,
+    /const shape = trackingShape\(/,
+    "ต้องแปลงผ่าน trackingShape() ก่อนเสมอ",
+  );
+  assert.match(
+    route.source,
+    /trackingShape: [^;]*shape/,
+    "ฟิลด์ trackingShape ต้องรับค่าที่มาจากตัวแปลงเท่านั้น",
+  );
+});
+
 /* --------------- ตารางของกลางที่เพิ่มมาในรอบหลัง --------------- */
 
 test("ตาราง tracking_couriers ต้องไม่ผูกกับผู้ใช้", () => {
@@ -443,6 +463,10 @@ test("ทุก migration ที่เพิ่มคอลัมน์ให้
   assert.deepEqual(added.sort(), [
     "reason",
     "took_ms",
+    // ⚠️ ไม่ใช่เลขพัสดุ — เป็นรูปแบบที่ตัวเลขถูกแทนด้วย # จนย้อนกลับไม่ได้
+    // (ดู lib/tracking-shape.ts และ supabase/migrations/0014_tracking_shape.sql)
+    // เทสต์ที่พิสูจน์ว่าย้อนกลับไม่ได้อยู่ที่ lib/tracking-shape.test.ts
+    "tracking_shape",
     "unknown_courier",
     "upstream_code",
   ]);

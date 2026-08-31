@@ -149,11 +149,49 @@ export interface ETrackingsDetail {
   cashOnDelivery?: string | null;
   isPayCashOnDelivery?: boolean | null;
   deliveryStaffName?: string | null;
+  /**
+   * ⚠️ **เบอร์มือถือส่วนตัวของพนักงานส่งของ ไม่ได้ปิดบังมา** (เจอกับ J&T:
+   * "0650265482") — ประกาศไว้เพื่อบอกว่า "เห็นแล้วและตั้งใจไม่ใช้"
+   * ไม่ใช่เพราะยังไม่ได้ทำ · ห้ามเอาไปใส่ ShipmentDetails หรือ SensitiveDetails
+   *
+   * เหตุผล: พนักงานส่งของไม่ได้ยินยอมให้เบอร์ตัวเองปรากฏบนเว็บสาธารณะ และ
+   * เขาไม่ใช่ผู้ใช้ของเรา จึงไม่มีทางถอนความยินยอมได้เลย ต่างจากชื่อพนักงาน
+   * (deliveryStaffName) ที่เป็นข้อมูลเชิงบริการซึ่งขนส่งแจ้งผู้รับอยู่แล้ว
+   *
+   * ทำไมไม่ใช้ด่านเดียวกับรูปถ่าย: ด่านนั้นบังคับว่าพัสดุต้อง "ส่งถึงแล้ว"
+   * ซึ่งเป็นเวลาที่ไม่มีใครต้องโทรหาคนส่งของอีกแล้ว ประโยชน์เป็นศูนย์แต่ยังมี
+   * ความเสี่ยงเต็มๆ · ทำไมไม่ mask: เบอร์ที่ถูกปิดบังโทรออกไม่ได้ จึงไร้ประโยชน์
+   * เท่ากัน · สิ่งที่ผู้ใช้ต้องการจริงคือ "ติดต่อใครได้" ซึ่งเบอร์สาขากับ
+   * คอลเซ็นเตอร์ข้างล่างตอบได้ครบโดยไม่ต้องเปิดเผยเบอร์ส่วนตัวของใคร
+   *
+   * มีเทสต์เฝ้าอยู่ที่ lib/sensitive-data.test.ts
+   */
   deliveryStaffPhoneNumber?: string | null;
+  /** เบอร์สาขาที่นำจ่าย เช่น "052-020-230" — เบอร์บริษัท แสดงได้ */
+  deliveryStaffBranchPhoneNumber?: string | null;
   deliveryType?: string | null;
   /** เบอร์คอลเซ็นเตอร์ของขนส่ง เช่น "1436" ของ Flash */
   courierCallCenterPhoneNumber?: string | null;
-  /** รูปถ่ายตอนนำจ่าย — ข้อมูลอ่อนไหวที่สุดที่ระบบนี้แตะ */
+  /**
+   * ⚠️ เบอร์ผู้ส่ง/ผู้รับที่ปลายทางปิดบังมาให้แล้ว ("******7971")
+   * ประกาศไว้เพื่อบอกว่าเห็นแล้วและตั้งใจไม่ใช้ เช่นเดียวกับเบอร์พนักงาน
+   *
+   * ถึงจะเหลือแค่ 4 ตัวท้าย แต่มันคือ "4 ตัวท้ายของเบอร์คนที่ผูกกับพัสดุใบนี้"
+   * ซึ่งใครก็ตามที่เห็นเลขพัสดุ (บนกล่อง ในกลุ่มแชท ในอีเมลยืนยันคำสั่งซื้อ)
+   * เอาไปใช้ยืนยันตัวตนกับคนอื่นได้ — เป็นชิ้นส่วนที่มิจฉาชีพใช้จริงในการอ้างว่า
+   * "ผมโทรจากขนส่งนะครับ เบอร์ลงท้าย 7971 ใช่ไหม" · ส่วนเจ้าของเบอร์เองก็รู้
+   * เบอร์ตัวเองอยู่แล้ว ประโยชน์จึงเป็นศูนย์ ความเสี่ยงไม่เป็นศูนย์
+   */
+  senderPhoneNumber?: string | null;
+  recipientPhoneNumber?: string | null;
+  /**
+   * รูปถ่ายตอนนำจ่าย — ข้อมูลอ่อนไหวที่สุดที่ระบบนี้แตะ
+   *
+   * ⚠️ **มีได้หลาย URL คั่นด้วยจุลภาค** (เจอกับ J&T: รูปพัสดุ + รูปลายเซ็น)
+   * และเป็น signed URL ที่หมดอายุใน 24 ชม. (q-sign-time / q-key-time ใน
+   * query string) จึงห้ามเก็บลงที่ใดที่หนึ่งแล้วเอามาใช้ใหม่ทีหลังเด็ดขาด —
+   * ลิงก์จะเสียเงียบๆ และผู้ใช้จะเห็นเป็นรูปแตก
+   */
   signerImageURL?: string | null;
 }
 
@@ -377,6 +415,29 @@ export function parseETrackingsTime(
  */
 const LOCATION_SUFFIX = /^[^\d,]{2,40},\s*[^\d,]{2,40}$/;
 
+/**
+ * สถานที่แบบที่ J&T เขียน — ขึ้นต้นด้วยคำว่า "สาขา" แล้วตามด้วยรหัสกับชื่อ
+ *
+ * ตัวอย่างจริง (เลข JTTH203388775531):
+ *   "ได้เซ็นรับพัสดุ - สาขา46Chiang Saen01 เวียง-เชียงแสน เชียงราย"
+ *
+ * รูปนี้ไม่มีคอมมาจึงไม่เข้า LOCATION_SUFFIX และมีตัวเลขปนด้วย ผลคือก่อนหน้านี้
+ * ข้อความทั้งก้อนถูกปล่อยไว้เป็น description แล้วสถานที่เป็นค่าว่าง = ไม่มีแผนที่เลย
+ * ทั้งที่ J&T ให้ชื่อสถานที่ภาษาคนมา ซึ่งดีกว่ารหัสภายในของเจ้าอื่นเสียอีก
+ *
+ * บังคับให้ขึ้นต้นด้วย "สาขา" ติดกับตัวอักษรอื่นทันที เพื่อไม่ให้ไปจับประโยค
+ * ธรรมดาที่บังเอิญมีคำว่าสาขาอยู่กลางข้อความ
+ */
+const BRANCH_WORD_LOCATION = /^สาขา\S/;
+
+/**
+ * ยาวเกินนี้แปลว่าเราตัดผิด ไม่ใช่ชื่อสถานที่
+ *
+ * มีเฉพาะกับกติกา "สาขา..." เพราะกติกานั้นไม่ได้บังคับรูปร่างอะไรมากไปกว่า
+ * คำขึ้นต้น ต่างจาก LOCATION_SUFFIX ที่จำกัดความยาวไว้ในตัวรูปแบบอยู่แล้ว
+ */
+const MAX_LOCATION_LENGTH = 80;
+
 /** เวลาที่นำหน้าข้อความ เช่น "13:59 " — ซ้ำกับฟิลด์ time จึงตัดทิ้ง */
 const LEADING_TIME = /^\d{1,2}\s*:\s*\d{2}(?:\s*:\s*\d{2})?\s+/;
 
@@ -479,7 +540,11 @@ export function splitDescription(raw: string): SplitDescription {
   const head = cleaned.slice(0, separator).trim();
   const tail = cleaned.slice(separator + 3).trim();
 
-  if (head === "" || !LOCATION_SUFFIX.test(tail)) {
+  const isLocation =
+    LOCATION_SUFFIX.test(tail) ||
+    (BRANCH_WORD_LOCATION.test(tail) && tail.length <= MAX_LOCATION_LENGTH);
+
+  if (head === "" || !isLocation) {
     return { description: cleaned, location: "", address: "" };
   }
 
@@ -509,6 +574,7 @@ export function toShipmentDetails(
     cashOnDelivery: cod === null || cod === "0" ? null : cod,
     deliveryType: text(detail.deliveryType),
     callCenterPhone: text(detail.courierCallCenterPhoneNumber),
+    deliveryBranchPhone: text(detail.deliveryStaffBranchPhoneNumber),
     // ผู้ส่งแทบทั้งหมดเป็นชื่อร้าน ซึ่งเปิดเผยอยู่แล้วและผู้ซื้อต้องใช้ระบุ
     // ว่าเป็นของจากคำสั่งซื้อไหน — ต่างจากผู้รับที่เป็นตัวบุคคลจริง
     sender: text(detail.sender),
@@ -529,11 +595,28 @@ export function toShipmentDetails(
 export function toSensitiveDetails(
   detail: ETrackingsDetail | null | undefined,
 ): SensitiveDetails | null {
-  const url = text(detail?.signerImageURL);
-  // รับเฉพาะ https — URL อื่นไม่มีทางเป็นรูปที่ขนส่งโฮสต์ไว้จริง
-  if (url === null || !url.startsWith("https://")) return null;
+  const raw = text(detail?.signerImageURL);
+  if (raw === null) return null;
 
-  return { proofPhotoUrl: url };
+  /*
+   * แยกด้วยจุลภาคเพราะ J&T ส่งมาสอง URL ในฟิลด์เดียว (รูปพัสดุ + รูปลายเซ็น)
+   *
+   * ก่อนแก้ ค่าทั้งก้อน "https://a...,https://b..." ผ่านด่าน startsWith("https://")
+   * ไปได้ทั้งดุ้น แล้วถูกยัดใส่ src ของ <img> ตรงๆ ผลคือรูปแตกโดยไม่มี error
+   * ให้ใครเห็น — เจ้าอื่นที่ส่งมา URL เดียวไม่มีจุลภาคจึงไม่ได้รับผลกระทบ
+   *
+   * จุลภาคปลอดภัยที่จะใช้เป็นตัวคั่น เพราะ URL ที่ถูกต้องต้อง encode จุลภาค
+   * ในส่วน path/query เป็น %2C อยู่แล้วถ้ามันเป็นข้อมูล
+   */
+  const urls = raw
+    .split(",")
+    .map((part) => part.trim())
+    // รับเฉพาะ https — URL อื่นไม่มีทางเป็นรูปที่ขนส่งโฮสต์ไว้จริง
+    .filter((part) => part.startsWith("https://"));
+
+  if (urls.length === 0) return null;
+
+  return { proofPhotoUrls: urls };
 }
 
 /**

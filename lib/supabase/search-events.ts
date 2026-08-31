@@ -59,6 +59,15 @@ export interface SearchEventInput {
    * ตัวเลขเดียวที่ใช้ตัดสินได้ว่าควรลงทุนทำกลไกเดาขนส่งตอนจนตรอกหรือไม่
    */
   unknownCourier?: boolean;
+  /**
+   * รูปแบบของเลขที่ค้น เช่น "JTTH############" — null เมื่อไม่ต้องเก็บ
+   *
+   * ⚠️ **ไม่ใช่เลขพัสดุ และย้อนกลับเป็นเลขพัสดุไม่ได้** ตัวเลขทุกตัวถูกแทนด้วย #
+   * เหลือแค่ prefix ของขนส่งซึ่งพัสดุทุกใบของเจ้านั้นใช้ร่วมกัน (ดูเหตุผลเต็ม
+   * ที่ lib/tracking-shape.ts) · ผู้เรียกต้องส่งค่าที่ผ่าน trackingShape() มาแล้ว
+   * เท่านั้น ห้ามส่งเลขดิบมาให้ฟังก์ชันนี้แปลงให้
+   */
+  trackingShape?: string | null;
 }
 
 function warn(action: string, detail: string): void {
@@ -103,6 +112,7 @@ export async function recordSearchEvent(
       upstream_code: input.upstreamCode ?? null,
       took_ms: input.tookMs ?? null,
       unknown_courier: input.unknownCourier ?? false,
+      tracking_shape: input.trackingShape ?? null,
     });
 
     if (error) warn("บันทึกสถิติการค้นหา", error.message);
@@ -360,6 +370,53 @@ export async function readUnknownCourierFailures(days: number): Promise<number> 
   } catch (cause) {
     warn("อ่านจำนวนคำขอที่ไม่รู้ขนส่ง", reason(cause));
     return 0;
+  }
+}
+
+export interface TrackingShapeRow {
+  shape: string;
+  total: number;
+}
+
+/**
+ * รูปแบบเลขที่ค้นไม่เจอบ่อยที่สุด — ไว้เห็นปัญหาก่อนที่ผู้ใช้จะมาแจ้ง
+ *
+ * ⚠️ อ่านเป็นเพดานบนเสมอ: คนพิมพ์เลขผิดถูกนับรวมอยู่ด้วยและเราแยกไม่ออก
+ * สิ่งที่ตัวเลขนี้ทำได้คือชี้ว่า "ทรงนี้โผล่บ่อยผิดปกติ ไปตรวจดู"
+ */
+export async function readUnfoundShapes(
+  days: number,
+  limit: number,
+): Promise<TrackingShapeRow[]> {
+  const supabase = getServiceSupabaseClient();
+  if (supabase === null) return [];
+
+  try {
+    const { data, error } = await supabase.rpc("admin_unfound_shapes", {
+      p_days: days,
+      p_limit: limit,
+    });
+
+    if (error) {
+      warn("อ่านรูปแบบเลขที่ค้นไม่เจอ", error.message);
+      return [];
+    }
+
+    return (data ?? [])
+      .map((row: unknown) => {
+        const record = row as Record<string, unknown>;
+        if (typeof record.tracking_shape !== "string") return null;
+        return {
+          shape: record.tracking_shape,
+          total: toCount(record.total),
+        } satisfies TrackingShapeRow;
+      })
+      .filter((row: TrackingShapeRow | null): row is TrackingShapeRow =>
+        row !== null,
+      );
+  } catch (cause) {
+    warn("อ่านรูปแบบเลขที่ค้นไม่เจอ", reason(cause));
+    return [];
   }
 }
 

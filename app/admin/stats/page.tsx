@@ -35,6 +35,7 @@ import {
   readSearchDaily,
   readSearchOverview,
   readTopCarriers,
+  readUnfoundShapes,
   readUnknownCourierFailures,
 } from "@/lib/supabase/search-events";
 
@@ -45,6 +46,7 @@ export const dynamic = "force-dynamic";
 /** ช่วงที่หน้านี้มองย้อนหลัง */
 const WINDOW_DAYS = 30;
 const TOP_CARRIER_LIMIT = 8;
+const UNFOUND_SHAPE_LIMIT = 12;
 
 /** จำนวนแบบอ่านง่าย เช่น 12,345 */
 const count = (value: number) => value.toLocaleString("th-TH");
@@ -127,6 +129,7 @@ export default async function AdminStatsPage() {
     installs,
     unknownCourier,
     invite,
+    unfoundShapes,
   ] = await Promise.all([
     readMemberStats(),
     readMemberActivity(),
@@ -141,6 +144,7 @@ export default async function AdminStatsPage() {
     readInstallStats(),
     readUnknownCourierFailures(WINDOW_DAYS),
     readInstallPromptStats(WINDOW_DAYS),
+    readUnfoundShapes(WINDOW_DAYS, UNFOUND_SHAPE_LIMIT),
   ]);
 
   const answered = recent.found + recent.notFound;
@@ -407,6 +411,38 @@ export default async function AdminStatsPage() {
                 value={`${count(installs.ios)} · ${count(installs.desktop)}`}
               />
             </div>
+          </Section>
+
+          <Section
+            title="รูปแบบเลขที่ค้นไม่เจอบ่อย"
+            note="ไม่ใช่เลขพัสดุ — ตัวเลขทุกตัวถูกแทนด้วย # เหลือแค่ตัวอักษรนำหน้าซึ่งพัสดุทุกใบของขนส่งเจ้านั้นใช้ร่วมกัน ย้อนกลับเป็นเลขจริงไม่ได้"
+          >
+            {unfoundShapes.length === 0 ? (
+              <Empty>ยังไม่มีเลขที่ค้นไม่เจอในช่วงนี้</Empty>
+            ) : (
+              <>
+                <ul className="flex flex-col gap-1">
+                  {unfoundShapes.map((row) => (
+                    <li
+                      key={row.shape}
+                      className="flex items-center gap-3 border-b border-line py-1.5 last:border-0"
+                    >
+                      <span className="font-mono text-[11px] text-ink">
+                        {row.shape}
+                      </span>
+                      <span className="ml-auto font-mono text-[11px] text-faint">
+                        {count(row.total)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-3 text-xs leading-relaxed text-faint">
+                  ทรงที่โผล่บ่อยผิดปกติ = สัญญาณว่าอาจขาดแถวใน COURIER_PREFIXES
+                  ไม่ใช่ข้อพิสูจน์ว่ามีบั๊ก — คนที่พิมพ์เลขผิดถูกนับรวมอยู่ด้วย
+                  และเราแยกไม่ออก
+                </p>
+              </>
+            )}
           </Section>
 
           <Section

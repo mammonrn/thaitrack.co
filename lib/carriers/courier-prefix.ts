@@ -44,6 +44,27 @@ export const COURIER_PREFIXES: readonly CourierPrefix[] = [
     courierCode: "shopee-xpress-th",
     carrierName: "Shopee Xpress ไทย",
   },
+  {
+    /*
+     * ยืนยันด้วยเลขจริงจากผู้ใช้: JTTH203388775531 และ JTTH203838762083
+     * ยิง ETrackings ด้วย courier=jt-express แล้วได้ meta.code 200 พร้อมข้อมูลครบ
+     *
+     * ก่อนหน้านี้ทั้งสองเลขขึ้นว่า "ยังไม่พบเลขนี้" เพราะ JTTH ไม่มีในตารางนี้
+     * → ETrackings ไม่ถูกเรียกเลย (ดู backupUsable ใน resolve.ts) เหลือแต่
+     * Track123 ที่ auto-detect หาไม่เจอ ทั้งที่พัสดุมีอยู่จริง
+     *
+     * ผ่านเกณฑ์ทั้งสามข้อ: JTTH เป็นของ J&T เจ้าเดียว, ยืนยันด้วยเลขจริงแล้ว,
+     * และยาว 4 ตัวพร้อมรหัสประเทศในตัว ไม่ชนกับเจ้าอื่นโดยบังเอิญ
+     * (ต่างจาก "TH" ล้วนที่ SPX กับ Flash ใช้ร่วมกัน จึงห้ามเติม)
+     *
+     * ⚠️ courierCode นี้ยืนยันแล้วกับ ETrackings ยังไม่ได้ยืนยันกับ Track123
+     * ในทางปฏิบัติไม่กระทบ เพราะ prefix ที่ฟันธงได้ทำให้ ETrackings ได้ยิงก่อน
+     * และถ้า Track123 ไม่รู้จักรหัสนี้ runFallback ยังไล่ต่อด้วย auto-detect อยู่ดี
+     */
+    prefix: "JTTH",
+    courierCode: "jt-express",
+    carrierName: "J&T Express ไทย",
+  },
 ];
 
 /**

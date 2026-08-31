@@ -60,7 +60,7 @@ export default function Home() {
    * ฝั่ง client ไม่ได้ตรวจสิทธิ์อะไรเลยและไม่ควรตรวจ — ถ้าไม่มีสิทธิ์ URL จะไม่
    * ถูกส่งมาตั้งแต่แรก ไม่ใช่ส่งมาแล้วซ่อน (ดู app/api/track/route.ts)
    */
-  const [proofPhotoUrl, setProofPhotoUrl] = useState<string | null>(null);
+  const [proofPhotoUrls, setProofPhotoUrls] = useState<string[]>([]);
   // รอนานเกินปกติ = คำขอน่าจะติดคิวฝั่งเซิร์ฟเวอร์อยู่ (หรือกำลังถูกลองใหม่ให้)
   // ยังไม่ใช่ความล้มเหลว จึงแค่เปลี่ยนถ้อยคำระหว่างรอ ไม่ขึ้นเป็น error
   const [isQueued, setIsQueued] = useState(false);
@@ -90,7 +90,7 @@ export default function Home() {
     if (outcome.ok) {
       setResult(outcome.result);
       setStaleSince(outcome.staleSince);
-      setProofPhotoUrl(outcome.proofPhotoUrl);
+      setProofPhotoUrls(outcome.proofPhotoUrls);
       // จุดเดียวที่ถือว่า "ผู้ใช้ได้ประโยชน์จากเว็บแล้ว" — การ์ดชวนติดตั้งแอป
       // รอสัญญาณนี้ก่อนถึงจะโผล่ (ดู lib/install-invite.ts)
       markSearchSuccess();
@@ -112,7 +112,7 @@ export default function Home() {
     setResult(null);
     setError(null);
     setStaleSince(null);
-    setProofPhotoUrl(null);
+    setProofPhotoUrls([]);
 
     applyOutcome(await requestTracking(value));
     setIsLoading(false);
@@ -133,7 +133,7 @@ export default function Home() {
     setResult(null);
     setError(null);
     setStaleSince(null);
-    setProofPhotoUrl(null);
+    setProofPhotoUrls([]);
 
     applyOutcome(await requestTracking(trackingNumber));
     setIsLoading(false);
@@ -383,7 +383,7 @@ export default function Home() {
                   (ดู lib/proof-access.ts) เซิร์ฟเวอร์เป็นคนตัดสินสิทธิ์และไม่ส่ง
                   URL มาให้เลยถ้าไม่ผ่านเกณฑ์ ตรงนี้จึงไม่มีเงื่อนไขเรื่องสิทธิ์
                   ให้ตรวจซ้ำ — มี URL = มีสิทธิ์ */}
-              {proofPhotoUrl !== null && (
+              {proofPhotoUrls.length > 0 && (
                 <div className="border-t border-line bg-paper/60 p-5 sm:p-6">
                   <h3 className="font-display text-sm font-semibold text-ink">
                     รูปถ่ายตอนนำจ่าย
@@ -392,16 +392,28 @@ export default function Home() {
                     เห็นได้เฉพาะคุณ เพราะบันทึกพัสดุชิ้นนี้ไว้ก่อนของถึงมือผู้รับ
                   </p>
 
-                  {/* eslint-disable-next-line @next/next/no-img-element --
-                      รูปมาจากเซิร์ฟเวอร์ของขนส่ง next/image จะต้องตั้ง
-                      remotePatterns ให้ทุกเจ้าที่รองรับ ซึ่งเปลี่ยนได้ตลอด
-                      และไม่ได้ช่วยอะไรกับรูปที่แสดงครั้งเดียว */}
-                  <img
-                    src={proofPhotoUrl}
-                    alt="รูปถ่ายที่ขนส่งบันทึกไว้ตอนนำจ่ายพัสดุชิ้นนี้"
-                    loading="lazy"
-                    className="mt-3 block max-h-96 w-full rounded-xl border border-line object-contain"
-                  />
+                  {/* ขนส่งบางเจ้าส่งมาหลายรูป (J&T: รูปพัสดุ + รูปลายเซ็น)
+                      วางเรียงกันแทนที่จะเลือกมาแสดงรูปเดียว เพราะเราไม่รู้ว่า
+                      รูปไหนคือรูปที่ผู้ใช้อยากเห็น */}
+                  <div className="mt-3 flex flex-col gap-3">
+                    {proofPhotoUrls.map((url, index) => (
+                      /* eslint-disable-next-line @next/next/no-img-element --
+                         รูปมาจากเซิร์ฟเวอร์ของขนส่ง next/image จะต้องตั้ง
+                         remotePatterns ให้ทุกเจ้าที่รองรับ ซึ่งเปลี่ยนได้ตลอด
+                         และไม่ได้ช่วยอะไรกับรูปที่แสดงครั้งเดียว */
+                      <img
+                        key={url}
+                        src={url}
+                        alt={
+                          proofPhotoUrls.length === 1
+                            ? "รูปถ่ายที่ขนส่งบันทึกไว้ตอนนำจ่ายพัสดุชิ้นนี้"
+                            : `รูปถ่ายที่ขนส่งบันทึกไว้ตอนนำจ่ายพัสดุชิ้นนี้ รูปที่ ${index + 1} จาก ${proofPhotoUrls.length}`
+                        }
+                        loading="lazy"
+                        className="block max-h-96 w-full rounded-xl border border-line object-contain"
+                      />
+                    ))}
+                  </div>
                 </div>
               )}
 

@@ -15,6 +15,7 @@ import { SupabaseConfigError } from "@/lib/supabase/env";
 import { recordSearchEvent } from "@/lib/supabase/search-events";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { logTracking } from "@/lib/track-log";
+import { trackingShape } from "@/lib/tracking-shape";
 import { withoutSensitive } from "@/lib/tracking-cache";
 
 /** ต้องรันบน Node.js runtime เพราะอ่าน process.env ที่เก็บ API key */
@@ -81,11 +82,11 @@ async function readSavedAt(trackingNumber: string): Promise<string | null> {
  * ไม่มี URL ติดมาด้วย ต้องยิงสดใหม่ ซึ่งยอมจ่ายเพราะเกิดเฉพาะกับคนที่มีสิทธิ์
  * และเฉพาะพัสดุที่ถึงมือแล้ว (ซึ่งเป็นสถานะสุดท้าย ไม่มีใครเปิดดูบ่อย)
  */
-async function readProofPhoto(
+async function readProofPhotos(
   trackingNumber: string,
   resolved: { result: TrackingResult; source: string },
-): Promise<string | null> {
-  if (resolved.result.status !== "delivered") return null;
+): Promise<string[]> {
+  if (resolved.result.status !== "delivered") return [];
 
   const savedAt = await readSavedAt(trackingNumber);
   const allowed = canRevealProof({
@@ -93,20 +94,20 @@ async function readProofPhoto(
     lastUpdated: resolved.result.lastUpdated,
     savedAt,
   });
-  if (!allowed) return null;
+  if (!allowed) return [];
 
   if (resolved.source === "api") {
-    return resolved.result.sensitive?.proofPhotoUrl ?? null;
+    return resolved.result.sensitive?.proofPhotoUrls ?? [];
   }
 
   try {
     const fresh = await resolveTracking(trackingNumber, { skipCache: true });
-    return fresh.result.sensitive?.proofPhotoUrl ?? null;
+    return fresh.result.sensitive?.proofPhotoUrls ?? [];
   } catch (cause) {
     console.warn(
       `[api/track] ดึงรูปนำจ่ายไม่สำเร็จ: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
-    return null;
+    return [];
   }
 }
 
@@ -146,6 +147,10 @@ export async function POST(request: Request) {
   const startedAt = Date.now();
   const trackNo = normalizeTrackingNumber(trackingNumber);
 
+  // รูปแบบของเลข ไม่ใช่ตัวเลข — แปลงตรงนี้ครั้งเดียวเพื่อให้เห็นชัดว่าค่าที่
+  // ไหลต่อไปยังสถิติผ่านการแปลงมาแล้ว ไม่ใช่เลขดิบ (ดู lib/tracking-shape.ts)
+  const shape = trackingShape(trackNo);
+
   try {
     const resolved = await resolveTracking(trackingNumber);
 
@@ -171,7 +176,7 @@ export async function POST(request: Request) {
       tookMs: Date.now() - startedAt,
     });
 
-    const proofPhotoUrl = await readProofPhoto(trackNo, resolved);
+    const proofPhotoUrls = await readProofPhotos(trackNo, resolved);
 
     // source / stale / fetchedAt ไม่ใช่ข้อมูลลับ — UI ใช้ตัดสินว่าจะขึ้นป้าย
     // "ข้อมูล ณ เวลานี้" หรือไม่ ส่วน shared ไว้ debug เรื่องการรวมคำขอซ้ำ
@@ -186,8 +191,11 @@ export async function POST(request: Request) {
       fetchedAt: resolved.fetchedAt,
       shared: resolved.shared,
       // มีค่าเฉพาะคนที่บันทึกพัสดุนี้ไว้ก่อนมันถึงมือผู้รับ (ดู lib/proof-access.ts)
-      // คนที่ไม่มีสิทธิ์ไม่ได้ค่านี้ และไม่ได้รู้ด้วยซ้ำว่ามีรูปอยู่
-      proofPhotoUrl,
+      // คนที่ไม่มีสิทธิ์ได้รายการว่าง และไม่ได้รู้ด้วยซ้ำว่ามีรูปอยู่
+      //
+      // ⚠️ URL พวกนี้เป็น signed URL อายุ 24 ชม. จึงต้องมาจากการยิงสดเท่านั้น
+      // (readProofPhotos ยิงใหม่ให้เองเมื่อคำตอบหลักมาจาก cache)
+      proofPhotoUrls,
     });
   } catch (error) {
     const code = error instanceof CarrierError ? error.code : "upstream_error";
@@ -218,6 +226,9 @@ export async function POST(request: Request) {
       // ล้มตอนที่เหลือผู้ให้บริการเจ้าเดียวหรือเปล่า — ตัวเลขที่ต้องใช้ตัดสินใจ
       // ว่าจะทำกลไกเดาขนส่งตอนจนตรอกไหม (ดู lib/carriers/resolve.ts)
       unknownCourier: isUnknownCourierFailure(error),
+      // เก็บเฉพาะตอนค้นไม่เจอ ซึ่งเป็นคำถามเดียวที่ค่านี้มีไว้ตอบ —
+      // "ทรงไหนที่ระบบตามไม่ได้" ส่วนทรงที่ค้นเจอปกติไม่ต้องรู้
+      trackingShape: code === "not_found" ? shape : null,
     });
 
     if (error instanceof CarrierError) {

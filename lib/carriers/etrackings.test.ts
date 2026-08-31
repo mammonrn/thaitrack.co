@@ -329,11 +329,71 @@ test("รูปถ่ายตอนนำจ่ายไปอยู่ใน�
     detail: unmaskedDetail(),
   });
 
-  assert.equal(
-    result.sensitive?.proofPhotoUrl,
+  assert.deepEqual(result.sensitive?.proofPhotoUrls, [
     "https://cdn.example.com/proof/abc.jpg",
-  );
+  ]);
   assert.doesNotMatch(JSON.stringify(result.shipment), /cdn\.example\.com/);
+});
+
+test("รูปหลายใบคั่นด้วยจุลภาค → แยกเป็นรายการ", () => {
+  // J&T ส่งรูปพัสดุกับรูปลายเซ็นมาในฟิลด์เดียว ก่อนแก้ ค่าทั้งก้อนผ่านด่าน
+  // startsWith("https://") ไปได้แล้วถูกยัดใส่ src ของ <img> → รูปแตกเงียบๆ
+  const sensitive = toSensitiveDetails({
+    signerImageURL:
+      "https://cdn.example.com/a.jpg?q-sign-time=1, https://cdn.example.com/b.jpg?q-sign-time=1",
+  });
+
+  assert.deepEqual(sensitive?.proofPhotoUrls, [
+    "https://cdn.example.com/a.jpg?q-sign-time=1",
+    "https://cdn.example.com/b.jpg?q-sign-time=1",
+  ]);
+});
+
+test("รายการที่มี URL เสียปนมา → เอาเฉพาะอันที่ใช้ได้ ไม่ทิ้งทั้งชุด", () => {
+  const sensitive = toSensitiveDetails({
+    signerImageURL: "http://cdn.example.com/a.jpg,https://cdn.example.com/b.jpg",
+  });
+
+  assert.deepEqual(sensitive?.proofPhotoUrls, ["https://cdn.example.com/b.jpg"]);
+});
+
+test("สถานที่แบบ J&T (ขึ้นต้นด้วย สาขา) → แยกออกมาได้", () => {
+  // เลข JTTH203388775531 ของจริง — ไม่มีคอมมาและมีตัวเลขปน จึงไม่เข้ารูปเดิม
+  // ผลคือก่อนแก้ สถานที่เป็นค่าว่าง = ไม่มีแผนที่เลย ทั้งที่ J&T ให้ชื่อสถานที่
+  // ภาษาคนมา ซึ่งดีกว่ารหัสภายในของเจ้าอื่นเสียอีก
+  const split = splitDescription(
+    "ได้เซ็นรับพัสดุ - สาขา46Chiang Saen01 เวียง-เชียงแสน เชียงราย",
+  );
+
+  assert.equal(split.description, "ได้เซ็นรับพัสดุ");
+  assert.equal(split.location, "สาขา46Chiang Saen01 เวียง-เชียงแสน เชียงราย");
+});
+
+test("ประโยคที่บังเอิญมีคำว่าสาขาอยู่กลางข้อความ → ไม่ตัด", () => {
+  const split = splitDescription("พัสดุถูกส่งต่อ - ไปยังสาขาถัดไปตามเส้นทาง");
+  assert.equal(split.location, "");
+});
+
+test("เบอร์สาขาแสดงได้ แต่เบอร์มือถือพนักงานต้องไม่ออกมาเลย", () => {
+  // พนักงานส่งของไม่ได้ยินยอมให้เบอร์ตัวเองขึ้นเว็บสาธารณะ และไม่ใช่ผู้ใช้ของเรา
+  // จึงไม่มีทางถอนความยินยอมได้ — เบอร์สาขากับคอลเซ็นเตอร์ตอบโจทย์ "ติดต่อใคร"
+  // ได้ครบอยู่แล้วโดยไม่ต้องเปิดเผยเบอร์ส่วนตัวของใคร
+  const shipment = toShipmentDetails({
+    deliveryStaffName: "สมชาย",
+    deliveryStaffPhoneNumber: "0650265482",
+    deliveryStaffBranchPhoneNumber: "052-020-230",
+    courierCallCenterPhoneNumber: "1361",
+    senderPhoneNumber: "******7971",
+    recipientPhoneNumber: "******1234",
+  });
+
+  assert.equal(shipment?.deliveryBranchPhone, "052-020-230");
+  assert.equal(shipment?.callCenterPhone, "1361");
+  assert.equal(shipment?.deliveryStaffName, "สมชาย");
+
+  const dump = JSON.stringify(shipment);
+  assert.doesNotMatch(dump, /0650265482/, "เบอร์มือถือพนักงานหลุดออกมา");
+  assert.doesNotMatch(dump, /7971|1234/, "เบอร์ผู้ส่ง/ผู้รับหลุดออกมา");
 });
 
 test("URL ที่ไม่ใช่ https → ไม่รับ", () => {

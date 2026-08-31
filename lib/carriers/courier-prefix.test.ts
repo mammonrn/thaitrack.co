@@ -70,3 +70,15 @@ test("แถวที่ prefix ยาวกว่าชนะ ไม่ว่�
     );
   }
 });
+test("เลข J&T ที่ผู้ใช้แจ้ง → ฟันธงเป็น jt-express", () => {
+  // สองเลขนี้คือเลขจริงที่เว็บเคยตอบว่า "ยังไม่พบ" ทั้งที่ ETrackings หาเจอ
+  assert.equal(courierFromPrefix("JTTH203388775531"), "jt-express");
+  assert.equal(courierFromPrefix("JTTH203838762083"), "jt-express");
+  assert.equal(courierFromPrefix("jtth203388775531"), "jt-express");
+});
+
+test("JT ที่ไม่ได้ตามด้วย TH → ไม่ฟันธง", () => {
+  // เราเติมเฉพาะ JTTH ซึ่งเป็นของ J&T ไทยแน่ๆ ไม่ใช่ JT ล้วนที่กว้างเกินไป
+  assert.equal(courierFromPrefix("JT203388775531"), null);
+});
+
