@@ -16,7 +16,9 @@ import {
   QUEUED_MESSAGE,
   QUEUED_NOTICE_AFTER_MS,
   SEARCHING_MESSAGE,
+  STALE_NOTICE,
   formatPostmark,
+  formatStaleSince,
   formatThaiDateTime,
   requestTracking,
   type UserFacingError,
@@ -47,6 +49,8 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<TrackingResult | null>(null);
   const [error, setError] = useState<UserFacingError | null>(null);
+  // มีค่าเมื่อผลที่แสดงอยู่เป็นข้อมูลเก่าจาก cache เพราะระบบขนส่งไม่ตอบ
+  const [staleSince, setStaleSince] = useState<string | null>(null);
   // รอนานเกินปกติ = คำขอน่าจะติดคิวฝั่งเซิร์ฟเวอร์อยู่ (หรือกำลังถูกลองใหม่ให้)
   // ยังไม่ใช่ความล้มเหลว จึงแค่เปลี่ยนถ้อยคำระหว่างรอ ไม่ขึ้นเป็น error
   const [isQueued, setIsQueued] = useState(false);
@@ -64,6 +68,7 @@ export default function Home() {
   function applyOutcome(outcome: Awaited<ReturnType<typeof requestTracking>>) {
     if (outcome.ok) {
       setResult(outcome.result);
+      setStaleSince(outcome.staleSince);
     } else {
       setError(outcome.error);
     }
@@ -81,6 +86,7 @@ export default function Home() {
     setIsQueued(false);
     setResult(null);
     setError(null);
+    setStaleSince(null);
 
     applyOutcome(await requestTracking(value));
     setIsLoading(false);
@@ -100,6 +106,7 @@ export default function Home() {
     setIsQueued(false);
     setResult(null);
     setError(null);
+    setStaleSince(null);
 
     applyOutcome(await requestTracking(trackingNumber));
     setIsLoading(false);
@@ -246,6 +253,28 @@ export default function Home() {
 
           {!isLoading && result && (
             <article className="animate-rise overflow-hidden rounded-xl border border-line bg-white">
+              {/* ป้ายข้อมูลเก่า — ขึ้นเฉพาะตอนระบบขนส่งไม่ตอบแล้วเราหยิบของเก่า
+                  จาก cache มาแสดงแทน วางไว้เหนือหัวการ์ดเพื่อให้อ่านเจอก่อน
+                  สถานะ ไม่งั้นผู้ใช้จะเชื่อว่าสถานะที่เห็นเป็นข้อมูลสด
+
+                  ใช้พื้นกระดาษกับเส้นคั่นตามธีม ไม่ใช้สีแดงของ error เพราะนี่คือ
+                  คำตอบที่ใช้ได้ เพียงแต่ไม่สด — ไม่ใช่ความล้มเหลว */}
+              {staleSince !== null && (
+                <div className="border-b border-line bg-paper px-5 py-3.5 sm:px-6">
+                  <p className="font-display text-sm font-semibold text-ink">
+                    {STALE_NOTICE.title}
+                  </p>
+                  <p className="mt-1 text-xs leading-relaxed text-faint sm:text-sm">
+                    {STALE_NOTICE.detail}
+                  </p>
+                  {formatStaleSince(staleSince) && (
+                    <p className="mt-1.5 font-mono text-[11px] uppercase tracking-[0.08em] text-faint sm:text-xs">
+                      {formatStaleSince(staleSince)}
+                    </p>
+                  )}
+                </div>
+              )}
+
               {/* หัวการ์ด: ตราประทับ + สถานะปัจจุบัน + ปุ่มบันทึก
                   จอแคบให้ตราประทับกับปุ่มบันทึกอยู่แถวบน แล้วข้อความสถานะตกลงมา
                   แถวล่างเต็มความกว้าง (order-* สลับลำดับให้จอกว้างเรียงเป็นแถวเดียว)

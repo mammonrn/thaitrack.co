@@ -14,6 +14,7 @@ import { geocodeLocation } from "@/lib/geocode";
 import { NICKNAME_MAX_LENGTH, SAVED_TRACKING_COLUMNS } from "@/lib/saved-trackings";
 import { SupabaseConfigError } from "@/lib/supabase/env";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { logTracking } from "@/lib/track-log";
 
 /** ต้องรันบน Node.js runtime เพราะอ่าน API key จาก process.env */
 export const runtime = "nodejs";
@@ -119,10 +120,35 @@ export async function POST(request: Request) {
 
   // อ่านสถานะล่าสุดเอง แทนที่จะเชื่อค่าที่ client ส่งมา
   // ปกติจะได้จาก cache เพราะผู้ใช้เพิ่งค้นหาเลขนี้ไปเมื่อครู่
+  const resolveStartedAt = Date.now();
+  const trackNo = normalizeTrackingNumber(trackingNumber);
+
   let result;
   try {
-    ({ result } = await resolveTracking(trackingNumber));
+    const resolved = await resolveTracking(trackingNumber);
+    result = resolved.result;
+
+    logTracking({
+      ts: resolveStartedAt,
+      trackNo,
+      route: "saved",
+      source: resolved.source,
+      stale: resolved.stale,
+      shared: resolved.shared,
+      tookMs: Date.now() - resolveStartedAt,
+    });
   } catch (error) {
+    logTracking({
+      ts: resolveStartedAt,
+      trackNo,
+      route: "saved",
+      source: "error",
+      stale: false,
+      shared: false,
+      tookMs: Date.now() - resolveStartedAt,
+      reason: error instanceof CarrierError ? error.code : "unknown",
+    });
+
     if (error instanceof CarrierError) {
       console.error(`[api/saved] ${error.code}: ${error.message}`);
       return errorResponse(error.code === "not_found" ? "not_found" : "unknown", 502);

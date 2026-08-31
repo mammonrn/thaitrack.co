@@ -88,8 +88,41 @@ const FALLBACK_ERROR: UserFacingError = {
   detail: "ลองกดค้นหาอีกครั้ง ถ้ายังไม่ได้ ลองใหม่ในอีกสักครู่",
 };
 
+/**
+ * ถ้อยคำของป้าย "ข้อมูลเก่า" ที่ขึ้นเมื่อระบบขนส่งไม่ตอบ
+ *
+ * ตั้งใจไม่เขียนว่า "กำลังลองใหม่ให้อัตโนมัติ" ตรงนี้ เพราะพอผู้ใช้เห็นป้ายนี้
+ * แปลว่าการลองใหม่อัตโนมัติ (3 รอบในชั้น gateway) จบไปแล้วและไม่สำเร็จ
+ * ระบบไม่ได้กำลังทำอะไรอยู่จริง การบอกว่ากำลังลองอยู่จึงเป็นการโกหกผู้ใช้
+ * บอกตรงๆ ว่าเกิดอะไรขึ้นและทำอะไรต่อได้ ดีกว่าปลอบด้วยข้อความที่ไม่จริง
+ */
+export const STALE_NOTICE: UserFacingError = {
+  title: "ระบบขนส่งไม่ตอบตอนนี้",
+  detail:
+    "ด้านล่างคือข้อมูลล่าสุดที่เราเก็บไว้ ไม่ใช่ข้อมูลสดจากขนส่ง ลองกดค้นหาอีกครั้งในอีกสักครู่",
+};
+
+/** "ข้อมูล ณ 30 ส.ค. 2569 14:20 น." — คืน null ถ้าไม่รู้เวลา (ป้ายจะไม่แสดงบรรทัดนี้) */
+export function formatStaleSince(iso: string | null): string | null {
+  if (!iso) return null;
+
+  const timestamp = Date.parse(iso);
+  if (!Number.isFinite(timestamp)) return null;
+
+  return `ข้อมูล ณ ${formatThaiDateTime(iso)} น.`;
+}
+
 export type TrackingOutcome =
-  | { ok: true; result: TrackingResult }
+  | {
+      ok: true;
+      result: TrackingResult;
+      /**
+       * เวลาที่ดึงข้อมูลชุดนี้มาจากขนส่ง (ISO 8601) — null เมื่อเป็นข้อมูลสด
+       *
+       * มีค่าเมื่อไร แปลว่าต้องขึ้นป้าย STALE_NOTICE ให้ผู้ใช้เห็น
+       */
+      staleSince: string | null;
+    }
   | { ok: false; error: UserFacingError };
 
 /** ตรวจรูปร่างข้อมูลก่อนเชื่อ — ไม่ cast ทื่อๆ เผื่อ API ตอบอะไรแปลกๆ กลับมา */
@@ -111,6 +144,24 @@ export function isSuccessPayload(
     typeof statusText === "string" &&
     Array.isArray(events)
   );
+}
+
+/**
+ * อ่านเวลาของข้อมูลเก่าจาก payload — null เมื่อเป็นข้อมูลสด
+ *
+ * ตรวจรูปร่างก่อนเชื่อเหมือนกับ isSuccessPayload เพราะสองฟิลด์นี้มาจากฝั่ง
+ * เซิร์ฟเวอร์เหมือนกัน และการแสดงเวลาผิดแย่กว่าการไม่แสดงเวลาเลย
+ */
+export function readStaleSince(payload: unknown): string | null {
+  if (typeof payload !== "object" || payload === null) return null;
+
+  const { stale, fetchedAt } = payload as {
+    stale?: unknown;
+    fetchedAt?: unknown;
+  };
+
+  if (stale !== true) return null;
+  return typeof fetchedAt === "string" ? fetchedAt : "";
 }
 
 /** เลือกข้อความ error จาก code ที่รู้จัก ไม่ยกข้อความดิบจากระบบภายนอกมาแสดง */
@@ -191,7 +242,7 @@ export async function requestTracking(
     const payload: unknown = await response.json().catch(() => null);
 
     if (response.ok && isSuccessPayload(payload)) {
-      return { ok: true, result: payload.data };
+      return { ok: true, result: payload.data, staleSince: readStaleSince(payload) };
     }
 
     return { ok: false, error: toUserError(payload) };

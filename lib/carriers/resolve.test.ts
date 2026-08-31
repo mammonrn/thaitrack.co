@@ -11,6 +11,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { clearCache, type CacheEntry } from "../cache.ts";
+import type { PersistentTrackingCache } from "../supabase/tracking-cache.ts";
 import { resolveTracking } from "./resolve.ts";
 import {
   CarrierError,
@@ -21,6 +23,31 @@ import {
 /** นับเลขให้ไม่ซ้ำกัน เพราะ resolveTracking มี cache ที่ใช้ร่วมกันทั้งโปรเซส */
 let counter = 0;
 const uniqueTrackingNumber = () => `TESTNO${(counter += 1)}0000TH`;
+
+/**
+ * ชั้น cache ถาวรปลอม เก็บใน Map
+ *
+ * เทสต์ทุกตัวในไฟล์นี้ต้องส่งตัวนี้เข้าไป ไม่งั้นจะไปเรียกชั้นถาวรตัวจริงที่
+ * ผูกกับ Supabase ซึ่งในเทสต์ไม่มีค่า env ให้ (ตอนนี้มันคืน null เงียบๆ อยู่
+ * แต่พึ่งพฤติกรรมนั้นไม่ได้ — เทสต์ต้องไม่แตะบริการภายนอกโดยไม่ตั้งใจ)
+ */
+function makeFakeCache(): PersistentTrackingCache & { rows: Map<string, CacheEntry> } {
+  const rows = new Map<string, CacheEntry>();
+  return {
+    rows,
+    read: (trackingNumber) => Promise.resolve(rows.get(trackingNumber) ?? null),
+    write: (trackingNumber, entry) => {
+      rows.set(trackingNumber, entry);
+      return Promise.resolve();
+    },
+  };
+}
+
+/** ชั้นถาวรว่างเปล่าที่ไม่จำอะไรเลย — ใช้กับเทสต์ที่ไม่ได้สนใจเรื่อง cache */
+const noCache: PersistentTrackingCache = {
+  read: () => Promise.resolve(null),
+  write: () => Promise.resolve(),
+};
 
 function makeResult(trackingNumber: string, carrierName: string): TrackingResult {
   return {
@@ -93,6 +120,7 @@ test("auto-detect เจอตั้งแต่ครั้งแรก → ไ
   const { result } = await resolveTracking(uniqueTrackingNumber(), {
     primary: primaryAlwaysNotFound,
     fallback,
+    persistentCache: noCache,
   });
 
   assert.equal(result.carrierName, "Flash Express");
@@ -105,6 +133,7 @@ test("auto-detect ได้ NO_RECORD → ลองซ้ำด้วย shopee-
   const { result } = await resolveTracking(uniqueTrackingNumber(), {
     primary: primaryAlwaysNotFound,
     fallback,
+    persistentCache: noCache,
   });
 
   assert.equal(result.carrierName, "Shopee Xpress");
@@ -118,6 +147,7 @@ test("ลองครบทุก courier code แล้วยังไม่เ
     resolveTracking(uniqueTrackingNumber(), {
       primary: primaryAlwaysNotFound,
       fallback,
+      persistentCache: noCache,
     }),
     (error: unknown) => {
       assert.ok(error instanceof CarrierError);
@@ -142,6 +172,7 @@ test("รายการยาวเกินเพดาน → ลองแค
     resolveTracking(uniqueTrackingNumber(), {
       primary: primaryAlwaysNotFound,
       fallback,
+      persistentCache: noCache,
     }),
   );
 
@@ -159,6 +190,7 @@ test("ลองซ้ำแล้วเจอปัญหาสิทธิ์ �
     resolveTracking(uniqueTrackingNumber(), {
       primary: primaryAlwaysNotFound,
       fallback,
+      persistentCache: noCache,
     }),
     (error: unknown) => {
       assert.ok(error instanceof CarrierError);
@@ -186,6 +218,7 @@ test("adapter ที่ไม่รองรับการระบุขนส
     resolveTracking(uniqueTrackingNumber(), {
       primary: primaryAlwaysNotFound,
       fallback,
+      persistentCache: noCache,
     }),
   );
 
@@ -201,7 +234,11 @@ test("ไปรษณีย์ไทยพังด้วยสาเหตุ�
   };
 
   await assert.rejects(
-    resolveTracking(uniqueTrackingNumber(), { primary, fallback }),
+    resolveTracking(uniqueTrackingNumber(), {
+      primary,
+      fallback,
+      persistentCache: noCache,
+    }),
     (error: unknown) => {
       assert.ok(error instanceof CarrierError);
       assert.equal(error.code, "auth_failed");
@@ -240,6 +277,7 @@ test("เลขขึ้นต้น SPXTH → ข้ามไปรษณีย
   const { result } = await resolveTracking(uniqueShopeeNumber(), {
     primary,
     fallback,
+    persistentCache: noCache,
   });
 
   assert.equal(result.carrierName, "Shopee Xpress");
@@ -254,7 +292,11 @@ test("prefix ไม่ฟันธง → คงพฤติกรรมเด�
   const fallback = makeTrack123({ succeedsForCourier: "shopee-xpress-th" });
   const trackingNumber = uniqueTrackingNumber();
 
-  await resolveTracking(trackingNumber, { primary, fallback });
+  await resolveTracking(trackingNumber, {
+    primary,
+    fallback,
+    persistentCache: noCache,
+  });
 
   assert.deepEqual(primary.calls, [trackingNumber], "ต้องถามเจ้าที่ฟรีก่อน");
   assert.deepEqual(fallback.calls, ["auto-detect", "shopee-xpress-th"]);
@@ -265,7 +307,11 @@ test("prefix ฟันธงแต่ยิงแล้วไม่เจอ →
   const fallback = makeTrack123({ codes: ["shopee-xpress-th", "kerry-th"] });
 
   await assert.rejects(
-    resolveTracking(uniqueShopeeNumber(), { primary, fallback }),
+    resolveTracking(uniqueShopeeNumber(), {
+      primary,
+      fallback,
+      persistentCache: noCache,
+    }),
     (error: unknown) => {
       assert.ok(error instanceof CarrierError);
       assert.equal(error.code, "not_found");
@@ -288,6 +334,7 @@ test("prefix ฟันธง แต่ auto-detect เป็นฝ่ายเ�
   const { result } = await resolveTracking(uniqueShopeeNumber(), {
     primary: primaryAlwaysNotFound,
     fallback,
+    persistentCache: noCache,
   });
 
   assert.equal(result.carrierName, "Flash Express");
@@ -307,7 +354,11 @@ test("prefix ฟันธง แต่ adapter ระบุขนส่งเจ
   };
   const trackingNumber = uniqueShopeeNumber();
 
-  await resolveTracking(trackingNumber, { primary, fallback });
+  await resolveTracking(trackingNumber, {
+    primary,
+    fallback,
+    persistentCache: noCache,
+  });
 
   // ใช้ทางลัดไม่ได้ ก็ต้องไม่ทิ้งเจ้าที่ฟรีไปเปล่าๆ
   assert.deepEqual(primary.calls, [trackingNumber]);
@@ -369,10 +420,12 @@ test("เลขเดียวกันถูกค้นพร้อมกั�
   const first = resolveTracking(trackingNumber, {
     primary,
     fallback: fallbackNeverUsed,
+    persistentCache: noCache,
   });
   const second = resolveTracking(trackingNumber, {
     primary,
     fallback: fallbackNeverUsed,
+    persistentCache: noCache,
   });
 
   gate.resolve();
@@ -391,8 +444,16 @@ test("คนละเลขที่ค้นพร้อมกัน → ต่
   const second = uniqueTrackingNumber();
 
   const runs = Promise.all([
-    resolveTracking(first, { primary, fallback: fallbackNeverUsed }),
-    resolveTracking(second, { primary, fallback: fallbackNeverUsed }),
+    resolveTracking(first, {
+      primary,
+      fallback: fallbackNeverUsed,
+      persistentCache: noCache,
+    }),
+    resolveTracking(second, {
+      primary,
+      fallback: fallbackNeverUsed,
+      persistentCache: noCache,
+    }),
   ]);
 
   gate.resolve();
@@ -423,10 +484,12 @@ test("คำขอที่เกาะอยู่ได้ error ก้อน�
   const first = resolveTracking(trackingNumber, {
     primary,
     fallback: fallbackNeverUsed,
+    persistentCache: noCache,
   });
   const second = resolveTracking(trackingNumber, {
     primary,
     fallback: fallbackNeverUsed,
+    persistentCache: noCache,
   });
 
   gate.resolve();
@@ -451,6 +514,7 @@ test("คำขอแรกจบแล้ว → รอบถัดไปต้
   await resolveTracking(trackingNumber, {
     primary,
     fallback: fallbackNeverUsed,
+    persistentCache: noCache,
   });
 
   // skipCache เพื่อให้ผ่าน cache ไปถึงชั้นรวมคำขอจริงๆ
@@ -458,8 +522,216 @@ test("คำขอแรกจบแล้ว → รอบถัดไปต้
     primary,
     fallback: fallbackNeverUsed,
     skipCache: true,
+    persistentCache: noCache,
   });
 
   assert.equal(primary.calls.length, 2);
   assert.equal(again.shared, false);
+});
+
+/* ------------------------------------------------------------------ *
+ * Cache สองชั้น และการยอมคืนข้อมูลเก่าเมื่อระบบขนส่งมีปัญหา
+ * ------------------------------------------------------------------ */
+
+/** ไปรษณีย์ไทยที่เจอตั้งแต่ครั้งแรก พร้อมนับจำนวนครั้งที่ถูกถาม */
+function makeWorkingPrimary(): CarrierAdapter & { calls: string[] } {
+  const calls: string[] = [];
+  return {
+    carrierCode: "thailand-post",
+    carrierName: "ไปรษณีย์ไทย",
+    calls,
+    track(trackingNumber) {
+      calls.push(trackingNumber);
+      return Promise.resolve(makeResult(trackingNumber, "ไปรษณีย์ไทย"));
+    },
+  };
+}
+
+/** ไปรษณีย์ไทยที่พังด้วย error ที่กำหนดเอง */
+function makeBrokenPrimary(error: CarrierError): CarrierAdapter & {
+  calls: string[];
+} {
+  const calls: string[] = [];
+  return {
+    carrierCode: "thailand-post",
+    carrierName: "ไปรษณีย์ไทย",
+    calls,
+    track(trackingNumber) {
+      calls.push(trackingNumber);
+      return Promise.reject(error);
+    },
+  };
+}
+
+test("ค้นครั้งแรกได้จาก api ครั้งที่สองได้จาก memory ไม่ยิงซ้ำ", async () => {
+  const trackingNumber = uniqueTrackingNumber();
+  const cache = makeFakeCache();
+  const primary = makeWorkingPrimary();
+
+  const first = await resolveTracking(trackingNumber, {
+    primary,
+    fallback: fallbackNeverUsed,
+    persistentCache: cache,
+  });
+  const second = await resolveTracking(trackingNumber, {
+    primary,
+    fallback: fallbackNeverUsed,
+    persistentCache: cache,
+  });
+
+  assert.equal(first.source, "api");
+  assert.equal(first.stale, false);
+  assert.equal(first.fetchedAt, null, "ของสดไม่ต้องบอกเวลาที่ดึงมา");
+
+  assert.equal(second.source, "memory");
+  assert.equal(second.stale, false);
+  assert.ok(second.fetchedAt !== null, "ของจาก cache ต้องบอกได้ว่าดึงมาเมื่อไร");
+
+  assert.deepEqual(primary.calls, [trackingNumber], "ต้องยิงจริงแค่ครั้งเดียว");
+  assert.ok(cache.rows.has(trackingNumber), "ต้องถูกเขียนลงชั้นถาวรด้วย");
+});
+
+test("restart แล้วชั้น memory หาย → ยังได้คำตอบจากชั้นถาวร ไม่ต้องยิงใหม่", async () => {
+  const trackingNumber = uniqueTrackingNumber();
+  const cache = makeFakeCache();
+  const primary = makeWorkingPrimary();
+
+  await resolveTracking(trackingNumber, {
+    primary,
+    fallback: fallbackNeverUsed,
+    persistentCache: cache,
+  });
+
+  clearCache(); // จำลอง deploy / pm2 restart
+
+  const afterRestart = await resolveTracking(trackingNumber, {
+    primary,
+    fallback: fallbackNeverUsed,
+    persistentCache: cache,
+  });
+
+  assert.equal(afterRestart.source, "supabase");
+  assert.equal(afterRestart.stale, false);
+  assert.deepEqual(primary.calls, [trackingNumber], "ยังต้องยิงจริงแค่ครั้งเดียว");
+});
+
+test("cache หมดอายุ + ขนส่งล่ม → คืนข้อมูลเก่าพร้อมธง stale ไม่ใช่ error", async () => {
+  const trackingNumber = uniqueTrackingNumber();
+  const cache = makeFakeCache();
+
+  // เก็บของไว้ก่อนด้วยเวลาที่หมดอายุไปแล้ว
+  cache.rows.set(trackingNumber, {
+    result: makeResult(trackingNumber, "ไปรษณีย์ไทย"),
+    fetchedAt: Date.now() - 48 * 60 * 60_000,
+    expiresAt: Date.now() - 46 * 60 * 60_000,
+  });
+
+  const primary = makeBrokenPrimary(
+    new CarrierError("upstream_error", "ระบบขนส่งขัดข้อง"),
+  );
+
+  const resolved = await resolveTracking(trackingNumber, {
+    primary,
+    fallback: fallbackNeverUsed,
+    persistentCache: cache,
+  });
+
+  assert.equal(resolved.stale, true);
+  assert.equal(resolved.source, "supabase");
+  assert.ok(resolved.fetchedAt !== null, "ต้องบอกได้ว่าเป็นข้อมูล ณ เวลาใด");
+  assert.equal(resolved.result.trackingNumber, trackingNumber);
+  assert.deepEqual(primary.calls, [trackingNumber], "ต้องพยายามยิงของสดก่อนเสมอ");
+});
+
+test("ชนลิมิตจนเอาไม่อยู่ + มีข้อมูลเก่า → คืนข้อมูลเก่า ไม่เด้ง error ใส่ผู้ใช้", async () => {
+  const trackingNumber = uniqueTrackingNumber();
+  const cache = makeFakeCache();
+  const primary = makeWorkingPrimary();
+
+  await resolveTracking(trackingNumber, {
+    primary,
+    fallback: fallbackNeverUsed,
+    persistentCache: cache,
+  });
+
+  // ทำให้ของใน cache ทั้งสองชั้นหมดอายุ แล้วให้ขนส่งชนลิมิต
+  clearCache();
+  const stored = cache.rows.get(trackingNumber);
+  assert.ok(stored !== undefined);
+  cache.rows.set(trackingNumber, { ...stored, expiresAt: Date.now() - 1 });
+
+  const resolved = await resolveTracking(trackingNumber, {
+    primary: makeBrokenPrimary(new CarrierError("rate_limited", "คิวหนาแน่น")),
+    fallback: fallbackNeverUsed,
+    persistentCache: cache,
+  });
+
+  assert.equal(resolved.stale, true);
+  assert.equal(resolved.result.carrierName, "ไปรษณีย์ไทย");
+});
+
+test("ขนส่งล่มแต่ไม่เคยมีข้อมูลเก่าเลย → โยน error ตามเดิม ไม่กลืนเงียบ", async () => {
+  const cache = makeFakeCache();
+
+  await assert.rejects(
+    resolveTracking(uniqueTrackingNumber(), {
+      primary: makeBrokenPrimary(
+        new CarrierError("upstream_error", "ระบบขนส่งขัดข้อง"),
+      ),
+      fallback: fallbackNeverUsed,
+      persistentCache: cache,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof CarrierError);
+      assert.equal(error.code, "upstream_error");
+      return true;
+    },
+  );
+});
+
+test('"ไม่พบเลขนี้" ต้องไม่ถูกข้อมูลเก่าบัง — เป็นคำตอบจริงที่ผู้ใช้ต้องเห็น', async () => {
+  const trackingNumber = uniqueTrackingNumber();
+  const cache = makeFakeCache();
+
+  cache.rows.set(trackingNumber, {
+    result: makeResult(trackingNumber, "ไปรษณีย์ไทย"),
+    fetchedAt: Date.now() - 48 * 60 * 60_000,
+    expiresAt: Date.now() - 46 * 60 * 60_000,
+  });
+
+  // ถ้าเอาข้อมูลเก่ามาบัง not_found พัสดุที่หลุดออกจากระบบขนส่งไปแล้วจะดูเหมือน
+  // ยังตามได้อยู่ตลอดกาล ซึ่งหลอกผู้ใช้ยิ่งกว่าการบอกตรงๆ ว่าไม่พบ
+  await assert.rejects(
+    resolveTracking(trackingNumber, {
+      primary: primaryAlwaysNotFound,
+      fallback: makeTrack123(),
+      persistentCache: cache,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof CarrierError);
+      assert.equal(error.code, "not_found");
+      return true;
+    },
+  );
+});
+
+test("skipCache → ข้าม cache ทั้งสองชั้น ยิงสดเสมอ", async () => {
+  const trackingNumber = uniqueTrackingNumber();
+  const cache = makeFakeCache();
+  const primary = makeWorkingPrimary();
+
+  await resolveTracking(trackingNumber, {
+    primary,
+    fallback: fallbackNeverUsed,
+    persistentCache: cache,
+  });
+  const forced = await resolveTracking(trackingNumber, {
+    primary,
+    fallback: fallbackNeverUsed,
+    persistentCache: cache,
+    skipCache: true,
+  });
+
+  assert.equal(forced.source, "api");
+  assert.equal(primary.calls.length, 2);
 });
