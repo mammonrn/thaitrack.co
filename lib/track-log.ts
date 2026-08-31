@@ -13,7 +13,7 @@
  * พ่น log ออกมา
  */
 
-import type { ResolveSource } from "./carriers/resolve";
+import type { ResolveProvider, ResolveSource } from "./carriers/resolve";
 
 export interface TrackLogFields {
   /** เวลาที่เริ่มค้น (epoch ms) */
@@ -24,6 +24,8 @@ export interface TrackLogFields {
   route: string;
   /** ชั้นที่ตอบ — memory / supabase / api หรือ "error" เมื่อไม่ได้คำตอบเลย */
   source: ResolveSource | "error";
+  /** ผู้ให้บริการที่ตอบ — primary / fallback / backup / cache / none */
+  provider: ResolveProvider;
   /** true = ข้อมูลหมดอายุแล้วแต่ถูกใช้เป็นคำตอบสำรอง */
   stale: boolean;
   /** true = ไปเกาะคำขอของเลขเดียวกันที่กำลังรอผลอยู่ */
@@ -47,6 +49,7 @@ export function formatTrackLog(fields: TrackLogFields): string {
     `no=${fields.trackNo}`,
     `route=${fields.route}`,
     `source=${fields.source}`,
+    `via=${fields.provider}`,
     `stale=${yesNo(fields.stale)}`,
     `shared=${yesNo(fields.shared)}`,
     `took=${fields.tookMs}ms`,

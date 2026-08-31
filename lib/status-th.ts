@@ -88,6 +88,25 @@ const TAG_TH: Record<string, string> = {
   "pickup from cross border seller": "ผู้ขายส่งพัสดุแล้ว",
   "picked up": "รับพัสดุแล้ว",
   collected: "รับพัสดุแล้ว",
+
+  /* ---- ชุดที่พบค้างเป็นภาษาอังกฤษในระบบจริง (งาน D3) ----
+   *
+   * ทั้งหมดเป็น tag ของ Track123 ที่ยังไม่มีคำแปล ผู้ใช้จึงเห็นวงเล็บเหลี่ยม
+   * ภาษาอังกฤษกลางไทม์ไลน์ไทย
+   *
+   * "domestic" กับ "cross border" ในชุดนี้แยกกันชัดเจน: อันแรกคือช่วงที่พัสดุ
+   * เดินอยู่ในประเทศเดียว อันหลังคือช่วงข้ามประเทศ คำแปลจึงต้องแยกตามนั้น
+   * ไม่ใช่แปลรวมเป็น "ขนส่ง" เฉยๆ ซึ่งทำให้ผู้ใช้แยกไม่ออกว่าพัสดุถึงไทยหรือยัง
+   */
+  "in transit update": "อัปเดตระหว่างขนส่ง",
+  "domestic line haul transportation": "ขนส่งระหว่างเมืองในประเทศ",
+  "domestic line haul": "ขนส่งระหว่างเมืองในประเทศ",
+  "cross border line haul transportation": "ขนส่งข้ามประเทศ",
+  "cross border line haul": "ขนส่งข้ามประเทศ",
+  "pickup from domestic seller": "รับพัสดุจากผู้ขายในประเทศแล้ว",
+  "dropoff done by domestic seller": "ผู้ขายนำพัสดุมาส่งที่จุดรับแล้ว",
+  "dropoff done by cross border seller": "ผู้ขายต่างประเทศนำพัสดุมาส่งที่จุดรับแล้ว",
+  "dropoff done": "นำพัสดุมาส่งที่จุดรับแล้ว",
   "forwarder received parcel": "ส่งมอบให้ผู้ให้บริการขนส่งแล้ว",
   "transit warehouse inbound": "ถึงคลังพักสินค้า",
   "transit warehouse outbound": "ออกจากคลังพักสินค้า",

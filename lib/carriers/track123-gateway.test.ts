@@ -38,7 +38,15 @@ function rateLimited(): CarrierError {
 
 interface Harness {
   lines: string[];
-  options: { queue: RateLimitQueue; backoffMs: readonly number[]; log: (line: string) => void };
+  options: {
+    queue: RateLimitQueue;
+    backoffMs: readonly number[];
+    log: (line: string) => void;
+    // ปิด breaker ในเทสต์ชุดนี้ ไม่งั้นความล้มเหลวจากเทสต์ตัวก่อนจะสะสมข้าม
+    // ไปเปิดวงจรให้เทสต์ตัวถัดไป (breaker ตัวจริงเป็น singleton ของโปรเซส)
+    // การทำงานร่วมกับ breaker มีเทสต์แยกอยู่ใน circuit-breaker.test.ts
+    breaker: null;
+  };
 }
 
 function harness(): Harness {
@@ -49,6 +57,7 @@ function harness(): Harness {
       queue: new RateLimitQueue(3),
       backoffMs: BACKOFF,
       log: (line) => lines.push(line),
+      breaker: null,
     },
   };
 }
@@ -171,6 +180,7 @@ test("error ที่ไม่ใช่การชนลิมิต → ไม
           queue: new RateLimitQueue(3),
           backoffMs: BACKOFF,
           log: (line) => lines.push(line),
+          breaker: null,
         },
       ),
     );

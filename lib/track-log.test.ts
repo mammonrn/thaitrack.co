@@ -14,6 +14,7 @@ const BASE = {
   ts: 1756531234567,
   trackNo: "EY145587896TH",
   route: "track",
+  provider: "cache",
   stale: false,
   shared: false,
   tookMs: 12,
@@ -23,7 +24,7 @@ test("คำค้นที่จบที่ชั้น memory", () => {
   assert.equal(
     formatTrackLog({ ...BASE, source: "memory" }),
     "[track] ts=1756531234567 no=EY145587896TH route=track source=memory" +
-      " stale=no shared=no took=12ms",
+      " via=cache stale=no shared=no took=12ms",
   );
 });
 
@@ -43,7 +44,7 @@ test("คืนข้อมูลเก่าเพราะขนส่งล�
   assert.equal(
     line,
     "[track] ts=1756531234567 no=EY145587896TH route=track source=supabase" +
-      " stale=yes shared=no took=1503ms reason=rate_limited",
+      " via=cache stale=yes shared=no took=1503ms reason=rate_limited",
   );
 });
 
@@ -66,4 +67,22 @@ test("แยกจาก log ของ [track123] ได้ — ไม่งั�
 
   // grep '\[track123\]' ต้องไม่ไปโดนบรรทัดนี้ด้วย
   assert.doesNotMatch(line, /\[track123\]/);
+});
+
+test("บอกได้ว่าคำค้นนี้ใช้ผู้ให้บริการเจ้าไหน", () => {
+  const providers = ["primary", "fallback", "backup", "cache", "none"] as const;
+
+  for (const provider of providers) {
+    const line = formatTrackLog({ ...BASE, source: "api", provider });
+    assert.match(line, new RegExp(` via=${provider} `));
+  }
+});
+
+test("นับได้ว่าเจ้าสำรองถูกใช้ไปกี่ครั้ง", () => {
+  // grep 'via=backup' คือคำสั่งที่ใช้ดูว่ากินโควตา 50/เดือนไปเท่าไร
+  const backup = formatTrackLog({ ...BASE, source: "api", provider: "backup" });
+  const normal = formatTrackLog({ ...BASE, source: "api", provider: "fallback" });
+
+  assert.match(backup, /via=backup/);
+  assert.doesNotMatch(normal, /via=backup/);
 });

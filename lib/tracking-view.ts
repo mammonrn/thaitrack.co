@@ -5,7 +5,11 @@
  * การเรียก API / แปลงข้อความ error ทดสอบได้ด้วย mock โดยไม่ต้องเปิดเบราว์เซอร์
  */
 
-import type { TrackingErrorCode, TrackingResult } from "./carriers/types";
+import type {
+  ShipmentDetails,
+  TrackingErrorCode,
+  TrackingResult,
+} from "./carriers/types";
 
 /**
  * ข้อความที่แสดงให้ผู้ใช้เห็นเวลามีปัญหา
@@ -175,6 +179,70 @@ export function toUserError(payload: unknown): UserFacingError {
     return ERROR_MESSAGE[code as TrackingErrorCode];
   }
   return FALLBACK_ERROR;
+}
+
+/** หนึ่งบรรทัดของรายละเอียดการจัดส่งที่พร้อมแสดง */
+export interface ShipmentFact {
+  label: string;
+  value: string;
+}
+
+/** "2021-02-10" → "10 ก.พ. 2564" — คืน null เมื่ออ่านไม่ออก */
+function formatThaiDate(value: string): string | null {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return null;
+
+  return new Intl.DateTimeFormat("th-TH", {
+    dateStyle: "medium",
+    timeZone: "Asia/Bangkok",
+  }).format(timestamp);
+}
+
+/**
+ * แปลงรายละเอียดการจัดส่งเป็นบรรทัดที่พร้อมแสดง — เฉพาะฟิลด์ที่มีค่าจริง
+ *
+ * ขนส่งแต่ละเจ้าให้ข้อมูลไม่เท่ากัน และหลายฟิลด์ส่งมาเป็นค่าว่าง การ์ดจึงต้อง
+ * ยืดหดตามของที่มีจริง ไม่ใช่เว้นช่องว่างไว้หรือเติมคำว่า "ไม่ระบุ" ให้เต็ม
+ *
+ * ⚠️ ไม่มีชื่อผู้รับและผู้เซ็นรับในนี้โดยตั้งใจ (ดูเหตุผลใน ShipmentDetails)
+ * ต่อให้ปลายทางส่งมาก็ไม่แสดง เพราะการค้นหาในเว็บนี้ไม่ต้องพิสูจน์ตัวตนเลย
+ */
+export function toShipmentFacts(
+  shipment: ShipmentDetails | null | undefined,
+): ShipmentFact[] {
+  if (!shipment) return [];
+
+  const facts: ShipmentFact[] = [];
+
+  // ต้นทาง–ปลายทางรวมเป็นบรรทัดเดียวเมื่อมีครบ อ่านเป็นเส้นทางได้ทันที
+  if (shipment.originProvince && shipment.destinationProvince) {
+    facts.push({
+      label: "เส้นทาง",
+      value: `${shipment.originProvince} → ${shipment.destinationProvince}`,
+    });
+  } else if (shipment.originProvince) {
+    facts.push({ label: "ต้นทาง", value: shipment.originProvince });
+  } else if (shipment.destinationProvince) {
+    facts.push({ label: "ปลายทาง", value: shipment.destinationProvince });
+  }
+
+  if (shipment.dueDate) {
+    const due = formatThaiDate(shipment.dueDate);
+    if (due !== null) facts.push({ label: "กำหนดส่งถึง", value: due });
+  }
+
+  if (shipment.cashOnDelivery) {
+    facts.push({
+      label: "เก็บเงินปลายทาง",
+      value: `${shipment.cashOnDelivery} บาท`,
+    });
+  }
+
+  if (shipment.deliveryStaffName) {
+    facts.push({ label: "พนักงานนำจ่าย", value: shipment.deliveryStaffName });
+  }
+
+  return facts;
 }
 
 /** แปลง ISO 8601 เป็นวันเวลาแบบไทยเต็ม เช่น "16 มิ.ย. 2569 18:43" */
