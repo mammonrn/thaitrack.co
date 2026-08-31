@@ -9,6 +9,7 @@ import ScanButton from "./scan-button";
 import SaveTrackingButton from "./save-tracking-button";
 
 import type { TrackingResult, TrackingStatus } from "@/lib/carriers/types";
+import { markSearchSuccess } from "@/lib/install-invite";
 import type { SavedTracking } from "@/lib/saved-trackings";
 import { translateStatusText } from "@/lib/status-th";
 import { groupEventsByLocation } from "@/lib/timeline-groups";
@@ -90,6 +91,9 @@ export default function Home() {
       setResult(outcome.result);
       setStaleSince(outcome.staleSince);
       setProofPhotoUrl(outcome.proofPhotoUrl);
+      // จุดเดียวที่ถือว่า "ผู้ใช้ได้ประโยชน์จากเว็บแล้ว" — การ์ดชวนติดตั้งแอป
+      // รอสัญญาณนี้ก่อนถึงจะโผล่ (ดู lib/install-invite.ts)
+      markSearchSuccess();
     } else {
       setError(outcome.error);
     }

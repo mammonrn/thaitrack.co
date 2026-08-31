@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 
+import { detectPlatform } from "./platform";
+
 /**
  * event ที่ Chrome ยิงเมื่อเว็บเข้าเกณฑ์ติดตั้งเป็นแอพได้
  * ยังไม่อยู่ใน TypeScript DOM lib มาตรฐาน จึงประกาศเองเท่าที่ใช้
@@ -94,19 +96,10 @@ function useIsIos(): boolean {
  * ซึ่งอาจฆ่า request ปกติทิ้งกลางทาง
  */
 function reportInstall(): Promise<void> {
-  const agent = navigator.userAgent;
-  const platform = /android/i.test(agent)
-    ? "android"
-    : /iphone|ipad|ipod/i.test(agent)
-      ? "ios"
-      : /windows|macintosh|linux/i.test(agent)
-        ? "desktop"
-        : "unknown";
-
   return fetch("/api/installed", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ platform }),
+    body: JSON.stringify({ platform: detectPlatform() }),
     keepalive: true,
   })
     .then(() => undefined)

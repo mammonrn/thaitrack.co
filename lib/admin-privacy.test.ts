@@ -39,6 +39,10 @@ const STATS_MIGRATION = join(
   PROJECT_DIR,
   "supabase/migrations/0011_stats_details.sql",
 );
+const PROMPT_MIGRATION = join(
+  PROJECT_DIR,
+  "supabase/migrations/0013_install_prompt_events.sql",
+);
 const MIGRATIONS_DIR = join(PROJECT_DIR, "supabase/migrations");
 
 interface SourceFile {
@@ -320,28 +324,30 @@ test("ตารางสถิติที่เพิ่มใหม่ต้�
   // ตรวจเฉพาะนิยามของตาราง ไม่ใช่ทั้งไฟล์ — ฟังก์ชันสรุปอ่าน user_id จาก
   // saved_trackings เพื่อ "นับผู้ใช้ที่ไม่ซ้ำ" ได้ ตราบใดที่คืนออกมาแค่ตัวเลข
   // (มีเทสต์แยกเฝ้าเรื่องนั้นอยู่ข้างล่าง)
-  const sql = withoutSqlComments(readFileSync(STATS_MIGRATION, "utf8"));
+  for (const file of [STATS_MIGRATION, PROMPT_MIGRATION]) {
+    const sql = withoutSqlComments(readFileSync(file, "utf8"));
 
-  const definitions = [
-    ...sql.matchAll(/create table[^;]*?\(([\s\S]*?)\);/g),
-    ...sql.matchAll(/(add column if not exists[^;]*);/g),
-  ]
-    .map((match) => match[1])
-    .join("\n");
+    const definitions = [
+      ...sql.matchAll(/create table[^;]*?\(([\s\S]*?)\);/g),
+      ...sql.matchAll(/(add column if not exists[^;]*);/g),
+    ]
+      .map((match) => match[1])
+      .join("\n");
 
-  for (const forbidden of [
-    "user_id",
-    "ip_address",
-    "user_agent",
-    "session_id",
-    "tracking_number",
-    "email",
-  ]) {
-    assert.doesNotMatch(
-      definitions,
-      new RegExp(forbidden),
-      `ตารางสถิติต้องไม่มีคอลัมน์ ${forbidden}`,
-    );
+    for (const forbidden of [
+      "user_id",
+      "ip_address",
+      "user_agent",
+      "session_id",
+      "tracking_number",
+      "email",
+    ]) {
+      assert.doesNotMatch(
+        definitions,
+        new RegExp(forbidden),
+        `ตารางสถิติต้องไม่มีคอลัมน์ ${forbidden}`,
+      );
+    }
   }
 });
 
@@ -366,6 +372,7 @@ test("ตารางสถิติใหม่ต้องล็อกสิ�
   const cases = [
     { file: COURIERS_MIGRATION, table: "tracking_couriers" },
     { file: STATS_MIGRATION, table: "install_events" },
+    { file: PROMPT_MIGRATION, table: "install_prompt_events" },
   ];
 
   for (const { file, table } of cases) {
@@ -392,6 +399,7 @@ test("ตารางสถิติใหม่ต้องล็อกสิ�
 test("โค้ดที่อ้างชื่อตารางสถิติใหม่ ต้องมีไฟล์ละหนึ่งที่", () => {
   const owners: Record<string, string> = {
     install_events: "lib/supabase/search-events.ts",
+    install_prompt_events: "lib/supabase/search-events.ts",
     tracking_couriers: "lib/supabase/tracking-couriers.ts",
   };
 
@@ -438,6 +446,27 @@ test("ทุก migration ที่เพิ่มคอลัมน์ให้
     "unknown_courier",
     "upstream_code",
   ]);
+});
+
+test("ฝั่งเบราว์เซอร์ต้องส่งได้แค่ platform กับ action เท่านั้น", () => {
+  // เซิร์ฟเวอร์กรองอยู่แล้ว (มีเทสต์ข้างล่าง) แต่สิ่งที่ "ไม่ได้ส่งออกไปเลย"
+  // ปลอดภัยกว่าสิ่งที่ "ส่งไปแล้วถูกทิ้ง" — ถ้าวันหนึ่งมีคนเผลอแนบ user agent
+  // เต็มไปด้วย มันจะไปโผล่ใน log ของ proxy หรือ CDN ก่อนถึงโค้ดของเราเสียอีก
+  const callers = allFiles.filter((file) =>
+    file.source.includes('fetch("/api/installed"'),
+  );
+  assert.ok(callers.length > 0, "ต้องมีผู้เรียกให้ตรวจจริง");
+
+  for (const caller of callers) {
+    for (const call of caller.source.split("JSON.stringify({").slice(1)) {
+      const payload = call.slice(0, call.indexOf("})"));
+      assert.doesNotMatch(
+        payload,
+        /userAgent|user_id|email|ip\b|screen|language|referrer/i,
+        `${caller.path} ส่งอะไรที่ระบุตัวคนได้ไปกับสถิติ`,
+      );
+    }
+  }
 });
 
 test("endpoint นับการติดตั้งแอพต้องไม่เก็บอะไรที่ระบุตัวคน", () => {

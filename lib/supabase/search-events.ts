@@ -447,6 +447,75 @@ export async function readInstallStats(): Promise<InstallStats> {
   }
 }
 
+export interface InstallPromptStats {
+  shown: number;
+  dismissed: number;
+  clicked: number;
+}
+
+const EMPTY_PROMPT_STATS: InstallPromptStats = {
+  shown: 0,
+  dismissed: 0,
+  clicked: 0,
+};
+
+/** สิ่งที่เกิดกับการ์ดชวนติดตั้งหนึ่งครั้ง — ชุดปิด ตรงกับ constraint ใน 0013 */
+export type InstallPromptAction = "shown" | "dismissed" | "clicked";
+
+/**
+ * funnel ของการ์ดชวนติดตั้งแอป: แสดง → กดปิด / กดติดตั้ง
+ *
+ * แยกจาก readInstallStats() เพราะคนละตาราง — ตารางนั้นนับ "ติดตั้งสำเร็จจริง"
+ * จาก event ของเบราว์เซอร์ ส่วนตารางนี้นับสิ่งที่เกิดกับคำชวนของเรา
+ * (ดูเหตุผลที่ต้องแยกใน supabase/migrations/0013_install_prompt_events.sql)
+ */
+export async function readInstallPromptStats(
+  days: number,
+): Promise<InstallPromptStats> {
+  const supabase = getServiceSupabaseClient();
+  if (supabase === null) return EMPTY_PROMPT_STATS;
+
+  try {
+    const { data, error } = await supabase.rpc("admin_install_prompt_stats", {
+      p_days: days,
+    });
+
+    if (error) {
+      warn("อ่านสถิติการ์ดชวนติดตั้ง", error.message);
+      return EMPTY_PROMPT_STATS;
+    }
+
+    const row = (data ?? {}) as Record<string, unknown>;
+    return {
+      shown: toCount(row.shown),
+      dismissed: toCount(row.dismissed),
+      clicked: toCount(row.clicked),
+    };
+  } catch (cause) {
+    warn("อ่านสถิติการ์ดชวนติดตั้ง", reason(cause));
+    return EMPTY_PROMPT_STATS;
+  }
+}
+
+/** หนึ่งครั้งที่เกิดอะไรขึ้นกับการ์ดชวนติดตั้ง — ไม่รู้ว่าใคร และไม่ต้องรู้ */
+export async function recordInstallPromptEvent(
+  action: InstallPromptAction,
+  platform: string,
+): Promise<void> {
+  const supabase = getServiceSupabaseClient();
+  if (supabase === null) return;
+
+  try {
+    const { error } = await supabase
+      .from("install_prompt_events")
+      .insert({ action, platform });
+
+    if (error) warn("บันทึกสถิติการ์ดชวนติดตั้ง", error.message);
+  } catch (cause) {
+    warn("บันทึกสถิติการ์ดชวนติดตั้ง", reason(cause));
+  }
+}
+
 /** หนึ่งครั้งที่มีคนติดตั้งแอพ — ไม่รู้ว่าใคร และไม่ต้องรู้ */
 export async function recordInstallEvent(platform: string): Promise<void> {
   const supabase = getServiceSupabaseClient();

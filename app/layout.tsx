@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Anuphan, IBM_Plex_Sans_Thai } from "next/font/google";
 import "./globals.css";
+import InstallInvite from "./install-invite";
 import ServiceWorkerRegistrar from "./service-worker-registrar";
 import SiteNav from "./site-nav";
 
@@ -47,10 +48,14 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`${anuphan.variable} ${plexSansThai.variable} h-full antialiased`}
     >
       {/* เผื่อระยะล่างเท่าความสูงแถบเมนู + safe area กันแถบลอยบังเนื้อหาท้ายหน้า
-          จอใหญ่ไม่ต้องเผื่อ เพราะแถบกลับไปอยู่ในสายเนื้อหาตามปกติ */}
-      <body className="flex min-h-full flex-col pb-[calc(4rem+env(safe-area-inset-bottom))] sm:pb-0">
+          จอใหญ่ไม่ต้องเผื่อ เพราะแถบกลับไปอยู่ในสายเนื้อหาตามปกติ
+
+          --install-invite-space เป็น 0 เกือบตลอดเวลา จะมีค่าเฉพาะตอนการ์ดชวน
+          ติดตั้งลอยอยู่เท่านั้น (ดู app/install-invite.tsx) */}
+      <body className="flex min-h-full flex-col pb-[calc(4rem+env(safe-area-inset-bottom)+var(--install-invite-space,0px))] sm:pb-0">
         {children}
         <SiteNav />
+        <InstallInvite />
         <ServiceWorkerRegistrar />
       </body>
     </html>
