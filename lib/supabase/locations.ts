@@ -19,6 +19,7 @@
  */
 
 import type { Coordinates } from "../geocode";
+import { explainPermissionDenied } from "./key-role";
 import { getServiceSupabaseClient } from "./service";
 
 const BRANCHES_TABLE = "carrier_branches";
@@ -72,9 +73,16 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
-/** log ปัญหาของชั้นข้อมูล — ไม่ใช่ error ของผู้ใช้ จึงเป็น warn */
+/**
+ * log ปัญหาของชั้นข้อมูล — ไม่ใช่ error ของผู้ใช้ จึงเป็น warn
+ *
+ * ต่อคำอธิบายให้เองเมื่อเป็นเรื่องสิทธิ์ (เหตุผลเดียวกับใน ./tracking-cache.ts)
+ */
 function warn(action: string, detail: string): void {
-  console.warn(`[locations] ${action} ล้มเหลว: ${detail}`);
+  const hint = explainPermissionDenied(detail);
+  console.warn(
+    `[locations] ${action} ล้มเหลว: ${detail}` + (hint === null ? "" : ` — ${hint}`),
+  );
 }
 
 function reason(cause: unknown): string {

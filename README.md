@@ -314,6 +314,66 @@ $L | grep '\[breaker\]'              # วงจรถูกตัด/ฟื้�
 จะได้ชื่อคนรับไปทันที ส่วน `deliveryStaffName` แสดงได้เพราะเป็นข้อมูลเชิงบริการ
 ของพัสดุ ไม่ใช่ตัวตนของผู้รับ มีเทสต์เฝ้าว่าไม่มีทางไหนให้ชื่อผู้รับหลุดออกไป
 
+## เมื่อเจอ "permission denied" กับตารางของกลาง
+
+เคยเกิดจริงบน production หลัง deploy #13 — cache ถาวรไม่เคยทำงานเลย
+(`tracking_cache` มี 0 แถว) หน้า `/admin/branches` ว่างเปล่า และแผนที่ไม่ขึ้น
+
+```
+[track-cache] อ่าน ... ล้มเหลว: permission denied for table tracking_cache
+[locations] บันทึกสาขาที่ไม่รู้จัก ล้มเหลว: permission denied for function record_unknown_branch
+```
+
+`permission denied` แปลว่า request **ออกไปถึงและถูกยืนยันตัวตนแล้ว** แต่ role ที่ได้
+ไม่มีสิทธิ์ (ถ้าอ่าน key ไม่ได้เลย ระบบจะเงียบ ไม่มี error แบบนี้) เหลือสาเหตุสองอย่าง:
+
+### สาเหตุที่ 1 — key ไม่ใช่ของ service_role
+
+key ของ `anon` กับ `service_role` **หน้าตาเหมือนกันทุกประการ** — เป็น JWT ยาว
+ประมาณ 200 ตัวอักษรทั้งคู่ ต่างกันแค่ claim `role` ข้างใน วางสลับช่องแล้วความยาว
+กับ checksum ยัง "ตรง" ทุกอย่าง
+
+**ตรวจได้สองทาง:**
+
+```bash
+npm run check-env        # แสดง role=service_role ✓ หรือ role=anon ⚠️
+pm2 logs | grep '\[supabase\]'   # บรรทัดตอนเริ่มระบบ
+```
+
+ตอนเริ่มระบบจะขึ้นบรรทัดใดบรรทัดหนึ่ง:
+
+| log | แปลว่า |
+| --- | --- |
+| `service client พร้อมใช้งาน role=service_role` | ใช้ได้ |
+| `... มีค่าเป็น key ของ role "anon" ...` | วางสลับช่อง — ระบบปฏิเสธไม่สร้าง client แล้วใช้ cache ใน memory แทน |
+| `... อ่าน role ข้างในไม่ออก ...` | ไม่ใช่ JWT (อาจเป็น key รูปแบบใหม่) — ใช้งานต่อตามปกติ |
+
+### สาเหตุที่ 2 — ยังไม่ได้ให้สิทธิ์ service_role ใน DB
+
+`0003`/`0004` ไม่เคย `grant` ให้ `service_role` เลย — อาศัยว่า Supabase ตั้ง
+`ALTER DEFAULT PRIVILEGES` ไว้ให้อัตโนมัติ ซึ่ง**ไม่จริงเสมอไป** โปรเจกต์ที่ปิด
+auto-expose ของ PostgREST มักถอด default privileges ออกด้วย
+
+ฟังก์ชันมีปัญหาชัดกว่านั้น: PostgreSQL ให้ `EXECUTE` กับ `PUBLIC` เป็นค่าเริ่มต้น
+ซึ่ง `service_role` ได้มาทางอ้อม พอ `0004` สั่ง `revoke all on function ... from public`
+สิทธิ์นั้นก็หายไปด้วยถ้าไม่มี grant ตรงๆ มารองรับ
+
+**แก้: รัน `supabase/migrations/0005_service_role_grants.sql`** ซึ่งเขียน grant ให้
+`service_role` ตรงๆ ทั้งสี่ตารางและฟังก์ชัน (ไม่ผ่อนเกราะของ `anon`/`authenticated`
+เลยแม้แต่น้อย และรันซ้ำได้ปลอดภัย)
+
+ตรวจผลด้วย query ที่อยู่ท้ายไฟล์ migration นั้น
+
+### กันไม่ให้เกิดซ้ำ
+
+`lib/supabase/service.test.ts` ตรวจสามชั้นที่เทสต์ตรรกะจับไม่ได้:
+
+1. **runtime** — สร้าง client แบบเดียวกับของจริงแล้วดัก header ที่ออกไป ยืนยันว่า
+   `Authorization: Bearer <service key>` และไม่มี session ของผู้ใช้มาแทนที่
+2. **โครงสร้าง** — ไม่มีไฟล์ไหนนอกทางเข้าแตะตารางของกลาง และทางเข้าต้องไม่ใช้
+   client ที่ถือ anon key หรือ session ผู้ใช้
+3. **migration** — ทุกตารางและฟังก์ชันมี grant ให้ `service_role` เขียนไว้ชัดๆ
+
 ## Deploy หลัง Nginx
 
 session ของ Supabase ถูกเก็บใน cookie ที่ใหญ่กว่าปกติมาก (JWT + ข้อมูลผู้ใช้จาก Google

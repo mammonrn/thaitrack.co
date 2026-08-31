@@ -41,6 +41,48 @@ const KEYS = [
 const checksum = (value) =>
   value === "" ? "—" : createHash("sha256").update(value, "utf8").digest("hex").slice(0, 10);
 
+/**
+ * อ่าน claim "role" ออกจาก Supabase key
+ *
+ * key ของ anon กับ service_role หน้าตาเหมือนกันทุกประการ ต่างกันแค่ claim นี้
+ * การวางสลับช่องจึงเกิดง่ายมากและทำให้ทุก request โดน permission denied
+ * โดยที่ความยาวกับ checksum ยัง "ตรง" ทุกอย่าง — เคยเกิดจริงบน production
+ *
+ * ถอดรหัสอย่างเดียว ไม่ตรวจลายเซ็น และไม่พิมพ์ค่า key ออกมา
+ * (ตรรกะชุดเดียวกับ lib/supabase/key-role.ts)
+ */
+function keyRole(value) {
+  const parts = value.split(".");
+  if (parts.length !== 3) return null;
+
+  try {
+    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), "=");
+    const role = JSON.parse(Buffer.from(padded, "base64").toString("utf8")).role;
+    return typeof role === "string" && role.trim() !== "" ? role.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** ป้ายบอก role พร้อมคำเตือนเมื่อวางผิดช่อง */
+function roleLabel(name, value) {
+  const role = keyRole(value);
+  if (role === null) return "";
+
+  const expected =
+    name === "SUPABASE_SERVICE_ROLE_KEY"
+      ? "service_role"
+      : name === "NEXT_PUBLIC_SUPABASE_ANON_KEY"
+        ? "anon"
+        : null;
+
+  if (expected === null) return `  role=${role}`;
+  return role === expected
+    ? `  role=${role} ✓`
+    : `  role=${role} ⚠️ ควรเป็น ${expected} — วางสลับช่องหรือเปล่า?`;
+}
+
 /** ค่าดิบตามที่เขียนไว้ในไฟล์ (แบบเดียวกับที่ตาเห็นและที่ curl หยิบไปใช้) */
 function readRawFile() {
   let text;
@@ -98,7 +140,27 @@ for (const key of KEYS) {
   } else {
     console.log("  ในไฟล์      ไม่มีบรรทัดนี้");
   }
-  console.log(`  โปรแกรมอ่านได้ ยาว ${loaded.length} ตัวอักษร  checksum ${checksum(loaded)}`);
+  console.log(
+    `  โปรแกรมอ่านได้ ยาว ${loaded.length} ตัวอักษร  checksum ${checksum(loaded)}` +
+      roleLabel(key, loaded),
+  );
+
+  // ความยาวกับ checksum "ตรง" ได้ทั้งที่วางผิดช่อง เพราะ key ของ anon กับ
+  // service_role หน้าตาเหมือนกัน ต้องดู role ข้างในถึงจะรู้
+  const role = keyRole(loaded);
+  const wantedRole =
+    key === "SUPABASE_SERVICE_ROLE_KEY"
+      ? "service_role"
+      : key === "NEXT_PUBLIC_SUPABASE_ANON_KEY"
+        ? "anon"
+        : null;
+
+  if (role !== null && wantedRole !== null && role !== wantedRole) {
+    problems += 1;
+    console.log(`  ❌ key นี้เป็นของ role "${role}" แต่ช่องนี้ต้องการ "${wantedRole}"`);
+    console.log("     ทุก request จะโดน permission denied ทั้งที่ค่าดูเหมือนตั้งครบ");
+    console.log("     แก้: คัดลอกค่าใหม่จาก Supabase dashboard → Project Settings → API");
+  }
 
   if (shadowed) {
     problems += 1;
