@@ -59,6 +59,15 @@ export interface SearchEventInput {
    * ตัวเลขเดียวที่ใช้ตัดสินได้ว่าควรลงทุนทำกลไกเดาขนส่งตอนจนตรอกหรือไม่
    */
   unknownCourier?: boolean;
+  /**
+   * รูปแบบของเลขที่ค้น เช่น "JTTH############" — null เมื่อไม่ต้องเก็บ
+   *
+   * ⚠️ **ไม่ใช่เลขพัสดุ และย้อนกลับเป็นเลขพัสดุไม่ได้** ตัวเลขทุกตัวถูกแทนด้วย #
+   * เหลือแค่ prefix ของขนส่งซึ่งพัสดุทุกใบของเจ้านั้นใช้ร่วมกัน (ดูเหตุผลเต็ม
+   * ที่ lib/tracking-shape.ts) · ผู้เรียกต้องส่งค่าที่ผ่าน trackingShape() มาแล้ว
+   * เท่านั้น ห้ามส่งเลขดิบมาให้ฟังก์ชันนี้แปลงให้
+   */
+  trackingShape?: string | null;
 }
 
 function warn(action: string, detail: string): void {
@@ -103,6 +112,7 @@ export async function recordSearchEvent(
       upstream_code: input.upstreamCode ?? null,
       took_ms: input.tookMs ?? null,
       unknown_courier: input.unknownCourier ?? false,
+      tracking_shape: input.trackingShape ?? null,
     });
 
     if (error) warn("บันทึกสถิติการค้นหา", error.message);
@@ -363,6 +373,53 @@ export async function readUnknownCourierFailures(days: number): Promise<number> 
   }
 }
 
+export interface TrackingShapeRow {
+  shape: string;
+  total: number;
+}
+
+/**
+ * รูปแบบเลขที่ค้นไม่เจอบ่อยที่สุด — ไว้เห็นปัญหาก่อนที่ผู้ใช้จะมาแจ้ง
+ *
+ * ⚠️ อ่านเป็นเพดานบนเสมอ: คนพิมพ์เลขผิดถูกนับรวมอยู่ด้วยและเราแยกไม่ออก
+ * สิ่งที่ตัวเลขนี้ทำได้คือชี้ว่า "ทรงนี้โผล่บ่อยผิดปกติ ไปตรวจดู"
+ */
+export async function readUnfoundShapes(
+  days: number,
+  limit: number,
+): Promise<TrackingShapeRow[]> {
+  const supabase = getServiceSupabaseClient();
+  if (supabase === null) return [];
+
+  try {
+    const { data, error } = await supabase.rpc("admin_unfound_shapes", {
+      p_days: days,
+      p_limit: limit,
+    });
+
+    if (error) {
+      warn("อ่านรูปแบบเลขที่ค้นไม่เจอ", error.message);
+      return [];
+    }
+
+    return (data ?? [])
+      .map((row: unknown) => {
+        const record = row as Record<string, unknown>;
+        if (typeof record.tracking_shape !== "string") return null;
+        return {
+          shape: record.tracking_shape,
+          total: toCount(record.total),
+        } satisfies TrackingShapeRow;
+      })
+      .filter((row: TrackingShapeRow | null): row is TrackingShapeRow =>
+        row !== null,
+      );
+  } catch (cause) {
+    warn("อ่านรูปแบบเลขที่ค้นไม่เจอ", reason(cause));
+    return [];
+  }
+}
+
 export interface LatencyRow {
   source: string;
   p50Ms: number;
@@ -444,6 +501,75 @@ export async function readInstallStats(): Promise<InstallStats> {
   } catch (cause) {
     warn("อ่านจำนวนการติดตั้งแอพ", reason(cause));
     return EMPTY_INSTALLS;
+  }
+}
+
+export interface InstallPromptStats {
+  shown: number;
+  dismissed: number;
+  clicked: number;
+}
+
+const EMPTY_PROMPT_STATS: InstallPromptStats = {
+  shown: 0,
+  dismissed: 0,
+  clicked: 0,
+};
+
+/** สิ่งที่เกิดกับการ์ดชวนติดตั้งหนึ่งครั้ง — ชุดปิด ตรงกับ constraint ใน 0013 */
+export type InstallPromptAction = "shown" | "dismissed" | "clicked";
+
+/**
+ * funnel ของการ์ดชวนติดตั้งแอป: แสดง → กดปิด / กดติดตั้ง
+ *
+ * แยกจาก readInstallStats() เพราะคนละตาราง — ตารางนั้นนับ "ติดตั้งสำเร็จจริง"
+ * จาก event ของเบราว์เซอร์ ส่วนตารางนี้นับสิ่งที่เกิดกับคำชวนของเรา
+ * (ดูเหตุผลที่ต้องแยกใน supabase/migrations/0013_install_prompt_events.sql)
+ */
+export async function readInstallPromptStats(
+  days: number,
+): Promise<InstallPromptStats> {
+  const supabase = getServiceSupabaseClient();
+  if (supabase === null) return EMPTY_PROMPT_STATS;
+
+  try {
+    const { data, error } = await supabase.rpc("admin_install_prompt_stats", {
+      p_days: days,
+    });
+
+    if (error) {
+      warn("อ่านสถิติการ์ดชวนติดตั้ง", error.message);
+      return EMPTY_PROMPT_STATS;
+    }
+
+    const row = (data ?? {}) as Record<string, unknown>;
+    return {
+      shown: toCount(row.shown),
+      dismissed: toCount(row.dismissed),
+      clicked: toCount(row.clicked),
+    };
+  } catch (cause) {
+    warn("อ่านสถิติการ์ดชวนติดตั้ง", reason(cause));
+    return EMPTY_PROMPT_STATS;
+  }
+}
+
+/** หนึ่งครั้งที่เกิดอะไรขึ้นกับการ์ดชวนติดตั้ง — ไม่รู้ว่าใคร และไม่ต้องรู้ */
+export async function recordInstallPromptEvent(
+  action: InstallPromptAction,
+  platform: string,
+): Promise<void> {
+  const supabase = getServiceSupabaseClient();
+  if (supabase === null) return;
+
+  try {
+    const { error } = await supabase
+      .from("install_prompt_events")
+      .insert({ action, platform });
+
+    if (error) warn("บันทึกสถิติการ์ดชวนติดตั้ง", error.message);
+  } catch (cause) {
+    warn("บันทึกสถิติการ์ดชวนติดตั้ง", reason(cause));
   }
 }
 

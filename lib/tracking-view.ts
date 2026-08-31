@@ -127,13 +127,15 @@ export type TrackingOutcome =
        */
       staleSince: string | null;
       /**
-       * รูปถ่ายตอนนำจ่าย — null เมื่อไม่มีสิทธิ์เห็นหรือไม่มีรูป
+       * รูปถ่ายตอนนำจ่าย — รายการว่างเมื่อไม่มีสิทธิ์เห็นหรือไม่มีรูป
        *
        * เซิร์ฟเวอร์เป็นคนตัดสินสิทธิ์และส่งค่ามาให้เฉพาะคนที่ผ่านเกณฑ์
        * ฝั่ง client ไม่มีทางรู้ว่ามีรูปอยู่หรือไม่ถ้าไม่ได้ค่านี้มา — และนั่น
        * คือเจตนา ไม่ใช่การส่งมาแล้วซ่อนด้วย CSS
+       *
+       * เป็นรายการเพราะขนส่งบางเจ้าส่งมาหลายรูป (J&T: รูปพัสดุ + รูปลายเซ็น)
        */
-      proofPhotoUrl: string | null;
+      proofPhotoUrls: string[];
     }
   | { ok: false; error: UserFacingError };
 
@@ -159,19 +161,31 @@ export function isSuccessPayload(
 }
 
 /**
- * อ่าน URL รูปถ่ายตอนนำจ่าย — null เมื่อเซิร์ฟเวอร์ไม่ได้ส่งมา
+ * อ่านรายการ URL รูปถ่ายตอนนำจ่าย — รายการว่างเมื่อเซิร์ฟเวอร์ไม่ได้ส่งมา
  *
  * รับเฉพาะ https เท่านั้น เพราะค่านี้ถูกเอาไปใส่ใน src ของ <img> โดยตรง
  * (ฝั่งเซิร์ฟเวอร์กรองมาแล้วชั้นหนึ่ง ตรงนี้เป็นชั้นที่สอง — ค่าที่วิ่งข้าม
  * เครือข่ายมาต้องไม่ถูกเชื่อทันทีแม้จะมาจากเซิร์ฟเวอร์ของเราเอง)
+ *
+ * ยังรับรูปแบบเดิม (สตริงเดี่ยว) ด้วย เผื่อ client เวอร์ชันเก่าที่ยังเปิดค้าง
+ * อยู่ในเครื่องผู้ใช้คุยกับเซิร์ฟเวอร์ใหม่ระหว่าง deploy
  */
-export function readProofPhotoUrl(payload: unknown): string | null {
-  if (typeof payload !== "object" || payload === null) return null;
+export function readProofPhotoUrls(payload: unknown): string[] {
+  if (typeof payload !== "object" || payload === null) return [];
 
-  const { proofPhotoUrl } = payload as { proofPhotoUrl?: unknown };
-  if (typeof proofPhotoUrl !== "string") return null;
+  const { proofPhotoUrls, proofPhotoUrl } = payload as {
+    proofPhotoUrls?: unknown;
+    proofPhotoUrl?: unknown;
+  };
 
-  return proofPhotoUrl.startsWith("https://") ? proofPhotoUrl : null;
+  const values = Array.isArray(proofPhotoUrls)
+    ? proofPhotoUrls
+    : [proofPhotoUrl];
+
+  return values.filter(
+    (value): value is string =>
+      typeof value === "string" && value.startsWith("https://"),
+  );
 }
 
 /**
@@ -284,8 +298,18 @@ export function toShipmentFacts(
     facts.push({ label: "พนักงานนำจ่าย", value: shipment.deliveryStaffName });
   }
 
-  // เบอร์คอลเซ็นเตอร์อยู่ท้ายสุดเพราะเป็นสิ่งที่ต้องใช้เมื่อมีปัญหา ไม่ใช่
-  // ข้อมูลที่คนอ่านทุกครั้ง แต่ต้องมีให้หาเจอโดยไม่ต้องไปเปิดเว็บขนส่ง
+  // เบอร์ติดต่ออยู่ท้ายสุดเพราะเป็นสิ่งที่ต้องใช้เมื่อมีปัญหา ไม่ใช่ข้อมูลที่
+  // คนอ่านทุกครั้ง แต่ต้องมีให้หาเจอโดยไม่ต้องไปเปิดเว็บขนส่ง
+  //
+  // เบอร์สาขาขึ้นก่อนคอลเซ็นเตอร์เพราะเจาะจงกว่า — คนที่รู้เรื่องพัสดุใบนี้จริง
+  // คือสาขาที่ถือของอยู่ ไม่ใช่คอลเซ็นเตอร์กลาง
+  //
+  // ⚠️ ทั้งสองเบอร์เป็นเบอร์บริษัท เบอร์มือถือของพนักงานส่งของไม่เคยมาถึงตรงนี้
+  // (ตั้งใจไม่ดึงตั้งแต่ใน adapter — ดู deliveryStaffPhoneNumber ใน etrackings.ts)
+  if (shipment.deliveryBranchPhone) {
+    facts.push({ label: "สาขาที่นำจ่าย", value: shipment.deliveryBranchPhone });
+  }
+
   if (shipment.callCenterPhone) {
     facts.push({ label: "คอลเซ็นเตอร์ขนส่ง", value: shipment.callCenterPhone });
   }
@@ -362,7 +386,7 @@ export async function requestTracking(
         ok: true,
         result: payload.data,
         staleSince: readStaleSince(payload),
-        proofPhotoUrl: readProofPhotoUrl(payload),
+        proofPhotoUrls: readProofPhotoUrls(payload),
       };
     }
 
