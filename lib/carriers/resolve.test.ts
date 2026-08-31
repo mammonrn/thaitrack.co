@@ -13,7 +13,7 @@ import { test } from "node:test";
 
 import { clearCache, type CacheEntry } from "../cache.ts";
 import type { PersistentTrackingCache } from "../supabase/tracking-cache.ts";
-import { resolveTracking } from "./resolve.ts";
+import { chooseProviderOrder, resolveTracking } from "./resolve.ts";
 import {
   CarrierError,
   type CarrierAdapter,
@@ -735,24 +735,38 @@ test("skipCache → ข้าม cache ทั้งสองชั้น ยิ�
   assert.equal(forced.source, "api");
   assert.equal(primary.calls.length, 2);
 });
-
 /* ------------------------------------------------------------------ *
- * ผู้ให้บริการสำรอง — ใช้เมื่อ Track123 พังด้วยเหตุระบบเท่านั้น
+ * สองเจ้าที่เสียเงิน — สลับกันตามความถนัด ไม่ใช่เจ้าหลัก + เจ้าสำรอง
+ *
+ * เทสต์กลุ่มนี้เฝ้าสองอย่าง: ลำดับที่ถูกต้อง และ "ยิงกี่ครั้ง" ของแต่ละเจ้า
+ * เพราะทั้งคู่มีเพดานต่อเดือน การยิงเกินความจำเป็นคือเงินที่เสียไปจริง
  * ------------------------------------------------------------------ */
 
-/** เจ้าสำรองที่ตอบได้เสมอ พร้อมนับจำนวนครั้งที่ถูกเรียก */
+/** เลขที่ prefix ฟันธงได้ว่าเป็น Shopee Xpress — ETrackings รองรับเจ้านี้ */
+const uniquePrefixedNumber = () => `SPXTH${(counter += 1)}0460123`;
+
+/** ETrackings ปลอม: ตามได้เฉพาะเลขที่ prefix ฟันธง เหมือนตัวจริง */
 function makeBackup(result: "found" | CarrierError = "found"): CarrierAdapter & {
   calls: string[];
 } {
   const calls: string[] = [];
+  const answer = (trackingNumber: string) =>
+    result === "found"
+      ? Promise.resolve(makeResult(trackingNumber, "Shopee Xpress"))
+      : Promise.reject(result);
+
   return {
     carrierCode: "etrackings",
     carrierName: "ETrackings",
     calls,
+    canTrack: (trackingNumber) => trackingNumber.startsWith("SPXTH"),
     track(trackingNumber) {
-      calls.push(trackingNumber);
-      if (result !== "found") return Promise.reject(result);
-      return Promise.resolve(makeResult(trackingNumber, "Kerry Express"));
+      calls.push("auto");
+      return answer(trackingNumber);
+    },
+    trackWithCourier(trackingNumber, courierCode) {
+      calls.push(courierCode);
+      return answer(trackingNumber);
     },
   };
 }
@@ -770,68 +784,50 @@ function makeBrokenFallback(error: CarrierError): CarrierAdapter & {
       calls.push(trackingNumber);
       return Promise.reject(error);
     },
+    trackWithCourier(trackingNumber) {
+      calls.push(trackingNumber);
+      return Promise.reject(error);
+    },
   };
 }
 
-test("Track123 พังด้วยเหตุระบบ → ข้ามไปเจ้าสำรอง และบอกได้ว่าใช้เจ้าไหน", async () => {
-  const backup = makeBackup();
+/* ------------------------- ลำดับที่เลือกใช้ ------------------------- */
 
-  const resolved = await resolveTracking(uniqueTrackingNumber(), {
+test("prefix ฟันธงได้ → ETrackings ก่อน แล้วไม่ต้องแตะ Track123 เลย", async () => {
+  const backup = makeBackup();
+  const fallback = makeTrack123({ autoDetectSucceeds: true });
+
+  const resolved = await resolveTracking(uniquePrefixedNumber(), {
     primary: primaryAlwaysNotFound,
-    fallback: makeBrokenFallback(
-      new CarrierError("upstream_error", "Track123 ล่ม"),
-    ),
+    fallback,
     backup,
     persistentCache: noCache,
   });
 
   assert.equal(resolved.provider, "backup");
-  assert.equal(resolved.result.carrierName, "Kerry Express");
-  assert.equal(backup.calls.length, 1);
-});
-
-test("circuit breaker ตัดวงจร → ข้ามไปเจ้าสำรองทันที ไม่ต้องรอ timeout", async () => {
-  const backup = makeBackup();
-
-  const resolved = await resolveTracking(uniqueTrackingNumber(), {
-    primary: primaryAlwaysNotFound,
-    fallback: makeBrokenFallback(
-      new CarrierError("upstream_error", "ระบบขัดข้อง", {
-        upstreamCode: "breaker_open",
-      }),
-    ),
-    backup,
-    persistentCache: noCache,
-  });
-
-  assert.equal(resolved.provider, "backup");
-});
-
-test('Track123 ตอบว่า "ไม่พบ" → ห้ามแตะเจ้าสำรอง (โควตา 50 ครั้ง/เดือน)', async () => {
-  const backup = makeBackup();
-
-  await assert.rejects(
-    resolveTracking(uniqueTrackingNumber(), {
-      primary: primaryAlwaysNotFound,
-      fallback: makeTrack123(),
-      backup,
-      persistentCache: noCache,
-    }),
-    (error: unknown) => {
-      assert.ok(error instanceof CarrierError);
-      assert.equal(error.code, "not_found");
-      return true;
-    },
-  );
-
   assert.deepEqual(
     backup.calls,
-    [],
-    "ค้นไม่เจอเป็นคำตอบปกติ ถ้ายิงเจ้าสำรองทุกครั้งโควตาจะหมดในไม่กี่วัน",
+    ["shopee-xpress-th"],
+    "ต้องยิงโดยระบุขนส่งที่ prefix ฟันธงมา ไม่ใช่ปล่อยให้เดาเอง",
   );
+  assert.deepEqual(fallback.calls, [], "ETrackings ตอบได้แล้วไม่ต้องถามซ้ำ");
 });
 
-test("Track123 เจอตั้งแต่แรก → ไม่แตะเจ้าสำรอง", async () => {
+test("prefix ฟันธงได้ → ข้ามไปรษณีย์ไทยไปเลย", async () => {
+  const primary = makeWorkingPrimary();
+
+  await resolveTracking(uniquePrefixedNumber(), {
+    primary,
+    fallback: makeTrack123(),
+    backup: makeBackup(),
+    persistentCache: noCache,
+  });
+
+  assert.deepEqual(primary.calls, []);
+});
+
+test("prefix เดาขนส่งไม่ออก → Track123 เจ้าเดียว ไม่แตะ ETrackings", async () => {
+  // ETrackings บังคับให้ระบุขนส่ง เลขที่เดาไม่ออกจึงยิงไปก็เสียโควตาแน่นอน
   const backup = makeBackup();
 
   const resolved = await resolveTracking(uniqueTrackingNumber(), {
@@ -845,7 +841,7 @@ test("Track123 เจอตั้งแต่แรก → ไม่แตะเ
   assert.deepEqual(backup.calls, []);
 });
 
-test("ไปรษณีย์ไทยเจอตั้งแต่แรก → provider เป็น primary", async () => {
+test("ไปรษณีย์ไทยเจอตั้งแต่แรก → ไม่แตะเจ้าที่เสียเงินสักเจ้า", async () => {
   const backup = makeBackup();
   const primary = makeWorkingPrimary();
 
@@ -860,28 +856,25 @@ test("ไปรษณีย์ไทยเจอตั้งแต่แรก �
   assert.deepEqual(backup.calls, []);
 });
 
-test("ไม่มีเจ้าสำรอง + Track123 พัง → ทำงานเหมือนเดิม ส่ง error เดิมขึ้นไป", async () => {
-  await assert.rejects(
-    resolveTracking(uniqueTrackingNumber(), {
-      primary: primaryAlwaysNotFound,
-      fallback: makeBrokenFallback(
-        new CarrierError("rate_limited", "คิวหนาแน่น"),
-      ),
-      backup: null,
-      persistentCache: noCache,
-    }),
-    (error: unknown) => {
-      assert.ok(error instanceof CarrierError);
-      assert.equal(error.code, "rate_limited");
-      return true;
-    },
-  );
+/* ----------------------- เจ้าไหนพังก็สลับไปอีกเจ้า ----------------------- */
+
+test("ETrackings พัง → สลับไป Track123 อัตโนมัติ", async () => {
+  const backup = makeBackup(new CarrierError("upstream_error", "ETrackings ล่ม"));
+  const fallback = makeTrack123({ autoDetectSucceeds: true });
+
+  const resolved = await resolveTracking(uniquePrefixedNumber(), {
+    primary: primaryAlwaysNotFound,
+    fallback,
+    backup,
+    persistentCache: noCache,
+  });
+
+  assert.equal(resolved.provider, "fallback");
+  assert.equal(backup.calls.length, 1, "ต้องได้ลอง ETrackings ก่อน");
 });
 
-test("เจ้าสำรองก็พัง → ส่ง error ของ Track123 ขึ้นไป ไม่ใช่ของเจ้าสำรอง", async () => {
-  // ชั้นบนใช้ code นี้ตัดสินใจเรื่องการคืนข้อมูลเก่าจาก cache
-  // ถ้าถูกทับด้วย error ของเจ้าสำรอง การตัดสินใจนั้นจะผิด
-  const backup = makeBackup(new CarrierError("auth_failed", "คีย์ผิด"));
+test("Track123 พัง (prefix ฟันธงไม่ได้) → ส่ง error เดิมขึ้นไป ไม่มีใครมาช่วย", async () => {
+  const backup = makeBackup();
 
   await assert.rejects(
     resolveTracking(uniqueTrackingNumber(), {
@@ -899,11 +892,67 @@ test("เจ้าสำรองก็พัง → ส่ง error ของ T
     },
   );
 
-  assert.equal(backup.calls.length, 1, "ต้องได้ลองเจ้าสำรองก่อนยอมแพ้");
+  assert.deepEqual(
+    backup.calls,
+    [],
+    "ETrackings ตามเลขนี้ไม่ได้อยู่แล้ว การยิงคือการทิ้งโควตาเปล่าๆ",
+  );
 });
 
-test("Track123 พัง + เจ้าสำรองพัง + มี cache เก่า → คืนข้อมูลเก่าตามกลไกเดิม", async () => {
-  const trackingNumber = uniqueTrackingNumber();
+test("circuit breaker ตัดวงจรของ ETrackings → ไปต่อที่ Track123 ทันที", async () => {
+  const backup = makeBackup(
+    new CarrierError("upstream_error", "ระบบขัดข้อง", {
+      upstreamCode: "breaker_open",
+    }),
+  );
+
+  const resolved = await resolveTracking(uniquePrefixedNumber(), {
+    primary: primaryAlwaysNotFound,
+    fallback: makeTrack123({ autoDetectSucceeds: true }),
+    backup,
+    persistentCache: noCache,
+  });
+
+  assert.equal(resolved.provider, "fallback");
+});
+
+test("ทั้งสองเจ้าพัง → ส่ง error ของ Track123 ขึ้นไป ไม่ใช่ของ ETrackings", async () => {
+  // ชั้นบนใช้ code นี้ตัดสินใจเรื่องการคืนข้อมูลเก่าจาก cache
+  // ถ้าถูกทับด้วย error ของอีกเจ้า การตัดสินใจนั้นจะผิด
+  const backup = makeBackup(new CarrierError("auth_failed", "คีย์ผิด"));
+
+  await assert.rejects(
+    resolveTracking(uniquePrefixedNumber(), {
+      primary: primaryAlwaysNotFound,
+      fallback: makeBrokenFallback(
+        new CarrierError("rate_limited", "คิวหนาแน่น"),
+      ),
+      backup,
+      persistentCache: noCache,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof CarrierError);
+      assert.equal(error.code, "rate_limited");
+      return true;
+    },
+  );
+
+  assert.equal(backup.calls.length, 1, "ต้องได้ลองทั้งสองเจ้าก่อนยอมแพ้");
+});
+
+test("ไม่ได้ตั้งค่า ETrackings → ระบบทำงานต่อได้ด้วย Track123 เจ้าเดียว", async () => {
+  const resolved = await resolveTracking(uniquePrefixedNumber(), {
+    primary: primaryAlwaysNotFound,
+    fallback: makeTrack123({ succeedsForCourier: "shopee-xpress-th" }),
+    backup: null,
+    persistentCache: noCache,
+  });
+
+  assert.equal(resolved.provider, "fallback");
+});
+
+test("ทั้งสองเจ้าพัง + มี cache เก่า → คืนข้อมูลเก่าตามกลไกเดิม", async () => {
+  const trackingNumber = uniquePrefixedNumber();
   const cache = makeFakeCache();
 
   cache.rows.set(trackingNumber, {
@@ -924,4 +973,137 @@ test("Track123 พัง + เจ้าสำรองพัง + มี cache �
   assert.equal(resolved.stale, true);
   assert.equal(resolved.provider, "cache");
   assert.equal(resolved.source, "supabase");
+});
+
+/* --------------------- "ไม่พบ" ของใครหนักแน่นกว่ากัน --------------------- */
+
+test('ETrackings ตอบ "ไม่พบ" → ยังไปต่อที่ Track123 เพราะยิงครั้งเดียวด้วยขนส่งที่เราเดาให้', async () => {
+  const backup = makeBackup(new CarrierError("not_found", "ไม่พบเลขนี้"));
+  const fallback = makeTrack123({ autoDetectSucceeds: true });
+
+  const resolved = await resolveTracking(uniquePrefixedNumber(), {
+    primary: primaryAlwaysNotFound,
+    fallback,
+    backup,
+    persistentCache: noCache,
+  });
+
+  assert.equal(resolved.provider, "fallback");
+});
+
+test('Track123 ตอบ "ไม่พบ" → หยุดทันที ไม่ถาม ETrackings ต่อ', async () => {
+  // Track123 ตรวจจับเองแล้วยังไล่ระบุเจาะจงซ้ำอีกหลายเจ้า คำว่าไม่พบของมัน
+  // จึงหนักแน่นพอ การถามต่อมีแต่จะจ่ายโควตาให้คำตอบเดิม
+  const backup = makeBackup();
+
+  await assert.rejects(
+    resolveTracking(uniqueTrackingNumber(), {
+      primary: primaryAlwaysNotFound,
+      fallback: makeTrack123(),
+      backup,
+      persistentCache: noCache,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof CarrierError);
+      assert.equal(error.code, "not_found");
+      return true;
+    },
+  );
+
+  assert.deepEqual(backup.calls, []);
+});
+
+test("ทั้งสองเจ้าตอบว่าไม่พบ → not_found ไม่ใช่ error ของระบบ", async () => {
+  await assert.rejects(
+    resolveTracking(uniquePrefixedNumber(), {
+      primary: primaryAlwaysNotFound,
+      fallback: makeTrack123(),
+      backup: makeBackup(new CarrierError("not_found", "ไม่พบเลขนี้")),
+      persistentCache: noCache,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof CarrierError);
+      assert.equal(error.code, "not_found");
+      return true;
+    },
+  );
+});
+
+test("ETrackings พัง แต่ Track123 ตอบว่าไม่พบ → คำตอบคือไม่พบ ไม่ใช่ระบบขัดข้อง", async () => {
+  // ถ้าส่ง error ของ ETrackings ขึ้นไป ชั้นบนจะเอาข้อมูลเก่าจาก cache มาบัง
+  // ทั้งที่ความจริงคือพัสดุไม่อยู่ในระบบขนส่งแล้ว
+  await assert.rejects(
+    resolveTracking(uniquePrefixedNumber(), {
+      primary: primaryAlwaysNotFound,
+      fallback: makeTrack123(),
+      backup: makeBackup(new CarrierError("auth_failed", "คีย์ผิด")),
+      persistentCache: noCache,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof CarrierError);
+      assert.equal(error.code, "not_found");
+      return true;
+    },
+  );
+});
+
+/* ------------------- การตัดสินลำดับ (ฟังก์ชันบริสุทธิ์) ------------------- */
+
+const ORDER_BASE = {
+  prefixKnown: true,
+  backupUsable: true,
+  fallbackNearQuota: false,
+  backupNearQuota: false,
+};
+
+test("ETrackings ตามเลขนี้ไม่ได้ → เหลือ Track123 เจ้าเดียว", () => {
+  assert.deepEqual(
+    chooseProviderOrder({ ...ORDER_BASE, backupUsable: false }),
+    ["fallback"],
+  );
+});
+
+test("prefix ฟันธงได้ → ETrackings ก่อน", () => {
+  assert.deepEqual(chooseProviderOrder(ORDER_BASE), ["backup", "fallback"]);
+});
+
+test("prefix ฟันธงไม่ได้ → Track123 ก่อน", () => {
+  assert.deepEqual(
+    chooseProviderOrder({ ...ORDER_BASE, prefixKnown: false }),
+    ["fallback", "backup"],
+  );
+});
+
+test("เจ้าที่ควรได้ไปก่อนใกล้ชนเพดาน → สลับไปอีกเจ้า", () => {
+  assert.deepEqual(
+    chooseProviderOrder({ ...ORDER_BASE, backupNearQuota: true }),
+    ["fallback", "backup"],
+  );
+
+  assert.deepEqual(
+    chooseProviderOrder({
+      ...ORDER_BASE,
+      prefixKnown: false,
+      fallbackNearQuota: true,
+    }),
+    ["backup", "fallback"],
+  );
+});
+
+test("ทั้งคู่ใกล้ชนเพดาน → ไม่สลับ ใช้ตามความถนัดเหมือนเดิม", () => {
+  // สลับไปหาเจ้าที่ใกล้ชนเพดานเหมือนกันไม่ได้ช่วยอะไร
+  assert.deepEqual(
+    chooseProviderOrder({
+      ...ORDER_BASE,
+      fallbackNearQuota: true,
+      backupNearQuota: true,
+    }),
+    ["backup", "fallback"],
+  );
+});
+
+test("ใกล้ชนเพดานไม่ใช่ห้ามใช้ — ยังอยู่ในลำดับที่สองเสมอ", () => {
+  // ปฏิเสธคำค้นทั้งที่ยังมีโควตาเหลือ แย่กว่าการใช้โควตาที่เหลืออยู่
+  const order = chooseProviderOrder({ ...ORDER_BASE, backupNearQuota: true });
+  assert.ok(order.includes("backup"));
 });

@@ -1,5 +1,5 @@
 /**
- * Adapter ของ "ETrackings" — ผู้ให้บริการสำรอง ใช้เมื่อ Track123 ล่ม
+ * Adapter ของ "ETrackings" — หนึ่งในสองเจ้าที่ระบบสลับใช้ตามความถนัด
  *
  * เอกสาร: https://apps.etrackings.com/docs/api-reference
  *   /docs/trackings     โครงสร้าง response
@@ -9,8 +9,9 @@
  *
  * ⚠️ ข้อจำกัดสองข้อที่กำหนดรูปร่างของไฟล์นี้ทั้งหมด:
  *
- *   1. **แผนฟรีให้ 50 ครั้ง/เดือน** น้อยมาก จึงเรียกเฉพาะตอน Track123 ใช้ไม่ได้
- *      จริงๆ เท่านั้น และต้องนับทุกครั้งที่เรียกเพื่อให้เห็นว่าเหลือเท่าไร
+ *   1. **มีเพดานต่อเดือน** (แผนฟรี 50 ครั้ง แผนที่จ่ายเงินมากกว่านั้น ตั้งได้
+ *      ผ่าน ETRACKINGS_MONTHLY_CALL_LIMIT) จึงต้องนับทุกครั้งที่เรียก แล้วให้
+ *      lib/carriers/resolve.ts เอียงไปใช้อีกเจ้าเมื่อใกล้เพดาน
  *
  *   2. **POST /tracks/find บังคับให้ระบุ courier** ต่างจาก Track123 ที่ตรวจจับ
  *      ขนส่งให้เอง เราจึงต้องรู้ว่าเป็นขนส่งเจ้าไหน "ก่อน" ยิง และด้วยโควตา
@@ -25,9 +26,15 @@
  * ข้อมูลที่ได้กลับมาเป็นภาษาไทยอยู่แล้ว (ส่ง Accept-Language: th เสมอ) จึงไม่
  * ต้องผ่านพจนานุกรมแปล — ดู lib/status-th.ts ที่ปล่อยข้อความไทยผ่านตามเดิม
  *
+ * ข้อได้เปรียบที่ทำให้เจ้านี้ถูกเลือกก่อนเมื่อ prefix ฟันธงได้: ข้อความไทยล้วน
+ * และ **ที่อยู่เต็มของสาขาที่ห้อยท้าย description มา** ซึ่งเป็นวัตถุดิบเดียว
+ * ที่ทำให้เติมพิกัดสาขาอัตโนมัติได้ (ดู splitDescription และ lib/branch-harvest.ts)
+ *
  * API key อ่านจาก env เท่านั้น — ห้าม hardcode และห้ามขึ้นต้นด้วย NEXT_PUBLIC_
  */
 
+import { CircuitBreaker } from "../circuit-breaker";
+import { countProviderCall, readQuota } from "../provider-usage";
 import { courierFromPrefix } from "./courier-prefix";
 import {
   CarrierError,
@@ -149,48 +156,51 @@ interface ETrackingsResponse {
 }
 
 /* ------------------------------------------------------------------ *
- * โควตา — แผนฟรีให้ 50 ครั้ง/เดือน
+ * โควตาและ circuit breaker
  * ------------------------------------------------------------------ */
 
-/** เพดานของแผนฟรี ใช้ประกอบ log ให้เห็นว่าเหลือเท่าไร */
-export const MONTHLY_QUOTA = 50;
-
-/** ตัวนับในหน่วยความจำ รีเซ็ตเองเมื่อข้ามเดือน */
-let usage = { month: "", count: 0 };
-
-/** "2026-08" ตามเวลาไทย — รอบบิลของผู้ให้บริการไทยย่อมนับตามเวลาไทย */
-function currentMonth(now: number): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    year: "numeric",
-    month: "2-digit",
-    timeZone: "Asia/Bangkok",
-  }).format(now);
-}
+/**
+ * ตัวนับโควตาย้ายไปอยู่ที่ lib/provider-usage.ts แล้ว
+ *
+ * ของเดิมนับใน memory ของโปรเซสเดียว ตัวเลขจึงหายทุก restart และนับแยกกัน
+ * ถ้ามีหลาย instance ซึ่งพอ ETrackings กลายเป็นทางหลักที่ใช้จริงทุกวัน
+ * (ไม่ใช่ทางสำรองที่แทบไม่ถูกแตะ) ตัวเลขแบบนั้นใช้ตัดสินใจอะไรไม่ได้เลย
+ */
+const PROVIDER = "etrackings" as const;
 
 /**
- * นับการเรียกหนึ่งครั้ง แล้วคืนจำนวนที่ใช้ไปในเดือนนี้
+ * เกณฑ์ของ circuit breaker
  *
- * ⚠️ ตัวนับอยู่ใน memory ของ process เดียว จึงหายทุกครั้งที่ restart และนับ
- * แยกกันถ้ามีหลาย instance ตัวเลขนี้จึงเป็น "อย่างน้อยเท่านี้" ไม่ใช่ยอดจริง
- * ตัวเลขจริงต้องดูที่ dashboard ของ ETrackings — ที่นี่มีไว้เตือนใน log ว่า
- * เริ่มใช้เยอะแล้ว ไม่ได้มีไว้บังคับเพดาน
+ * ไวกว่าของ Track123 (5 ครั้ง) โดยตั้งใจ เพราะทุกครั้งที่ยิงแล้วพังคือโควตา
+ * ที่จ่ายไปโดยไม่ได้อะไรกลับมา สามครั้งติดกันพอจะบอกได้แล้วว่าไม่ใช่ความซวย
+ * รายครั้ง และการรีบตัดวงจรทำให้ resolve สลับไปใช้อีกเจ้าได้ทันที
+ *
+ * พักนานกว่า (60 วินาที) ด้วยเหตุผลเดียวกัน — การลองแตะดูแต่ละครั้งมีราคา
  */
-export function countUsage(now: number = Date.now()): number {
-  const month = currentMonth(now);
-  if (usage.month !== month) usage = { month, count: 0 };
-  usage.count += 1;
-  return usage.count;
-}
+export const BREAKER_FAILURE_THRESHOLD = 3;
+export const BREAKER_WINDOW_MS = 60_000;
+export const BREAKER_COOLDOWN_MS = 60_000;
 
-/** ยอดที่นับได้ในเดือนนี้ — ใช้ในเทสต์และไว้ดูสถานะ */
-export function usageThisMonth(now: number = Date.now()): number {
-  return usage.month === currentMonth(now) ? usage.count : 0;
-}
+export const etrackingsBreaker = new CircuitBreaker({
+  name: PROVIDER,
+  failureThreshold: BREAKER_FAILURE_THRESHOLD,
+  windowMs: BREAKER_WINDOW_MS,
+  cooldownMs: BREAKER_COOLDOWN_MS,
+});
 
-/** ล้างตัวนับ — ใช้ในเทสต์เท่านั้น */
-export function resetUsage(): void {
-  usage = { month: "", count: 0 };
-}
+/**
+ * error ที่นับว่า "ปลายทางมีปัญหา"
+ *
+ * เกณฑ์เดียวกับของ Track123 — ไม่รวม not_found กับ invalid_tracking_number
+ * เพราะสองอันนั้นคือคำตอบที่ถูกต้องของปลายทางที่ทำงานปกติดี
+ */
+const BREAKER_FAILURES: ReadonlySet<string> = new Set([
+  "rate_limited",
+  "network_error",
+  "upstream_error",
+  "auth_failed",
+]);
+
 
 /* ------------------------------------------------------------------ *
  * การเรียก API
@@ -334,26 +344,110 @@ const LOCATION_SUFFIX = /^[^\d,]{2,40},\s*[^\d,]{2,40}$/;
 /** เวลาที่นำหน้าข้อความ เช่น "13:59 " — ซ้ำกับฟิลด์ time จึงตัดทิ้ง */
 const LEADING_TIME = /^\d{1,2}\s*:\s*\d{2}(?:\s*:\s*\d{2})?\s+/;
 
+/**
+ * รูปแบบที่ห้อย "ที่อยู่เต็มของสาขา" มาท้ายข้อความ
+ *
+ * ตัวอย่างจริงจาก Shopee Xpress:
+ *   "09:28 พัสดุถึงสาขาปลายทาง: ACRAI-B - เมืองเชียงราย - อยู่ที่ TH จังหวัด
+ *    เชียงราย 57000 อำเภอเมืองเชียงราย 639 หมู่ที่1 ตำบลบ้านดู่ อำเภอเมือง
+ *    เชียงราย จังหวัดเชียงราย 57100"
+ *
+ * นี่คือกุญแจของการเติมพิกัดสาขาอัตโนมัติ — รหัสสาขาอย่าง ACRAI-B ไม่มีทาง
+ * geocode ได้ แต่ที่อยู่ที่ห้อยมาด้วยนั้นได้
+ *
+ * บังคับให้ครบทั้งสามส่วน (หัวข้อความ : สถานที่ - อยู่ที่ ที่อยู่) ถ้าขาดส่วนใด
+ * จะไม่เข้ารูปแล้วตกไปใช้ตรรกะเดิม — ขนส่งแต่ละเจ้าเขียนไม่เหมือนกัน การเดา
+ * จากรูปที่ไม่ครบมีแต่จะได้ที่อยู่ผิดมาเขียนทับตารางที่ทั้งระบบเชื่อว่าถูก
+ */
+const BRANCH_WITH_ADDRESS = /^(.*?):\s*(.+?)\s+[-–—]\s*อยู่ที่\s+(.+)$/;
+
+/** คำที่นำหน้าส่วนของบ้านเลขที่/หมู่/ถนน ซึ่งควรติดไปกับที่อยู่ด้วย */
+const HOUSE_PART = /^(?:หมู่|ม\.|ซอย|ซ\.|ถนน|ถ\.|เลขที่|\d[\d/–—-]*)/;
+
+/** ตัวคั่นระดับตำบล — จุดตั้งต้นของที่อยู่ที่ใช้หาพิกัดได้จริง */
+const SUBDISTRICT = /^(?:ตำบล|แขวง)./;
+
+/** ต้องมีจังหวัดหรือรหัสไปรษณีย์ ไม่งั้นแคบเกินกว่าจะหาพิกัดถูกที่ */
+const HAS_PROVINCE = /จังหวัด|(?<!\d)\d{5}(?!\d)/;
+
+/** ยาวเกินนี้แปลว่าเราแยกผิด ไม่ใช่ที่อยู่ */
+const MAX_ADDRESS_LENGTH = 200;
+
+/**
+ * ตัดที่อยู่ดิบให้เหลือเฉพาะส่วนที่ใช้หาพิกัดได้ — "" เมื่อไม่มั่นใจ
+ *
+ * ที่อยู่ดิบที่ขนส่งส่งมามีของซ้ำซ้อนปนอยู่ ("TH จังหวัดเชียงราย 57000
+ * อำเภอเมืองเชียงราย" นำหน้าที่อยู่จริงอีกที) ถ้าโยนทั้งก้อนให้ Google
+ * ความซ้ำจะดันให้มันตอบเป็นหมุดกลางจังหวัดแทนที่จะเป็นตัวสาขา ซึ่งคือ
+ * ปัญหาที่เรากำลังแก้อยู่พอดี
+ *
+ * จึงตัดจาก "ส่วนบ้านเลขที่ที่นำหน้าตำบล" ไปจนจบข้อความ ได้เป็นที่อยู่ไทย
+ * มาตรฐานที่ Google อ่านออก และถ้าหาจุดตั้งต้นไม่เจอจะคืน "" ไม่เดา
+ */
+export function cleanBranchAddress(raw: string): string {
+  const tokens = raw.trim().split(/\s+/).filter((token) => token !== "");
+  // รหัสประเทศที่นำหน้ามา ("TH") ไม่ได้ช่วยอะไรเพราะเราจำกัด country:TH อยู่แล้ว
+  const body = /^[A-Z]{2}$/.test(tokens[0] ?? "") ? tokens.slice(1) : tokens;
+
+  let subdistrict = -1;
+  for (let index = body.length - 1; index >= 0; index -= 1) {
+    if (SUBDISTRICT.test(body[index])) {
+      subdistrict = index;
+      break;
+    }
+  }
+  if (subdistrict === -1) return "";
+
+  let start = subdistrict;
+  while (start > 0 && HOUSE_PART.test(body[start - 1])) start -= 1;
+
+  const address = body.slice(start).join(" ");
+  if (address.length > MAX_ADDRESS_LENGTH) return "";
+  return HAS_PROVINCE.test(address) ? address : "";
+}
+
 export interface SplitDescription {
   description: string;
   location: string;
+  /**
+   * ที่อยู่เต็มของสถานที่ในบรรทัดนี้ — "" เมื่อไม่มีหรือแยกไม่ได้แน่
+   *
+   * ไม่ได้เอาไปแสดงให้ผู้ใช้เห็น มีไว้ให้ lib/branch-harvest.ts เอาไปหาพิกัด
+   */
+  address: string;
 }
 
 /** แยกสถานที่ที่ห้อยท้าย description ออกมา — location เป็น "" เมื่อแยกไม่ได้ */
 export function splitDescription(raw: string): SplitDescription {
   const cleaned = raw.trim().replace(LEADING_TIME, "").trim();
 
+  const withAddress = BRANCH_WITH_ADDRESS.exec(cleaned);
+  if (withAddress !== null) {
+    const head = withAddress[1].trim();
+    const location = withAddress[2].trim();
+
+    if (head !== "" && location !== "") {
+      return {
+        description: head,
+        location,
+        address: cleanBranchAddress(withAddress[3]),
+      };
+    }
+  }
+
   const separator = cleaned.lastIndexOf(" - ");
-  if (separator === -1) return { description: cleaned, location: "" };
+  if (separator === -1) {
+    return { description: cleaned, location: "", address: "" };
+  }
 
   const head = cleaned.slice(0, separator).trim();
   const tail = cleaned.slice(separator + 3).trim();
 
   if (head === "" || !LOCATION_SUFFIX.test(tail)) {
-    return { description: cleaned, location: "" };
+    return { description: cleaned, location: "", address: "" };
   }
 
-  return { description: head, location: tail };
+  return { description: head, location: tail, address: "" };
 }
 
 /** ดึงรายละเอียดการจัดส่งที่มีค่าจริง — ฟิลด์ที่ว่างถูกตัดทิ้งทั้งหมด */
@@ -399,7 +493,7 @@ export function toTrackingResult(
       const raw = text(entry.description);
       if (raw === null) continue;
 
-      const { description, location } = splitDescription(raw);
+      const { description, location, address } = splitDescription(raw);
       const parsed = parseETrackingsTime(entry);
 
       pairs.push({
@@ -407,6 +501,7 @@ export function toTrackingResult(
           time: parsed?.iso ?? "",
           location,
           description: description === "" ? "อัปเดตสถานะ" : description,
+          ...(address === "" ? {} : { address }),
         },
         // เวลาที่อ่านไม่ได้ถูกดันไปต้นแถว เพื่อไม่ให้ไปแย่งเป็น "ล่าสุด"
         timestamp: parsed?.timestamp ?? Number.NEGATIVE_INFINITY,
@@ -489,7 +584,7 @@ function logCall(fields: {
     `courier=${fields.courier}`,
     `took=${fields.tookMs}ms`,
     `result=${fields.result}`,
-    `used=${fields.used}/${MONTHLY_QUOTA}`,
+    `used=${fields.used}/${readQuota(PROVIDER)}`,
   ];
   if (fields.upstream !== undefined) parts.push(`upstream=${fields.upstream}`);
 
@@ -499,10 +594,13 @@ function logCall(fields: {
 /**
  * ยิงถาม ETrackings หนึ่งครั้ง
  *
- * ไม่มีการลองใหม่อัตโนมัติเลย แม้แต่ตอนเจอ 429 — โควตาเดือนละ 50 ครั้งทำให้
- * การลองใหม่ทุกครั้งแพงเกินกว่าจะคุ้ม และ 429 ของเขาคือ 10 ครั้ง/วินาที
- * ซึ่งเราไม่มีทางไปถึงอยู่แล้วด้วยโควตาระดับนี้ ถ้าเจอแปลว่ามีอย่างอื่นผิดปกติ
- * การถล่มยิงซ้ำมีแต่จะแย่ลง
+ * ไม่มีการลองใหม่อัตโนมัติเลย แม้แต่ตอนเจอ 429 — ทุกครั้งที่ยิงกินโควตาที่มี
+ * เพดานต่อเดือน การลองใหม่จึงแพงเกินกว่าจะคุ้ม และ 429 ของเขาคือ 10 ครั้ง/วินาที
+ * ซึ่งเราไม่มีทางไปถึงอยู่แล้ว ถ้าเจอแปลว่ามีอย่างอื่นผิดปกติ การถล่มยิงซ้ำ
+ * มีแต่จะแย่ลง
+ *
+ * circuit breaker ห่ออยู่ชั้นนอกสุด: วงจรเปิดอยู่ = ปฏิเสธทันทีโดยไม่ยิงและ
+ * ไม่นับโควตา ผู้เรียก (resolve) จะได้สลับไปใช้อีกเจ้าทันทีโดยไม่ต้องรอ timeout
  */
 async function query(
   trackNo: string,
@@ -520,7 +618,22 @@ async function query(
   }
 
   const startedAt = Date.now();
-  const used = countUsage(startedAt);
+
+  if (!etrackingsBreaker.allows(startedAt)) {
+    const snapshot = etrackingsBreaker.snapshot(startedAt);
+    throw new CarrierError(
+      "upstream_error",
+      "ระบบ ETrackings ขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้ง",
+      {
+        debugMessage:
+          "ข้ามการยิง ETrackings เพราะ circuit breaker เปิดอยู่ " +
+          `(เหลืออีก ${snapshot.cooldownRemainingMs}ms ถึงจะลองแตะดู)`,
+        upstreamCode: "breaker_open",
+      },
+    );
+  }
+
+  const used = await countProviderCall(PROVIDER, { now: startedAt });
 
   let response: Response;
   try {
@@ -540,6 +653,7 @@ async function query(
     });
   } catch (cause) {
     const timedOut = cause instanceof Error && cause.name === "TimeoutError";
+    etrackingsBreaker.recordFailure();
     logCall({
       ts: startedAt,
       trackNo,
@@ -569,6 +683,11 @@ async function query(
 
   if (!response.ok || metaCode !== 200) {
     const error = toCarrierError(response.status, payload);
+
+    // "ไม่พบเลขนี้" คือคำตอบของปลายทางที่ทำงานปกติ ไม่ใช่ความล้มเหลวของระบบ
+    if (BREAKER_FAILURES.has(error.code)) etrackingsBreaker.recordFailure();
+    else etrackingsBreaker.recordSuccess();
+
     logCall({
       ts: startedAt,
       trackNo,
@@ -580,6 +699,8 @@ async function query(
     });
     throw error;
   }
+
+  etrackingsBreaker.recordSuccess();
 
   const data = payload?.data;
   if (!data || (data.timelines ?? []).length === 0) {
@@ -658,12 +779,23 @@ export async function trackWithCourier(
   return query(trackNo, courier);
 }
 
+/**
+ * เจ้านี้ตามเลขนี้ได้ไหม — ใช้ตัดสินลำดับการยิงใน lib/carriers/resolve.ts
+ *
+ * "ได้" แปลว่ารู้ว่าเป็นขนส่งเจ้าไหนและ ETrackings รองรับเจ้านั้น ไม่ได้แปลว่า
+ * จะเจอข้อมูล — ถ้าตอบ false คือยิงไปก็เสียโควตาเปล่าแน่นอน
+ */
+export function canTrack(trackingNumber: string, hint?: string): boolean {
+  return resolveCourier(trackingNumber, hint) !== null;
+}
+
 /** adapter object สำหรับให้ส่วนอื่นเรียกใช้แบบเดียวกันทุกขนส่ง */
 export const etrackings: CarrierAdapter = {
   carrierCode: CARRIER_CODE,
   carrierName: CARRIER_NAME,
   track,
   trackWithCourier,
-  // ไม่มีรายการลองซ้ำ — โควตา 50 ครั้ง/เดือนไม่เหลือที่ให้ลองผิดลองถูก
+  canTrack,
+  // ไม่มีรายการลองซ้ำ — เพดานต่อเดือนไม่เหลือที่ให้ลองผิดลองถูก
   retryCourierCodes: [],
 };

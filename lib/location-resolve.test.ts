@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { Coordinates } from "./geocode.ts";
+import type { Coordinates, GeocodeHit } from "./geocode.ts";
 import { resolveLocation } from "./location-resolve.ts";
 import type {
   CachedGeocode,
@@ -23,8 +23,16 @@ const CARRIER = "flash-express";
 interface FakeStore extends LocationStore {
   branches: Map<string, CarrierBranch>;
   geocodes: Map<string, CachedGeocode>;
-  recorded: { carrierCode: string; branchCode: string; branchName: string | null }[];
+  recorded: {
+    carrierCode: string;
+    branchCode: string;
+    branchName: string | null;
+    kind: string;
+  }[];
   written: { query: string; coordinates: Coordinates | null }[];
+  claims: string[];
+  /** true = ยอมให้จองสิทธิ์ไปถามที่อยู่สาขา */
+  allowClaim: boolean;
 }
 
 function makeStore(): FakeStore {
@@ -32,25 +40,53 @@ function makeStore(): FakeStore {
   const geocodes = new Map<string, CachedGeocode>();
   const recorded: FakeStore["recorded"] = [];
   const written: FakeStore["written"] = [];
+  const claims: string[] = [];
 
-  return {
+  const store: FakeStore = {
     branches,
     geocodes,
     recorded,
     written,
+    claims,
+    allowClaim: true,
     findBranch: (carrierCode, branchCode) =>
       Promise.resolve(branches.get(`${carrierCode}::${branchCode}`) ?? null),
-    recordUnknownBranch: (carrierCode, branchCode, branchName) => {
-      recorded.push({ carrierCode, branchCode, branchName });
+    recordUnknownBranch: (carrierCode, branchCode, branchName, kind) => {
+      recorded.push({ carrierCode, branchCode, branchName, kind });
       return Promise.resolve();
     },
     readGeocode: (query) => Promise.resolve(geocodes.get(query) ?? null),
-    writeGeocode: (query, coordinates) => {
+    writeGeocode: (query, coordinates, precision) => {
       written.push({ query, coordinates });
-      geocodes.set(query, { found: coordinates !== null, coordinates });
+      geocodes.set(query, {
+        found: coordinates !== null,
+        coordinates,
+        precision: coordinates === null ? null : precision,
+      });
       return Promise.resolve();
     },
+    claimBranchProbe: (carrierCode, branchCode) => {
+      claims.push(`${carrierCode}::${branchCode}`);
+      return Promise.resolve(store.allowClaim);
+    },
+    saveHarvestedBranch: (input) => {
+      const key = `${input.carrierCode}::${input.branchCode}`;
+      if (branches.has(key)) return Promise.resolve(false);
+      branches.set(key, {
+        carrierCode: input.carrierCode,
+        branchCode: input.branchCode,
+        branchName: input.branchName,
+        lat: input.lat,
+        lng: input.lng,
+        note: input.address,
+        updatedBy: "auto:etrackings",
+        updatedAt: null,
+      });
+      return Promise.resolve(true);
+    },
   };
+
+  return store;
 }
 
 /** ตัวหาพิกัดปลอมที่จำว่าถูกเรียกด้วยข้อความอะไรบ้าง */
@@ -58,9 +94,13 @@ function makeGeocoder(result: Coordinates | null = CHIANG_RAI) {
   const calls: string[] = [];
   return {
     calls,
-    geocode: (text: string) => {
+    geocode: (text: string): Promise<GeocodeHit | null> => {
       calls.push(text);
-      return Promise.resolve(result);
+      return Promise.resolve(
+        result === null
+          ? null
+          : { coordinates: result, precision: "rooftop" as const },
+      );
     },
   };
 }
@@ -146,7 +186,12 @@ test("รหัสสาขาที่ไม่รู้จัก → ไม่
     "ห้ามเอาชื่อสาขาไปหาพิกัดต่อ — จะได้หมุดกลางอำเภอ คือปัญหาเดิมเป๊ะๆ",
   );
   assert.deepEqual(store.recorded, [
-    { carrierCode: CARRIER, branchCode: "ACRAI-B", branchName: "เมืองเชียงราย" },
+    {
+      carrierCode: CARRIER,
+      branchCode: "ACRAI-B",
+      branchName: "เมืองเชียงราย",
+      kind: "branch",
+    },
   ]);
 });
 
@@ -229,7 +274,7 @@ test("ข้อความที่ต่างกันแค่ตัวพ�
     store,
     geocode: geocoder.geocode,
   });
-  await resolveLocation("  BANGKOK  ", "thailand-post", {
+  await resolveLocation("  bangkok  ", "thailand-post", {
     store,
     geocode: geocoder.geocode,
   });
@@ -282,4 +327,193 @@ test("ตัวหาพิกัดโยน error → ไม่ทะลุข
     [],
     "ยังไม่รู้ว่าหาไม่เจอหรือถามไม่ถึง จึงห้ามจำว่า 'ไม่มี'",
   );
+});
+
+/* --------- ทุกกรณีที่จบด้วย "ไม่มีแผนที่" ต้องถูกจดไว้ให้แอดมิน --------- */
+
+test("ข้อความที่ Google หาไม่เจอ → ถูกจดเป็น kind=address", async () => {
+  const store = makeStore();
+
+  await resolveLocation("ศูนย์คัดแยกที่ไม่มีจริง", CARRIER, {
+    store,
+    geocode: makeGeocoder(null).geocode,
+  });
+
+  assert.deepEqual(store.recorded, [
+    {
+      carrierCode: CARRIER,
+      branchCode: "ศูนย์คัดแยกที่ไม่มีจริง",
+      branchName: null,
+      kind: "address",
+    },
+  ]);
+});
+
+test("ผลที่จำไว้ว่าหาไม่เจอ → ยังถูกจดทุกครั้งที่เจอซ้ำ", async () => {
+  // ถ้าจดแค่ครั้งแรก จำนวนครั้งที่เจอจะหยุดนิ่ง แอดมินจะเรียงลำดับงานไม่ได้
+  const store = makeStore();
+  const geocoder = makeGeocoder(null);
+
+  await resolveLocation("ศูนย์คัดแยกที่ไม่มีจริง", CARRIER, {
+    store,
+    geocode: geocoder.geocode,
+  });
+  await resolveLocation("ศูนย์คัดแยกที่ไม่มีจริง", CARRIER, {
+    store,
+    geocode: geocoder.geocode,
+  });
+
+  assert.equal(store.recorded.length, 2);
+  assert.equal(geocoder.calls.length, 1, "แต่ต้องไม่ถาม Google ซ้ำ");
+});
+
+test("ข้อความที่อ่านไม่ออก → ถูกจดเป็น kind=unknown", async () => {
+  const store = makeStore();
+
+  await resolveLocation("###???", CARRIER, {
+    store,
+    geocode: makeGeocoder().geocode,
+  });
+
+  assert.equal(store.recorded[0]?.kind, "unknown");
+});
+
+test("รหัสล้วนอย่าง SOCN → เป็นรหัสสาขา ไม่ใช่ที่อยู่ ห้ามส่งให้ Google", async () => {
+  // เดิมข้อความแบบนี้ผ่านเกณฑ์ "ดูเหมือนที่อยู่" แล้วถูกส่งไปหาพิกัด
+  // ซึ่งเป็นทางที่ปักหมุดมั่วได้
+  const store = makeStore();
+  const geocoder = makeGeocoder();
+
+  const result = await resolveLocation("SOCN", CARRIER, {
+    store,
+    geocode: geocoder.geocode,
+  });
+
+  assert.equal(result.kind, "branch");
+  assert.equal(result.coordinates, null);
+  assert.deepEqual(geocoder.calls, []);
+  assert.equal(store.recorded[0]?.branchCode, "SOCN");
+  assert.equal(store.recorded[0]?.kind, "branch");
+});
+
+test("พิกัดที่แอดมินกรอกไว้ ใช้ได้กับข้อความที่ไม่ใช่รหัสสาขาด้วย", async () => {
+  const store = makeStore();
+  store.branches.set(`${CARRIER}::ศูนย์คัดแยกที่ไม่มีจริง`, {
+    ...knownBranch(),
+    branchCode: "ศูนย์คัดแยกที่ไม่มีจริง",
+  });
+
+  const result = await resolveLocation("ศูนย์คัดแยกที่ไม่มีจริง", CARRIER, {
+    store,
+    geocode: makeGeocoder(null).geocode,
+  });
+
+  assert.deepEqual(result.coordinates, CHIANG_RAI);
+  assert.equal(result.source, "branch");
+  assert.deepEqual(store.recorded, [], "เจอพิกัดแล้วต้องไม่ถูกจดว่ายังไม่รู้");
+});
+
+/* ------------------- ไปขอที่อยู่สาขามาเติมพิกัดเอง ------------------- */
+
+/** ผลลัพธ์ปลอมที่มีที่อยู่สาขาห้อยมาด้วย แบบเดียวกับที่ ETrackings ส่งมาจริง */
+function resultWithAddress() {
+  return {
+    trackingNumber: "SPXTH046012345678",
+    carrierName: "Shopee Xpress",
+    carrierCode: CARRIER,
+    status: "in_transit" as const,
+    statusText: "อยู่ระหว่างขนส่ง",
+    lastUpdated: null,
+    events: [
+      {
+        time: "2026-08-30T09:28:00+07:00",
+        location: "ACRAI-B - เมืองเชียงราย",
+        description: "พัสดุถึงสาขาปลายทาง",
+        address: "639 หมู่ที่1 ตำบลบ้านดู่ อำเภอเมืองเชียงราย จังหวัดเชียงราย 57100",
+      },
+    ],
+  };
+}
+
+test("สาขาที่ยังไม่รู้พิกัด → ไปขอที่อยู่มาเติม แล้วใช้พิกัดนั้นได้เลย", async () => {
+  const store = makeStore();
+  const geocoder = makeGeocoder();
+
+  const result = await resolveLocation("ACRAI-B - เมืองเชียงราย", CARRIER, {
+    store,
+    geocode: geocoder.geocode,
+    trackingNumber: "SPXTH046012345678",
+    probe: {
+      fetchResult: () => Promise.resolve(resultWithAddress()),
+      canProbe: () => true,
+      nearQuota: () => false,
+      geocode: geocoder.geocode,
+    },
+  });
+
+  assert.deepEqual(result.coordinates, CHIANG_RAI);
+  assert.equal(result.source, "branch_filled");
+  assert.deepEqual(store.claims, [`${CARRIER}::ACRAI-B`]);
+  assert.deepEqual(
+    geocoder.calls,
+    ["639 หมู่ที่1 ตำบลบ้านดู่ อำเภอเมืองเชียงราย จังหวัดเชียงราย 57100"],
+    "ต้องหาพิกัดจากที่อยู่จริง ไม่ใช่จากชื่อสาขา",
+  );
+});
+
+test("จองสิทธิ์ไม่ได้ (เพิ่งถามไปแล้ว) → ไม่ยิงขนส่งเลย", async () => {
+  const store = makeStore();
+  store.allowClaim = false;
+  let fetched = 0;
+
+  const result = await resolveLocation("ACRAI-B - เมืองเชียงราย", CARRIER, {
+    store,
+    geocode: makeGeocoder().geocode,
+    trackingNumber: "SPXTH046012345678",
+    probe: {
+      fetchResult: () => {
+        fetched += 1;
+        return Promise.resolve(resultWithAddress());
+      },
+      canProbe: () => true,
+      nearQuota: () => false,
+    },
+  });
+
+  assert.equal(fetched, 0, "ด่านจองสิทธิ์คือตัวรับประกันว่าสาขาหนึ่งจ่ายครั้งเดียว");
+  assert.equal(result.coordinates, null);
+});
+
+test("โควตาใกล้เต็ม → ไม่ไปขอที่อยู่ เก็บโควตาไว้ให้การค้นหาจริง", async () => {
+  const store = makeStore();
+  let fetched = 0;
+
+  await resolveLocation("ACRAI-B - เมืองเชียงราย", CARRIER, {
+    store,
+    geocode: makeGeocoder().geocode,
+    trackingNumber: "SPXTH046012345678",
+    probe: {
+      fetchResult: () => {
+        fetched += 1;
+        return Promise.resolve(resultWithAddress());
+      },
+      canProbe: () => true,
+      nearQuota: () => true,
+    },
+  });
+
+  assert.equal(fetched, 0);
+  assert.deepEqual(store.claims, [], "ต้องไม่แม้แต่จองสิทธิ์ — ไม่งั้นเผา cooldown ทิ้ง");
+});
+
+test("ไม่ได้ส่งเลขพัสดุมา → ทำงานเหมือนเดิมทุกอย่าง ไม่มีการไปขอที่อยู่", async () => {
+  const store = makeStore();
+
+  const result = await resolveLocation("ACRAI-B - เมืองเชียงราย", CARRIER, {
+    store,
+    geocode: makeGeocoder().geocode,
+  });
+
+  assert.equal(result.coordinates, null);
+  assert.deepEqual(store.claims, []);
 });

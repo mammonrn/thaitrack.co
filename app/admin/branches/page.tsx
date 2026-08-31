@@ -62,6 +62,12 @@ export default async function AdminBranchesPage() {
         <p className="mt-1 font-mono text-[11px] text-faint">
           เข้าสู่ระบบเป็น {admin.email}
         </p>
+        <Link
+          href="/admin/stats"
+          className="mt-3 inline-block text-sm font-medium text-ink underline underline-offset-4"
+        >
+          ดูสถิติระบบ
+        </Link>
 
         <BranchesEditor unknown={unknown} known={known} />
       </main>

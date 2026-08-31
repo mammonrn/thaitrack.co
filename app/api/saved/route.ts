@@ -163,10 +163,14 @@ export async function POST(request: Request) {
   // หาพิกัดตามลำดับที่ไม่มีทางปักหมุดมั่ว: ตารางพิกัดสาขา → geocode เฉพาะข้อความ
   // ที่ดูเหมือนที่อยู่จริง → ไม่รู้ก็ไม่ปัก (ดู lib/location-resolve.ts)
   // หาไม่ได้ต้องไม่ทำให้การบันทึกล้มเหลว — เก็บ null แล้วไปต่อ
+  // ส่งเลขพัสดุไปด้วย เพื่อให้ตัวหาพิกัดไปขอที่อยู่ของสาขาที่ยังไม่รู้พิกัด
+  // มาเติมเองได้ (มีด่านกันเผาโควตาสี่ชั้น — ดู lib/branch-harvest.ts)
   const location =
     rawLocationText === ""
       ? null
-      : await resolveLocation(rawLocationText, result.carrierCode);
+      : await resolveLocation(rawLocationText, result.carrierCode, {
+          trackingNumber: result.trackingNumber,
+        });
 
   const coordinates = location?.coordinates ?? null;
 

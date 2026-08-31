@@ -35,7 +35,22 @@ interface EditableBranch {
   note: string | null;
   /** จำนวนครั้งที่เจอ — มีเฉพาะสาขาที่ยังไม่มีพิกัด */
   hitCount: number | null;
+  /** สิ่งที่จดไว้เป็นอะไร — มีเฉพาะสาขาที่ยังไม่มีพิกัด */
+  kind: string | null;
 }
+
+/**
+ * คำอธิบายของแต่ละชนิด
+ *
+ * ตารางนี้ไม่ได้มีแต่รหัสสาขาแล้ว ตั้งแต่เริ่มจดทุกกรณีที่จบด้วย "ไม่มีแผนที่"
+ * ถ้าไม่บอกว่าแต่ละแถวเป็นแบบไหน คนกรอกจะงงว่าทำไมมีข้อความไทยยาวๆ ปนอยู่กับ
+ * รหัสสาขา และจะไม่รู้ว่าควรกรอกพิกัดของอะไรกันแน่
+ */
+const KIND_LABEL: Record<string, string> = {
+  branch: "รหัสสาขา",
+  address: "ที่อยู่ที่หาพิกัดไม่เจอ",
+  unknown: "ข้อความที่อ่านไม่ออก",
+};
 
 type SaveState =
   | { kind: "idle" }
@@ -60,6 +75,7 @@ export default function BranchesEditor({ unknown, known }: BranchesEditorProps) 
       lng: null,
       note: null,
       hitCount: branch.hitCount,
+      kind: branch.kind,
     }));
 
   const done = known.map<EditableBranch>((branch) => ({
@@ -70,6 +86,7 @@ export default function BranchesEditor({ unknown, known }: BranchesEditorProps) 
     lng: branch.lng,
     note: branch.note,
     hitCount: null,
+    kind: null,
   }));
 
   return (
@@ -211,6 +228,11 @@ function BranchCard({
         <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
           {branch.carrierCode}
         </span>
+        {branch.kind !== null && branch.kind !== "branch" && (
+          <span className="rounded-full border border-line-strong px-2 py-0.5 text-[11px] text-faint">
+            {KIND_LABEL[branch.kind] ?? branch.kind}
+          </span>
+        )}
         {branch.hitCount !== null && (
           <span className="ml-auto text-xs text-faint">
             เจอ {branch.hitCount.toLocaleString("th-TH")} ครั้ง

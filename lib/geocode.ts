@@ -13,6 +13,43 @@ export interface Coordinates {
   lng: number;
 }
 
+/**
+ * ความละเอียดของพิกัดที่ Google คืนมา (แปลงจาก geometry.location_type)
+ *
+ *   rooftop      ตรงตัวอาคาร — แม่นที่สุด
+ *   range        ประมาณจากช่วงเลขที่บนถนน — ยังถือว่าแม่นพอ
+ *   center       จุดกึ่งกลางของสิ่งที่หาเจอ เช่น ถนนทั้งเส้น
+ *   approximate  จุดกึ่งกลางของ "พื้นที่" เช่น ตำบล อำเภอ จังหวัด
+ *
+ * ⚠️ approximate คือหน้าตาของบั๊กที่โปรเจกต์นี้แก้ไปแล้วรอบหนึ่ง (ดู
+ * supabase/migrations/0004_carrier_branches.sql) — Google เดาจากคำที่พอเดาได้
+ * แล้วคืนหมุดกลางอำเภอมา ผู้ใช้เห็นแล้วเข้าใจว่าพัสดุอยู่ตรงนั้นจริง
+ *
+ * เส้นทางที่เขียนพิกัดลง carrier_branches อัตโนมัติจึงต้องปฏิเสธค่านี้เสมอ
+ * (ดู lib/branch-harvest.ts) ส่วนเส้นทางแสดงผลปกติยังใช้ได้ เพราะที่นั่นเรา
+ * แสดงพิกัดของ "ข้อความที่ดูเหมือนที่อยู่จริง" ซึ่งกลางพื้นที่ก็ยังสื่อความหมาย
+ */
+export type GeocodePrecision = "rooftop" | "range" | "center" | "approximate";
+
+/** ผลการหาพิกัดหนึ่งครั้ง พร้อมความละเอียด */
+export interface GeocodeHit {
+  coordinates: Coordinates;
+  precision: GeocodePrecision;
+}
+
+/** geometry.location_type ของ Google → คำที่เราใช้ */
+const PRECISION_MAP: Record<string, GeocodePrecision> = {
+  ROOFTOP: "rooftop",
+  RANGE_INTERPOLATED: "range",
+  GEOMETRIC_CENTER: "center",
+  APPROXIMATE: "approximate",
+};
+
+/** ละเอียดพอจะเชื่อว่าเป็น "จุดนั้นจริง" ไม่ใช่กลางพื้นที่ */
+export function isPreciseEnough(precision: GeocodePrecision | null): boolean {
+  return precision === "rooftop" || precision === "range";
+}
+
 const GEOCODE_ENDPOINT = "https://maps.googleapis.com/maps/api/geocode/json";
 
 /** สั้นกว่า timeout ของ reverse proxy มาก เพราะการบันทึกต้องไม่ค้างรอ Google */
@@ -32,6 +69,17 @@ function isFiniteNumber(value: unknown): value is number {
 export async function geocodeLocation(
   locationText: string,
 ): Promise<Coordinates | null> {
+  return (await geocodeAddress(locationText))?.coordinates ?? null;
+}
+
+/**
+ * เหมือน geocodeLocation แต่บอกความละเอียดของผลลัพธ์มาด้วย
+ *
+ * ห้ามโยน error ด้วยเหตุผลเดียวกัน
+ */
+export async function geocodeAddress(
+  locationText: string,
+): Promise<GeocodeHit | null> {
   const address = locationText.trim();
   if (address === "") return null;
 
@@ -83,15 +131,26 @@ export async function geocodeLocation(
 
     if (!Array.isArray(results) || results.length === 0) return null;
 
-    const location = (
-      results[0] as { geometry?: { location?: { lat?: unknown; lng?: unknown } } }
-    )?.geometry?.location;
+    const geometry = (
+      results[0] as {
+        geometry?: {
+          location?: { lat?: unknown; lng?: unknown };
+          location_type?: unknown;
+        };
+      }
+    )?.geometry;
 
+    const location = geometry?.location;
     if (!isFiniteNumber(location?.lat) || !isFiniteNumber(location?.lng)) {
       return null;
     }
 
-    return { lat: location.lat, lng: location.lng };
+    return {
+      coordinates: { lat: location.lat, lng: location.lng },
+      // ไม่รู้จักค่าที่ส่งมา → ถือว่าหยาบที่สุดไว้ก่อน ปลอดภัยกว่าเดาว่าแม่น
+      precision:
+        PRECISION_MAP[String(geometry?.location_type ?? "")] ?? "approximate",
+    };
   } catch (error) {
     console.error(
       `[geocode] หาพิกัดของ "${address}" ไม่สำเร็จ: ${error instanceof Error ? error.message : String(error)}`,

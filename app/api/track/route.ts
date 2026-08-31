@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { normalizeTrackingNumber, resolveTracking } from "@/lib/carriers/resolve";
 import { CarrierError, type TrackingErrorCode } from "@/lib/carriers/types";
+import { recordSearchEvent } from "@/lib/supabase/search-events";
 import { logTracking } from "@/lib/track-log";
 
 /** ต้องรันบน Node.js runtime เพราะอ่าน process.env ที่เก็บ API key */
@@ -68,6 +69,16 @@ export async function POST(request: Request) {
       tookMs: Date.now() - startedAt,
     });
 
+    // สถิติรวมสำหรับหน้าแอดมิน — ไม่ผูกกับผู้ใช้ และไม่มีเลขพัสดุ
+    // (ดูข้อบังคับด้านความเป็นส่วนตัวใน lib/supabase/search-events.ts)
+    await recordSearchEvent({
+      carrierCode: resolved.result.carrierCode,
+      outcome: "found",
+      source: resolved.source,
+      provider: resolved.provider,
+      stale: resolved.stale,
+    });
+
     // source / stale / fetchedAt ไม่ใช่ข้อมูลลับ — UI ใช้ตัดสินว่าจะขึ้นป้าย
     // "ข้อมูล ณ เวลานี้" หรือไม่ ส่วน shared ไว้ debug เรื่องการรวมคำขอซ้ำ
     return NextResponse.json({
@@ -91,6 +102,14 @@ export async function POST(request: Request) {
       shared: false,
       tookMs: Date.now() - startedAt,
       reason: code,
+    });
+
+    await recordSearchEvent({
+      carrierCode: null,
+      outcome: code === "not_found" ? "not_found" : "error",
+      source: "error",
+      provider: "none",
+      stale: false,
     });
 
     if (error instanceof CarrierError) {
