@@ -6,18 +6,37 @@
  *   0.5 เลขเดียวกันที่กำลังรอผลอยู่ ให้เกาะคำขอเดิมแทนที่จะยิงซ้ำ
  *   1. ดู prefix ของเลขก่อน แล้วแยกเป็นสองทาง
  *      1ก. prefix ฟันธงว่าเป็นขนส่งเจ้าอื่น (เช่น SPXTH → Shopee Xpress)
- *          → ข้ามไปรษณีย์ไทยไปเลย ยิง Track123 โดยระบุขนส่งเจาะจงทันที
- *            เลขทรงนี้ไม่มีทางอยู่ในระบบไปรษณีย์ไทย การถามจึงเสียเวลารอฟรีๆ
- *            และไม่ต้องเสีย call ให้การตรวจจับอัตโนมัติที่เดาผิดได้
+ *          → ข้ามไปรษณีย์ไทยไปเลย เพราะเลขทรงนี้ไม่มีทางอยู่ในระบบไปรษณีย์ไทย
+ *            การถามจึงเสียเวลารอฟรีๆ
  *      1ข. prefix ไม่ฟันธง → ถามไปรษณีย์ไทยก่อนตามเดิม เพราะฟรีและไม่จำกัดครั้ง
- *   2. ยังไม่เจอ → ให้ Track123 ตรวจจับขนส่งเอง
- *   3. ตรวจจับเองแล้วยังไม่พบ ค่อยยิงซ้ำโดยระบุขนส่งเจาะจงจากรายชื่อที่รู้ว่า
- *      การตรวจจับอัตโนมัติมักเดาผิด (ข้ามเจ้าที่ลองไปแล้วในขั้นที่ 1ก)
- *   4. ถ้า Track123 พังด้วยเหตุระบบ (ล่ม, โควตาหมด, circuit breaker ตัดวงจร)
- *      ค่อยข้ามไปผู้ให้บริการสำรอง ETrackings — เฉพาะตอน "พัง" เท่านั้น
- *      ไม่ใช่ตอนตอบว่า "ไม่พบ" เพราะแผนฟรีให้แค่ 50 ครั้ง/เดือน
- *   5. ถ้าไปรษณีย์ไทยพังด้วยสาเหตุอื่น (ระบบล่ม, timeout, ยิงถี่เกินไป ฯลฯ)
- *      จะไม่ fallback — คืน error ไปเลย เพื่อไม่ให้เปลือง quota ของเจ้าอื่น
+ *   2. ยังไม่เจอ → ไล่ถามสองเจ้าที่เสียเงิน **ตามความถนัด** (ดู chooseProviderOrder)
+ *   3. เจ้าไหนพังก็สลับไปอีกเจ้าอัตโนมัติ
+ *
+ * ------------------------------------------------------------------
+ * ทำไมถึงเป็น "สลับใช้ตามความถนัด" ไม่ใช่ "เจ้าหลัก + เจ้าสำรอง"
+ *
+ * ทั้ง Track123 และ ETrackings เสียเงินรายเดือนทั้งคู่ ของที่จ่ายแล้วไม่ได้ใช้
+ * คือของที่เสียเปล่า และที่แย่กว่านั้นคือเจ้าที่ไม่เคยถูกแตะจะไปพังตอนที่เรา
+ * ต้องใช้จริง โดยไม่มีใครรู้มาก่อน การใช้ทั้งคู่สม่ำเสมอทำให้ log บอกเราได้
+ * ทันทีว่าเจ้าไหนเริ่มมีปัญหา
+ *
+ * ความถนัดของแต่ละเจ้า:
+ *   ETrackings  ต้องระบุขนส่งเอง (ตามเลขที่เดาขนส่งไม่ได้ไม่ได้เลย) แต่คืน
+ *               ข้อความไทยล้วน **และที่อยู่เต็มของสาขา** ซึ่งเป็นวัตถุดิบเดียว
+ *               ที่ทำให้เติมพิกัดสาขาอัตโนมัติได้ (ดู lib/branch-harvest.ts)
+ *   Track123    ตรวจจับขนส่งเองได้ จึงเป็นเจ้าเดียวที่รับมือเลขที่เดาไม่ออก
+ *
+ * ผลคือ: prefix ฟันธงได้และ ETrackings รองรับ → ETrackings ก่อน
+ *        นอกนั้น → Track123 ก่อน
+ * ------------------------------------------------------------------
+ *
+ * กติกาการ "ไปต่อเจ้าถัดไป" ต่างกันสองแบบโดยตั้งใจ:
+ *   พังด้วยเหตุระบบ → ไปต่อเสมอ ทั้งสองเจ้า
+ *   ตอบว่าไม่พบ     → ไปต่อเฉพาะเมื่อเจ้าที่ตอบคือ ETrackings
+ *
+ * เพราะ ETrackings ยิงครั้งเดียวด้วยขนส่งที่เราเดาให้ ถ้าเดาผิดก็ตอบไม่พบทั้งที่
+ * พัสดุมีอยู่จริง ส่วน Track123 ตรวจจับเองแล้วยังไล่ระบุเจาะจงซ้ำอีกหลายเจ้า
+ * คำว่า "ไม่พบ" ของมันจึงหนักแน่นกว่ามาก การถามต่อมีแต่จะจ่ายโควตาให้คำตอบเดิม
  *
  * เก็บลง cache เฉพาะผลที่ค้นเจอ — ไม่ cache error เพราะพัสดุที่วันนี้ยังไม่พบ
  * พรุ่งนี้อาจเข้าระบบแล้ว
@@ -30,7 +49,9 @@
  * (pattern เดียวกับที่แยก lib/tracking-view.ts ออกจาก page.tsx)
  */
 
+import { harvestBranchCoordinates } from "../branch-harvest";
 import { InflightMap } from "../inflight";
+import { isNearQuota, loadProviderUsage, usageLabel } from "../provider-usage";
 import type { PersistentTrackingCache } from "../supabase/tracking-cache";
 import {
   lookupTracking,
@@ -48,7 +69,7 @@ import {
   type TrackingResult,
 } from "./types";
 
-/** สาเหตุเดียวที่ทำให้ยอมถามขนส่งเจ้าที่สอง */
+/** code ที่แปลว่า "ปลายทางตอบแล้วว่าไม่มีเลขนี้" ไม่ใช่ "ปลายทางมีปัญหา" */
 const FALLBACK_TRIGGER = "not_found";
 
 /**
@@ -71,13 +92,19 @@ const inflightResolves = new InflightMap<FreshResult>();
 export interface ResolveOptions {
   /** ขนส่งที่ถามก่อน (ค่าเริ่มต้น: ไปรษณีย์ไทย) */
   primary?: CarrierAdapter;
-  /** ขนส่งสำรองที่ถามต่อเมื่อเจ้าแรกไม่พบ (ค่าเริ่มต้น: Track123) */
+  /**
+   * เจ้าที่ตรวจจับขนส่งเองได้ (ค่าเริ่มต้น: Track123)
+   *
+   * ชื่อ "fallback" ตกทอดมาจากตอนที่มันเป็นเจ้าที่สองจริงๆ ตอนนี้มันอาจได้ยิง
+   * ก่อนหรือหลัง ETrackings ก็ได้ แล้วแต่ลำดับที่ chooseProviderOrder ตัดสิน
+   */
   fallback?: CarrierAdapter;
   /**
-   * ผู้ให้บริการสำรองชั้นสุดท้าย ใช้เมื่อ fallback พังด้วยเหตุระบบ
+   * เจ้าที่ต้องระบุขนส่งเอง แต่ให้ที่อยู่สาขามาด้วย
    * (ค่าเริ่มต้น: ETrackings ถ้าตั้ง env ไว้ ไม่งั้นเป็น null)
    *
-   * null = ไม่มีเจ้าสำรอง ระบบจะตกไปที่ cache ตามกลไก degradation ตามปกติ
+   * null = ไม่มีเจ้านี้ ระบบใช้ Track123 เจ้าเดียวและยังทำงานได้ครบทุกอย่าง
+   * ยกเว้นการเติมพิกัดสาขาอัตโนมัติ
    */
   backup?: CarrierAdapter | null;
   /** true = ข้าม cache แล้วยิง API สดๆ (ยังบันทึกผลลง cache ตามปกติ) */
@@ -93,9 +120,9 @@ export type ResolveSource = CacheSource | "api";
 export type ResolveProvider =
   /** ไปรษณีย์ไทย */
   | "primary"
-  /** Track123 */
+  /** Track123 — เจ้าที่ตรวจจับขนส่งเองได้ */
   | "fallback"
-  /** ผู้ให้บริการสำรอง (ETrackings) */
+  /** ETrackings — เจ้าที่ต้องระบุขนส่งเอง แต่ให้ที่อยู่สาขามาด้วย */
   | "backup"
   /** ตอบจาก cache ไม่ได้ยิงใคร */
   | "cache"
@@ -252,24 +279,66 @@ interface FreshResult {
   provider: ResolveProvider;
 }
 
+/** ผู้ให้บริการที่เสียเงิน สองเจ้าที่สลับกันได้ */
+type PaidProvider = Extract<ResolveProvider, "fallback" | "backup">;
+
+export interface ProviderOrderInput {
+  /** prefix ฟันธงว่าเลขนี้เป็นขนส่งเจ้าไหน */
+  prefixKnown: boolean;
+  /** เจ้าสำรองตั้งค่าไว้แล้วและตามเลขนี้ได้ */
+  backupUsable: boolean;
+  /** โควตาของ Track123 ใกล้เพดานแล้ว */
+  fallbackNearQuota: boolean;
+  /** โควตาของ ETrackings ใกล้เพดานแล้ว */
+  backupNearQuota: boolean;
+}
+
 /**
- * ยิงหนึ่งครั้งแล้วกลืน error ทุกชนิด — ใช้กับเจ้าสำรองเท่านั้น
+ * ตัดสินว่าจะถามเจ้าไหนก่อน — ฟังก์ชันบริสุทธิ์ แยกไว้ให้เทสต์ครอบได้ทุกทาง
  *
- * ต่างจาก attempt() ที่ปล่อย error ที่ไม่ใช่ "ไม่พบ" ทะลุขึ้นไป ตรงนี้ต้อง
- * กลืนทั้งหมด เพราะความล้มเหลวของเจ้าสำรองไม่ควรไปบัง error เดิมของ Track123
- * ซึ่งเป็นตัวที่ชั้นบนใช้ตัดสินใจเรื่องการคืนข้อมูลเก่าจาก cache
+ * กติกาสามข้อ เรียงตามลำดับความสำคัญ:
+ *
+ *   1. ETrackings ตามเลขนี้ไม่ได้ (ไม่ได้ตั้งค่า หรือ prefix เดาขนส่งไม่ออก)
+ *      → เหลือ Track123 เจ้าเดียว ไม่มีอะไรให้เลือก
+ *   2. prefix ฟันธงได้ → ETrackings ก่อน เพราะเป็นเจ้าเดียวที่ให้ที่อยู่สาขามา
+ *      ซึ่งแพงกว่าความสะดวกของ auto-detect มาก (ดูหัวไฟล์)
+ *   3. เจ้าที่ควรได้ไปก่อนใกล้ชนเพดานแล้ว แต่อีกเจ้ายังไม่ใกล้ → สลับ
+ *      "ใกล้ชนเพดาน" ไม่ใช่ "ห้ามใช้" — ยังอยู่ในลำดับที่สอง เผื่อเจ้าแรกพัง
+ *      เพราะการปฏิเสธคำค้นทั้งที่ยังมีโควตาเหลือแย่กว่าการใช้โควตาที่เหลือ
+ *
+ * ทั้งสองเจ้าใกล้ชนเพดานพร้อมกัน → ไม่สลับ ใช้ตามความถนัดเหมือนเดิม
+ * เพราะการสลับไปหาเจ้าที่ใกล้ชนเพดานเหมือนกันไม่ได้ช่วยอะไรเลย
  */
-async function attemptQuietly(
-  call: () => Promise<TrackingResult>,
-): Promise<TrackingResult | null> {
+export function chooseProviderOrder(
+  input: ProviderOrderInput,
+): readonly PaidProvider[] {
+  if (!input.backupUsable) return ["fallback"];
+
+  const preferred: PaidProvider = input.prefixKnown ? "backup" : "fallback";
+  const other: PaidProvider = preferred === "backup" ? "fallback" : "backup";
+
+  const preferredIsTight =
+    preferred === "backup" ? input.backupNearQuota : input.fallbackNearQuota;
+  const otherIsTight =
+    other === "backup" ? input.backupNearQuota : input.fallbackNearQuota;
+
+  if (preferredIsTight && !otherIsTight) return [other, preferred];
+  return [preferred, other];
+}
+
+/**
+ * เก็บที่อยู่สาขาจากผลลัพธ์ที่เพิ่งได้มา — ล้มเหลวได้โดยไม่กระทบอะไร
+ *
+ * ทำเฉพาะผลจาก ETrackings เพราะเป็นเจ้าเดียวที่ห้อยที่อยู่มาให้ ผลจากเจ้าอื่น
+ * ไม่มี event.address เลยจึงไม่มีอะไรให้เก็บอยู่แล้ว (เรียกไปก็คืน 0 ทันที)
+ */
+async function harvest(result: TrackingResult): Promise<void> {
   try {
-    return await call();
-  } catch (error) {
-    const carrierError = toCarrierError(error);
+    await harvestBranchCoordinates(result);
+  } catch (cause) {
     console.warn(
-      `[resolve] ผู้ให้บริการสำรองช่วยไม่ได้ (${carrierError.code}): ${carrierError.message}`,
+      `[resolve] เก็บที่อยู่สาขาไม่สำเร็จ: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
-    return null;
   }
 }
 
@@ -290,10 +359,13 @@ async function resolveFresh(
 
   if (shortcut === null) {
     // prefix ไม่ฟันธงว่าเป็นเจ้าไหน → ลำดับเดิม ถามไปรษณีย์ไทยก่อนเพราะฟรี
-    // และไม่จำกัดจำนวนครั้ง จะได้ไม่ไปแตะ quota ของ Track123 โดยไม่จำเป็น
+    // และไม่จำกัดจำนวนครั้ง จะได้ไม่ไปแตะ quota ของเจ้าที่เสียเงินโดยไม่จำเป็น
     const fromPrimary = await attempt(() => primary.track(normalized));
     if (fromPrimary !== null) {
-      return { result: await store(normalized, fromPrimary, cache), provider: "primary" };
+      return {
+        result: await store(normalized, fromPrimary, cache),
+        provider: "primary",
+      };
     }
   } else {
     // prefix ฟันธงว่าเป็นขนส่งเจ้าอื่น → ข้ามไปรษณีย์ไทยไปเลย
@@ -305,51 +377,70 @@ async function resolveFresh(
     tried.push(shortcut.courierCode);
   }
 
-  // ---- Track123 ----
-  // ห่อทั้งก้อนไว้ เพราะถ้าพังด้วยเหตุระบบต้องข้ามไปเจ้าสำรอง ไม่ใช่เลิกทันที
-  let fallbackError: CarrierError | null = null;
+  /* ---- สองเจ้าที่เสียเงิน ---- */
 
-  try {
-    if (shortcut !== null) {
-      const byPrefix = await attempt(shortcut.track);
-      if (byPrefix !== null) {
-        return { result: await store(normalized, byPrefix, cache), provider: "fallback" };
+  // อ่านยอดโควตาของจริงมาก่อนตัดสินใจ — หลัง restart ตัวนับใน memory เป็นศูนย์
+  // ถ้าไม่อ่าน เราจะเชื่อว่ายังไม่ได้ใช้อะไรเลยทั้งที่โควตาอาจใกล้หมดแล้ว
+  await loadProviderUsage();
+
+  const backupUsable =
+    backup !== null &&
+    shortcut !== null &&
+    (backup.canTrack === undefined || backup.canTrack(normalized));
+
+  const order = chooseProviderOrder({
+    prefixKnown: shortcut !== null,
+    backupUsable,
+    fallbackNearQuota: isNearQuota("track123"),
+    backupNearQuota: isNearQuota("etrackings"),
+  });
+
+  console.info(
+    `[resolve] no=${normalized} order=${order.join(",")}` +
+      ` track123=${usageLabel("track123")} etrackings=${usageLabel("etrackings")}`,
+  );
+
+  const errors = new Map<PaidProvider, CarrierError>();
+  let fallbackSaidNotFound = false;
+
+  for (const slot of order) {
+    try {
+      const found =
+        slot === "backup"
+          ? await runBackup(normalized, backup, shortcut)
+          : await runFallback(normalized, fallback, shortcut, tried);
+
+      if (found !== null) {
+        // เก็บที่อยู่สาขาก่อนคืนผล — ทำหลังจากนี้ไม่ได้เพราะ Next อาจตัด
+        // งานที่ยังค้างอยู่ทิ้งเมื่อ response ถูกส่งออกไปแล้ว
+        if (slot === "backup") await harvest(found);
+        return {
+          result: await store(normalized, found, cache),
+          provider: slot,
+        };
       }
-    }
 
-    // ยังไม่เจอ → ให้ Track123 ตรวจจับขนส่งเอง
-    // ยังต้องลองขั้นนี้แม้ prefix จะพลาด เพราะพัสดุข้ามประเทศอาจเปลี่ยนมือไปให้
-    // ขนส่งเจ้าอื่นเดินช่วงสุดท้าย ซึ่ง prefix ต้นทางบอกไม่ได้
-    const autoDetected = await attempt(() => fallback.track(normalized));
-    if (autoDetected !== null) {
-      return { result: await store(normalized, autoDetected, cache), provider: "fallback" };
-    }
-
-    // การตรวจจับขนส่งอัตโนมัติเดาผิดได้ เช่นเลขของ Shopee Xpress ที่ถูกเดาเป็น
-    // Flash Express แล้วตอบว่าไม่พบทั้งที่พัสดุมีอยู่จริง จึงลองยิงซ้ำโดยระบุ
-    // ขนส่งเจาะจงจากรายชื่อที่รู้ว่ามีปัญหา
-    const retried = await retryWithCourierCodes(normalized, fallback, tried);
-    tried.push(...retried.codes);
-    if (retried.result !== null) {
-      return { result: await store(normalized, retried.result, cache), provider: "fallback" };
-    }
-  } catch (error) {
-    fallbackError = toCarrierError(error);
-  }
-
-  // ---- ผู้ให้บริการสำรอง ----
-  // ใช้เฉพาะตอน Track123 "พัง" เท่านั้น ไม่ใช่ตอนตอบว่า "ไม่พบ" เพราะแผนฟรี
-  // ให้แค่ 50 ครั้ง/เดือน การยิงทุกครั้งที่ค้นไม่เจอจะกินหมดภายในไม่กี่วัน
-  if (fallbackError !== null && backup !== null) {
-    const viaBackup = await attemptQuietly(() => backup.track(normalized));
-    if (viaBackup !== null) {
-      return { result: await store(normalized, viaBackup, cache), provider: "backup" };
+      // ตอบว่าไม่พบ — คำว่าไม่พบของ Track123 หนักแน่นพอจะหยุด (ดูหัวไฟล์)
+      if (slot === "fallback") {
+        fallbackSaidNotFound = true;
+        break;
+      }
+    } catch (error) {
+      const carrierError = toCarrierError(error);
+      errors.set(slot, carrierError);
+      console.warn(
+        `[resolve] ${slot} ช่วยไม่ได้ (${carrierError.code}): ${carrierError.message}`,
+      );
     }
   }
 
-  // เจ้าสำรองก็ช่วยไม่ได้ → ส่ง error เดิมของ Track123 ขึ้นไป
-  // เพื่อให้ชั้นบนตัดสินใจเรื่องการคืนข้อมูลเก่าจาก cache ได้ถูกต้องตาม code จริง
-  if (fallbackError !== null) throw fallbackError;
+  // Track123 บอกว่าไม่พบ = คำตอบที่แท้จริง ต่อให้อีกเจ้าจะพังไปก่อนหน้าก็ตาม
+  // ส่วน error ของ Track123 มาก่อน error ของ ETrackings เพราะชั้นบนใช้ code
+  // ตัดสินเรื่องการคืนข้อมูลเก่าจาก cache และ Track123 คือเจ้าที่ครอบคลุมกว่า
+  if (!fallbackSaidNotFound) {
+    const error = errors.get("fallback") ?? errors.get("backup");
+    if (error !== undefined) throw error;
+  }
 
   // ไม่พบจริงๆ ทุกทาง → บอกให้ชัดว่าค้นครบแล้ว
   throw new CarrierError(
@@ -361,11 +452,65 @@ async function resolveFresh(
         (shortcut === null
           ? `${primary.carrierCode} และ ${fallback.carrierCode}`
           : `${fallback.carrierCode} (ข้าม ${primary.carrierCode} เพราะ prefix ชี้ว่าเป็น ${shortcut.courierCode})`) +
+        ` — ลำดับที่ใช้: ${order.join(", ")}` +
         (tried.length === 0
           ? ""
           : ` — ระบุขนส่งเจาะจงแล้ว ${tried.length} เจ้า: ${tried.join(", ")}`),
     },
   );
+}
+
+/**
+ * ยิง ETrackings หนึ่งครั้ง — ครั้งเดียวเสมอ ไม่มีการไล่เดา
+ *
+ * เจ้านี้บังคับให้ระบุขนส่ง เราจึงใช้รหัสที่ prefix ฟันธงมาแล้วเท่านั้น
+ * ผู้เรียกรับประกันว่ามาถึงตรงนี้ได้ก็ต่อเมื่อ backupUsable เป็นจริง
+ */
+async function runBackup(
+  normalized: string,
+  backup: CarrierAdapter | null,
+  shortcut: PrefixShortcut | null,
+): Promise<TrackingResult | null> {
+  if (backup === null) return null;
+
+  const trackWithCourier = backup.trackWithCourier;
+  if (shortcut !== null && trackWithCourier !== undefined) {
+    return attempt(() =>
+      trackWithCourier.call(backup, normalized, shortcut.courierCode),
+    );
+  }
+  return attempt(() => backup.track(normalized));
+}
+
+/**
+ * ไล่ถาม Track123 ให้ครบทุกทาง — ยิงตรงตาม prefix, ตรวจจับเอง, แล้วระบุเจาะจง
+ *
+ * ทั้งสามขั้นนับเป็น "หนึ่งเจ้า" เพราะเป็นการถามปลายทางเดียวกัน และเพราะ
+ * ความหนักแน่นของคำว่า "ไม่พบ" มาจากการที่ทั้งสามขั้นตอบเหมือนกันหมด
+ */
+async function runFallback(
+  normalized: string,
+  fallback: CarrierAdapter,
+  shortcut: PrefixShortcut | null,
+  tried: string[],
+): Promise<TrackingResult | null> {
+  if (shortcut !== null) {
+    const byPrefix = await attempt(shortcut.track);
+    if (byPrefix !== null) return byPrefix;
+  }
+
+  // ยังไม่เจอ → ให้ Track123 ตรวจจับขนส่งเอง
+  // ยังต้องลองขั้นนี้แม้ prefix จะพลาด เพราะพัสดุข้ามประเทศอาจเปลี่ยนมือไปให้
+  // ขนส่งเจ้าอื่นเดินช่วงสุดท้าย ซึ่ง prefix ต้นทางบอกไม่ได้
+  const autoDetected = await attempt(() => fallback.track(normalized));
+  if (autoDetected !== null) return autoDetected;
+
+  // การตรวจจับขนส่งอัตโนมัติเดาผิดได้ เช่นเลขของ Shopee Xpress ที่ถูกเดาเป็น
+  // Flash Express แล้วตอบว่าไม่พบทั้งที่พัสดุมีอยู่จริง จึงลองยิงซ้ำโดยระบุ
+  // ขนส่งเจาะจงจากรายชื่อที่รู้ว่ามีปัญหา
+  const retried = await retryWithCourierCodes(normalized, fallback, tried);
+  tried.push(...retried.codes);
+  return retried.result;
 }
 
 /**

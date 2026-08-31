@@ -18,7 +18,7 @@
  * ไม่มีทางไหนให้ client แตะตรงๆ (ไม่ถูก grant และเปิด RLS ไว้โดยไม่มี policy)
  */
 
-import type { Coordinates } from "../geocode";
+import type { Coordinates, GeocodePrecision } from "../geocode";
 import { explainPermissionDenied } from "./key-role";
 import { getServiceSupabaseClient } from "./service";
 
@@ -38,20 +38,33 @@ export interface CarrierBranch {
   updatedAt: string | null;
 }
 
-/** หนึ่งสาขาที่ยังไม่รู้พิกัด */
+/**
+ * สิ่งที่จบด้วย "ไม่มีแผนที่" หนึ่งรายการ
+ *
+ * ไม่ได้มีแค่รหัสสาขาแล้ว — ตั้งแต่เติม kind เข้ามา ตารางนี้เก็บทุกกรณีที่
+ * ผู้ใช้จะไม่เห็นแผนที่ ไม่ว่าจะเป็นรหัสสาขา ข้อความที่ดูเหมือนที่อยู่แต่หา
+ * พิกัดไม่เจอ หรือข้อความที่อ่านไม่ออกว่าเป็นอะไร (ดู lib/location-resolve.ts)
+ */
 export interface UnknownBranch {
   carrierCode: string;
   branchCode: string;
   branchName: string | null;
+  /** 'branch' | 'address' | 'unknown' — ตรงกับ LocationKind ใน lib/branch-location.ts */
+  kind: string;
   hitCount: number;
   firstSeenAt: string | null;
   lastSeenAt: string | null;
+  /** ครั้งล่าสุดที่ระบบไปถามที่อยู่ของสาขานี้จาก ETrackings */
+  lastProbeAt: string | null;
+  probeCount: number;
 }
 
 /** ผลการอ่าน geocode_cache — null คือไม่เคยถาม, found=false คือถามแล้วไม่เจอ */
 export interface CachedGeocode {
   found: boolean;
   coordinates: Coordinates | null;
+  /** null = แถวเก่าที่บันทึกไว้ก่อนมีคอลัมน์นี้ (ดู migration 0006) */
+  precision: GeocodePrecision | null;
 }
 
 /** สัญญาที่ตัวหาพิกัดต้องการ แยกเป็น interface เพื่อให้เทสต์ใส่ตัวปลอมแทนได้ */
@@ -64,13 +77,63 @@ export interface LocationStore {
     carrierCode: string,
     branchCode: string,
     branchName: string | null,
+    kind: string,
   ): Promise<void>;
   readGeocode(query: string): Promise<CachedGeocode | null>;
-  writeGeocode(query: string, coordinates: Coordinates | null): Promise<void>;
+  writeGeocode(
+    query: string,
+    coordinates: Coordinates | null,
+    precision: GeocodePrecision | null,
+  ): Promise<void>;
+  /**
+   * ขอสิทธิ์ไปถามที่อยู่ของสาขานี้ — true เมื่อได้สิทธิ์เท่านั้น
+   *
+   * เป็นด่านกันเผาโควตาที่เป็น atomic จริงในฐานข้อมูล สองคำขอที่มาพร้อมกัน
+   * (หรือมาจากคนละ instance) จะมีแค่คำขอเดียวที่ได้ true
+   */
+  claimBranchProbe(
+    carrierCode: string,
+    branchCode: string,
+    cooldownHours: number,
+  ): Promise<boolean>;
+  /** บันทึกพิกัดที่ระบบหามาได้เอง — ไม่ทับของที่มีอยู่แล้ว */
+  saveHarvestedBranch(input: HarvestedBranchInput): Promise<boolean>;
 }
+
+/** พิกัดสาขาที่ระบบหามาได้เองจากที่อยู่ในข้อความของขนส่ง */
+export interface HarvestedBranchInput {
+  carrierCode: string;
+  branchCode: string;
+  branchName: string | null;
+  lat: number;
+  lng: number;
+  /** ที่อยู่ที่ใช้หาพิกัด — เก็บไว้ใน note ให้แอดมินตรวจย้อนได้ */
+  address: string;
+}
+
+/**
+ * ค่าที่ใส่ในคอลัมน์ updated_by ของแถวที่ระบบเติมเอง
+ *
+ * จงใจไม่ใช่รูปแบบอีเมล เพื่อให้แยกออกจากแอดมินตัวจริงได้ทันทีเมื่อไล่ดูว่า
+ * ใครเป็นคนใส่พิกัดผิด
+ */
+export const HARVEST_AUTHOR = "auto:etrackings";
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+const PRECISIONS: readonly string[] = [
+  "rooftop",
+  "range",
+  "center",
+  "approximate",
+];
+
+function toPrecision(value: unknown): GeocodePrecision | null {
+  return typeof value === "string" && PRECISIONS.includes(value)
+    ? (value as GeocodePrecision)
+    : null;
 }
 
 /**
@@ -120,11 +183,15 @@ function toUnknownBranch(row: unknown): UnknownBranch | null {
     carrierCode: record.carrier_code,
     branchCode: record.branch_code,
     branchName: typeof record.branch_name === "string" ? record.branch_name : null,
+    kind: typeof record.kind === "string" ? record.kind : "branch",
     hitCount: isFiniteNumber(record.hit_count) ? record.hit_count : 0,
     firstSeenAt:
       typeof record.first_seen_at === "string" ? record.first_seen_at : null,
     lastSeenAt:
       typeof record.last_seen_at === "string" ? record.last_seen_at : null,
+    lastProbeAt:
+      typeof record.last_probe_at === "string" ? record.last_probe_at : null,
+    probeCount: isFiniteNumber(record.probe_count) ? record.probe_count : 0,
   };
 }
 
@@ -156,7 +223,7 @@ export const supabaseLocationStore: LocationStore = {
     }
   },
 
-  async recordUnknownBranch(carrierCode, branchCode, branchName) {
+  async recordUnknownBranch(carrierCode, branchCode, branchName, kind) {
     const supabase = getServiceSupabaseClient();
     if (supabase === null) return;
 
@@ -167,6 +234,7 @@ export const supabaseLocationStore: LocationStore = {
         p_carrier_code: carrierCode,
         p_branch_code: branchCode,
         p_branch_name: branchName,
+        p_kind: kind,
       });
 
       if (error) warn("บันทึกสาขาที่ไม่รู้จัก", error.message);
@@ -182,7 +250,7 @@ export const supabaseLocationStore: LocationStore = {
     try {
       const { data, error } = await supabase
         .from(GEOCODE_TABLE)
-        .select("lat, lng, found")
+        .select("lat, lng, found, precision")
         .eq("query", query)
         .maybeSingle();
 
@@ -193,17 +261,25 @@ export const supabaseLocationStore: LocationStore = {
       if (data === null) return null;
 
       const record = data as Record<string, unknown>;
-      if (record.found !== true) return { found: false, coordinates: null };
+      const precision = toPrecision(record.precision);
+
+      if (record.found !== true) {
+        return { found: false, coordinates: null, precision: null };
+      }
 
       if (!isFiniteNumber(record.lat) || !isFiniteNumber(record.lng)) return null;
-      return { found: true, coordinates: { lat: record.lat, lng: record.lng } };
+      return {
+        found: true,
+        coordinates: { lat: record.lat, lng: record.lng },
+        precision,
+      };
     } catch (cause) {
       warn("อ่าน cache พิกัด", reason(cause));
       return null;
     }
   },
 
-  async writeGeocode(query, coordinates) {
+  async writeGeocode(query, coordinates, precision) {
     const supabase = getServiceSupabaseClient();
     if (supabase === null) return;
 
@@ -214,6 +290,7 @@ export const supabaseLocationStore: LocationStore = {
           found: coordinates !== null,
           lat: coordinates?.lat ?? null,
           lng: coordinates?.lng ?? null,
+          precision: coordinates === null ? null : precision,
           geocoded_at: new Date().toISOString(),
         },
         { onConflict: "query" },
@@ -222,6 +299,73 @@ export const supabaseLocationStore: LocationStore = {
       if (error) warn("บันทึก cache พิกัด", error.message);
     } catch (cause) {
       warn("บันทึก cache พิกัด", reason(cause));
+    }
+  },
+
+  async claimBranchProbe(carrierCode, branchCode, cooldownHours) {
+    const supabase = getServiceSupabaseClient();
+    // ไม่มีฐานข้อมูล = จองไม่ได้ = ไม่ยิง ตั้งใจ fail closed เพราะทางที่ผิดพลาด
+    // ได้อย่างปลอดภัยคือ "ไม่เติมพิกัด" ไม่ใช่ "ยิงรัวโดยไม่มีอะไรกันไว้"
+    if (supabase === null) return false;
+
+    try {
+      const { data, error } = await supabase.rpc("claim_branch_probe", {
+        p_carrier_code: carrierCode,
+        p_branch_code: branchCode,
+        p_cooldown_hours: cooldownHours,
+      });
+
+      if (error) {
+        warn("ขอสิทธิ์ถามที่อยู่สาขา", error.message);
+        return false;
+      }
+      return data === true;
+    } catch (cause) {
+      warn("ขอสิทธิ์ถามที่อยู่สาขา", reason(cause));
+      return false;
+    }
+  },
+
+  async saveHarvestedBranch(input) {
+    const supabase = getServiceSupabaseClient();
+    if (supabase === null) return false;
+
+    try {
+      // insert ไม่ใช่ upsert โดยตั้งใจ — พิกัดที่แอดมินกรอกเองถือว่าถูกต้อง
+      // กว่าเสมอ ระบบอัตโนมัติห้ามทับ ชนคีย์ซ้ำ (23505) จึงไม่ใช่ความผิดพลาด
+      // แต่แปลว่า "มีคนใส่ไว้แล้ว" ซึ่งคือผลลัพธ์ที่เราต้องการอยู่แล้ว
+      const { error } = await supabase.from(BRANCHES_TABLE).insert({
+        carrier_code: input.carrierCode,
+        branch_code: input.branchCode,
+        branch_name: input.branchName,
+        lat: input.lat,
+        lng: input.lng,
+        note: `เติมอัตโนมัติจากที่อยู่ในข้อความของขนส่ง: ${input.address}`.slice(0, 500),
+        updated_by: HARVEST_AUTHOR,
+        updated_at: new Date().toISOString(),
+      });
+
+      if (error) {
+        if (error.code === "23505") return false;
+        warn("บันทึกพิกัดสาขาที่หามาได้เอง", error.message);
+        return false;
+      }
+
+      // ถอดออกจากรายการที่ยังไม่รู้พิกัด เหตุผลเดียวกับใน upsertBranch()
+      const { error: cleanupError } = await supabase
+        .from(UNKNOWN_TABLE)
+        .delete()
+        .eq("carrier_code", input.carrierCode)
+        .eq("branch_code", input.branchCode);
+
+      if (cleanupError) {
+        warn("ถอดสาขาออกจากรายการที่ไม่รู้จัก", cleanupError.message);
+      }
+
+      return true;
+    } catch (cause) {
+      warn("บันทึกพิกัดสาขาที่หามาได้เอง", reason(cause));
+      return false;
     }
   },
 };
@@ -342,4 +486,61 @@ export async function upsertBranch(input: {
     warn("บันทึกพิกัดสาขา", reason(cause));
     return { ok: false, message: "บันทึกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" };
   }
+}
+
+/**
+ * จำนวนสาขาที่มีพิกัดแล้ว/ยังไม่มี — สำหรับหน้าสถิติของแอดมิน
+ *
+ * นับด้วย head:true จึงไม่ดึงแถวจริงกลับมาเลย ได้แต่ตัวเลข ซึ่งเป็นสิ่งเดียว
+ * ที่หน้าสถิติต้องการ
+ *
+ * ⚠️ ไม่ได้ตรวจสิทธิ์เอง ผู้เรียกต้องผ่าน requireAdmin() มาก่อนเสมอ
+ */
+export interface BranchCounts {
+  known: number;
+  unknown: number;
+  /** แยกตามชนิดของสิ่งที่หาพิกัดไม่ได้ — branch / address / unknown */
+  unknownByKind: Record<string, number>;
+}
+
+const UNKNOWN_KINDS: readonly string[] = ["branch", "address", "unknown"];
+
+async function countRows(
+  table: string,
+  filter?: { column: string; value: string },
+): Promise<number> {
+  const supabase = getServiceSupabaseClient();
+  if (supabase === null) return 0;
+
+  try {
+    let query = supabase.from(table).select("*", { count: "exact", head: true });
+    if (filter !== undefined) query = query.eq(filter.column, filter.value);
+
+    const { count, error } = await query;
+    if (error) {
+      warn("นับจำนวนแถว", error.message);
+      return 0;
+    }
+    return count ?? 0;
+  } catch (cause) {
+    warn("นับจำนวนแถว", reason(cause));
+    return 0;
+  }
+}
+
+export async function countBranches(): Promise<BranchCounts> {
+  const [known, unknown, ...byKind] = await Promise.all([
+    countRows(BRANCHES_TABLE),
+    countRows(UNKNOWN_TABLE),
+    ...UNKNOWN_KINDS.map((kind) =>
+      countRows(UNKNOWN_TABLE, { column: "kind", value: kind }),
+    ),
+  ]);
+
+  const unknownByKind: Record<string, number> = {};
+  UNKNOWN_KINDS.forEach((kind, index) => {
+    unknownByKind[kind] = byKind[index] ?? 0;
+  });
+
+  return { known, unknown, unknownByKind };
 }

@@ -17,6 +17,7 @@
  */
 
 import { CircuitBreaker } from "../circuit-breaker";
+import { countProviderCall } from "../provider-usage";
 import { RateLimitQueue, delay } from "../rate-limit-queue";
 import { CarrierError, type TrackingErrorCode } from "./types";
 
@@ -117,6 +118,13 @@ export interface Track123CallOptions {
   log?: (line: string) => void;
   /** circuit breaker (ค่าเริ่มต้น: ตัวกลางของโปรเซส) — null = ไม่ใช้ */
   breaker?: CircuitBreaker | null;
+  /**
+   * ตัวนับโควตาที่ใช้ไป (ค่าเริ่มต้น: ตัวนับกลางใน lib/provider-usage.ts)
+   *
+   * นับที่นี่เพราะที่นี่คือทางออกเดียวของการยิง Track123 จริง — ทุก request
+   * ที่ออกไปผ่านตรงนี้หมด ไม่มีทางลัดไหนหลุดไปโดยไม่ถูกนับ
+   */
+  countUsage?: () => Promise<unknown>;
 }
 
 /** ฟิลด์ทั้งหมดของ log หนึ่งบรรทัด */
@@ -221,7 +229,15 @@ export async function callTrack123<T>(
     throw breakerOpenError(remaining);
   }
 
+  const countUsage =
+    options.countUsage ?? (() => countProviderCall("track123"));
+
   for (let attempt = 1; ; attempt += 1) {
+    // นับก่อนเข้าคิว ไม่ใช่ในคิว — การรอฐานข้อมูลตอบไม่ควรไปกินช่องของคิว
+    // ที่จำกัดอัตราการยิงไว้ และการลองใหม่แต่ละรอบคือ request จริงอีกหนึ่งครั้ง
+    // จึงต้องนับทุกรอบ ไม่ใช่นับครั้งเดียวต่อคำขอ
+    await countUsage();
+
     try {
       return await queue.run(async (call) => {
         const startedAt = Date.now();

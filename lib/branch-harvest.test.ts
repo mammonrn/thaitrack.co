@@ -1,0 +1,430 @@
+/**
+ * เทสต์การเติมพิกัดสาขาอัตโนมัติ
+ *
+ * สองอย่างที่เทสต์ชุดนี้เฝ้าไว้ และทั้งคู่ล้มเหลวแบบเงียบๆ ได้ถ้าไม่มีใครดู:
+ *
+ *   1. **พิกัดหยาบต้องไม่หลุดลง carrier_branches** ตารางนั้นคือที่ที่ทั้งระบบ
+ *      เชื่อว่าถูกต้อง ถ้าหมุดกลางอำเภอเข้าไปนั่ง ผู้ใช้จะเห็นหมุดผิดโดยไม่มี
+ *      ทางรู้ตัว และไม่มี error ที่ไหนขึ้นเลย
+ *   2. **ด่านกันเผาโควตาต้องทำงานครบทุกชั้น** ชั้นที่หลุดไปจะไม่ทำให้อะไรพัง
+ *      จนกว่าจะถึงวันที่โควตาหมดกลางเดือน
+ */
+
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import {
+  collectBranchAddresses,
+  harvestBranchCoordinates,
+  probeBranchAddress,
+  resetProbeBudget,
+} from "./branch-harvest.ts";
+import type { TrackingResult } from "./carriers/types.ts";
+import type { Coordinates, GeocodeHit, GeocodePrecision } from "./geocode.ts";
+import type {
+  CachedGeocode,
+  CarrierBranch,
+  LocationStore,
+} from "./supabase/locations.ts";
+
+const CARRIER = "shopee-xpress-th";
+const ADDRESS = "639 หมู่ที่1 ตำบลบ้านดู่ อำเภอเมืองเชียงราย จังหวัดเชียงราย 57100";
+const CHIANG_RAI: Coordinates = { lat: 19.9814, lng: 99.8776 };
+
+interface FakeStore extends LocationStore {
+  branches: Map<string, CarrierBranch>;
+  geocodes: Map<string, CachedGeocode>;
+  saved: string[];
+  claims: string[];
+  allowClaim: boolean;
+}
+
+function makeStore(): FakeStore {
+  const branches = new Map<string, CarrierBranch>();
+  const geocodes = new Map<string, CachedGeocode>();
+  const saved: string[] = [];
+  const claims: string[] = [];
+
+  const store: FakeStore = {
+    branches,
+    geocodes,
+    saved,
+    claims,
+    allowClaim: true,
+    findBranch: (carrierCode, branchCode) =>
+      Promise.resolve(branches.get(`${carrierCode}::${branchCode}`) ?? null),
+    recordUnknownBranch: () => Promise.resolve(),
+    readGeocode: (query) => Promise.resolve(geocodes.get(query) ?? null),
+    writeGeocode: (query, coordinates, precision) => {
+      geocodes.set(query, {
+        found: coordinates !== null,
+        coordinates,
+        precision: coordinates === null ? null : precision,
+      });
+      return Promise.resolve();
+    },
+    claimBranchProbe: (carrierCode, branchCode) => {
+      claims.push(`${carrierCode}::${branchCode}`);
+      return Promise.resolve(store.allowClaim);
+    },
+    saveHarvestedBranch: (input) => {
+      const key = `${input.carrierCode}::${input.branchCode}`;
+      if (branches.has(key)) return Promise.resolve(false);
+      saved.push(key);
+      branches.set(key, {
+        carrierCode: input.carrierCode,
+        branchCode: input.branchCode,
+        branchName: input.branchName,
+        lat: input.lat,
+        lng: input.lng,
+        note: input.address,
+        updatedBy: "auto:etrackings",
+        updatedAt: null,
+      });
+      return Promise.resolve(true);
+    },
+  };
+
+  return store;
+}
+
+function makeGeocoder(
+  precision: GeocodePrecision | null = "rooftop",
+  coordinates: Coordinates | null = CHIANG_RAI,
+) {
+  const calls: string[] = [];
+  return {
+    calls,
+    geocode: (text: string): Promise<GeocodeHit | null> => {
+      calls.push(text);
+      if (coordinates === null || precision === null) return Promise.resolve(null);
+      return Promise.resolve({ coordinates, precision });
+    },
+  };
+}
+
+function makeResult(
+  events: TrackingResult["events"],
+  carrierCode = CARRIER,
+): TrackingResult {
+  return {
+    trackingNumber: "SPXTH046012345678",
+    carrierName: "Shopee Xpress",
+    carrierCode,
+    status: "in_transit",
+    statusText: "อยู่ระหว่างขนส่ง",
+    lastUpdated: null,
+    events,
+  };
+}
+
+const branchEvent = (address: string | null = ADDRESS) => ({
+  time: "2026-08-30T09:28:00+07:00",
+  location: "ACRAI-B - เมืองเชียงราย",
+  description: "พัสดุถึงสาขาปลายทาง",
+  ...(address === null ? {} : { address }),
+});
+
+/* ------------------------ การคัดสาขาที่มีที่อยู่ ------------------------ */
+
+test("เอาเฉพาะบรรทัดที่มีทั้งรหัสสาขาและที่อยู่", () => {
+  const found = collectBranchAddresses(
+    makeResult([
+      { time: "", location: "ACRAI-B - เมืองเชียงราย", description: "ก" },
+      { time: "", location: "", description: "ข", address: ADDRESS },
+      { time: "", location: "ศูนย์คัดแยกสมุทรสาคร", description: "ค", address: ADDRESS },
+      branchEvent(),
+    ]),
+  );
+
+  assert.deepEqual(found, [
+    { branchCode: "ACRAI-B", branchName: "เมืองเชียงราย", address: ADDRESS },
+  ]);
+});
+
+test("รหัสเดียวกันหลายบรรทัด → เหลืออันเดียว", () => {
+  const found = collectBranchAddresses(
+    makeResult([branchEvent(), branchEvent(), branchEvent()]),
+  );
+
+  assert.equal(found.length, 1);
+});
+
+/* -------------------------- การเขียนพิกัดจริง -------------------------- */
+
+test("ที่อยู่ที่หาพิกัดได้แม่น → บันทึกลงตารางสาขา", async () => {
+  const store = makeStore();
+  const geocoder = makeGeocoder();
+
+  const saved = await harvestBranchCoordinates(makeResult([branchEvent()]), {
+    store,
+    geocode: geocoder.geocode,
+  });
+
+  assert.equal(saved, 1);
+  assert.deepEqual(store.saved, [`${CARRIER}::ACRAI-B`]);
+  assert.deepEqual(geocoder.calls, [ADDRESS]);
+
+  const branch = store.branches.get(`${CARRIER}::ACRAI-B`);
+  assert.equal(branch?.lat, CHIANG_RAI.lat);
+  assert.equal(branch?.branchName, "เมืองเชียงราย");
+});
+
+test("พิกัดหยาบ (กลางพื้นที่) → ห้ามเขียนลงตารางสาขาเด็ดขาด", async () => {
+  // นี่คือหน้าตาของบั๊กเดิม: Google เดาจากคำที่พอเดาได้แล้วคืนหมุดกลางอำเภอ
+  const store = makeStore();
+
+  const saved = await harvestBranchCoordinates(makeResult([branchEvent()]), {
+    store,
+    geocode: makeGeocoder("approximate").geocode,
+  });
+
+  assert.equal(saved, 0);
+  assert.deepEqual(store.saved, []);
+});
+
+test("พิกัดระดับถนน (center) ก็ยังหยาบเกินไปสำหรับตารางสาขา", async () => {
+  const store = makeStore();
+
+  const saved = await harvestBranchCoordinates(makeResult([branchEvent()]), {
+    store,
+    geocode: makeGeocoder("center").geocode,
+  });
+
+  assert.equal(saved, 0);
+});
+
+test("มีพิกัดอยู่แล้ว → ไม่ทับ และไม่เสีย quota ของ Google", async () => {
+  const store = makeStore();
+  store.branches.set(`${CARRIER}::ACRAI-B`, {
+    carrierCode: CARRIER,
+    branchCode: "ACRAI-B",
+    branchName: "สาขาที่แอดมินกรอกเอง",
+    lat: 1,
+    lng: 2,
+    note: null,
+    updatedBy: "boss@example.com",
+    updatedAt: null,
+  });
+  const geocoder = makeGeocoder();
+
+  const saved = await harvestBranchCoordinates(makeResult([branchEvent()]), {
+    store,
+    geocode: geocoder.geocode,
+  });
+
+  assert.equal(saved, 0);
+  assert.deepEqual(geocoder.calls, []);
+  assert.equal(store.branches.get(`${CARRIER}::ACRAI-B`)?.lat, 1);
+});
+
+test("ที่อยู่เดิม → ใช้ผลที่เก็บไว้ ไม่ยิงถาม Google ซ้ำ", async () => {
+  const store = makeStore();
+  const geocoder = makeGeocoder();
+
+  await harvestBranchCoordinates(makeResult([branchEvent()]), {
+    store,
+    geocode: geocoder.geocode,
+  });
+  // สาขาเดียวกันของขนส่งอีกเจ้า — ที่อยู่เหมือนกันเป๊ะ
+  await harvestBranchCoordinates(makeResult([branchEvent()], "kerry-express"), {
+    store,
+    geocode: geocoder.geocode,
+  });
+
+  assert.equal(geocoder.calls.length, 1);
+  assert.equal(store.saved.length, 2, "แต่ต้องบันทึกให้ทั้งสองเจ้า");
+});
+
+test("แถวเก่าใน cache ที่ไม่รู้ความละเอียด → ไม่เอามาใช้ ไม่เดาว่าแม่น", async () => {
+  const store = makeStore();
+  store.geocodes.set(ADDRESS.toLowerCase(), {
+    found: true,
+    coordinates: CHIANG_RAI,
+    precision: null,
+  });
+
+  const saved = await harvestBranchCoordinates(makeResult([branchEvent()]), {
+    store,
+    geocode: makeGeocoder().geocode,
+  });
+
+  assert.equal(saved, 0);
+});
+
+test("ผลลัพธ์ที่ไม่มีที่อยู่เลย → ไม่ทำอะไร ไม่แตะอะไรทั้งนั้น", async () => {
+  const store = makeStore();
+  const geocoder = makeGeocoder();
+
+  const saved = await harvestBranchCoordinates(
+    makeResult([branchEvent(null)]),
+    { store, geocode: geocoder.geocode },
+  );
+
+  assert.equal(saved, 0);
+  assert.deepEqual(geocoder.calls, []);
+});
+
+/* ----------------------- ด่านกันเผาโควตา ----------------------- */
+
+function probeOptions(overrides: Record<string, unknown> = {}) {
+  return {
+    fetchResult: () => Promise.resolve(makeResult([branchEvent()])),
+    canProbe: () => true,
+    nearQuota: () => false,
+    geocode: makeGeocoder().geocode,
+    ...overrides,
+  };
+}
+
+test("ครบทุกด่าน → ยิงหนึ่งครั้งแล้วได้พิกัดมา", async () => {
+  resetProbeBudget();
+  const store = makeStore();
+
+  const filled = await probeBranchAddress({
+    trackingNumber: "SPXTH046012345678",
+    carrierCode: CARRIER,
+    branchCode: "ACRAI-B",
+    store,
+    options: probeOptions(),
+  });
+
+  assert.equal(filled, true);
+  assert.deepEqual(store.claims, [`${CARRIER}::ACRAI-B`]);
+});
+
+test("ด่าน 1 — เลขที่ ETrackings ตามไม่ได้ → ไม่ยิง และไม่จองสิทธิ์", async () => {
+  resetProbeBudget();
+  const store = makeStore();
+  let fetched = 0;
+
+  const filled = await probeBranchAddress({
+    trackingNumber: "EY145587896TH",
+    carrierCode: CARRIER,
+    branchCode: "ACRAI-B",
+    store,
+    options: probeOptions({
+      canProbe: () => false,
+      fetchResult: () => {
+        fetched += 1;
+        return Promise.resolve(makeResult([branchEvent()]));
+      },
+    }),
+  });
+
+  assert.equal(filled, false);
+  assert.equal(fetched, 0);
+  assert.deepEqual(store.claims, []);
+});
+
+test("ด่าน 2 — โควตาใกล้เต็ม → ไม่ยิง และไม่เผา cooldown ของสาขา", async () => {
+  resetProbeBudget();
+  const store = makeStore();
+
+  const filled = await probeBranchAddress({
+    trackingNumber: "SPXTH046012345678",
+    carrierCode: CARRIER,
+    branchCode: "ACRAI-B",
+    store,
+    options: probeOptions({ nearQuota: () => true }),
+  });
+
+  assert.equal(filled, false);
+  assert.deepEqual(store.claims, []);
+});
+
+test("ด่าน 3 — งบต่อวันหมด → หยุดยิง", async (t) => {
+  t.after(() => {
+    delete process.env.BRANCH_PROBE_DAILY_LIMIT;
+    resetProbeBudget();
+  });
+
+  resetProbeBudget();
+  process.env.BRANCH_PROBE_DAILY_LIMIT = "2";
+
+  const store = makeStore();
+  const attempts: boolean[] = [];
+
+  for (let index = 0; index < 4; index += 1) {
+    const code = `BR-${index}`;
+    attempts.push(
+      await probeBranchAddress({
+        trackingNumber: "SPXTH046012345678",
+        carrierCode: CARRIER,
+        branchCode: code,
+        store,
+        options: probeOptions({
+          fetchResult: () =>
+            Promise.resolve(
+              makeResult([
+                { ...branchEvent(), location: `${code} - สาขาที่ ${index}` },
+              ]),
+            ),
+        }),
+      }),
+    );
+  }
+
+  assert.deepEqual(attempts, [true, true, false, false]);
+  assert.equal(store.claims.length, 2, "ด่านงบต้องมาก่อนการจองสิทธิ์");
+});
+
+test("ด่าน 4 — จองสิทธิ์ไม่ได้ (เพิ่งถามไปแล้ว) → ไม่ยิง", async () => {
+  resetProbeBudget();
+  const store = makeStore();
+  store.allowClaim = false;
+  let fetched = 0;
+
+  const filled = await probeBranchAddress({
+    trackingNumber: "SPXTH046012345678",
+    carrierCode: CARRIER,
+    branchCode: "ACRAI-B",
+    store,
+    options: probeOptions({
+      fetchResult: () => {
+        fetched += 1;
+        return Promise.resolve(makeResult([branchEvent()]));
+      },
+    }),
+  });
+
+  assert.equal(filled, false);
+  assert.equal(fetched, 0);
+});
+
+test("ยิงแล้วขนส่งพัง → ไม่โยน error ขึ้นไป แค่ตอบว่าเติมไม่ได้", async () => {
+  resetProbeBudget();
+  const store = makeStore();
+
+  const filled = await probeBranchAddress({
+    trackingNumber: "SPXTH046012345678",
+    carrierCode: CARRIER,
+    branchCode: "ACRAI-B",
+    store,
+    options: probeOptions({
+      fetchResult: () => Promise.reject(new Error("ETrackings ล่ม")),
+    }),
+  });
+
+  assert.equal(filled, false);
+});
+
+test("ยิงแล้วไม่มีที่อยู่ติดมา → สาขานั้นถูกล็อกไว้ด้วย cooldown แล้ว", async () => {
+  // ด่านจองสิทธิ์เขียน last_probe_at ไปแล้วตั้งแต่ก่อนยิง สาขาที่ขนส่งไม่เคย
+  // ส่งที่อยู่มาให้จึงไม่ถูกถามซ้ำทุกครั้งที่มีคนผ่านจุดนั้น
+  resetProbeBudget();
+  const store = makeStore();
+
+  const filled = await probeBranchAddress({
+    trackingNumber: "SPXTH046012345678",
+    carrierCode: CARRIER,
+    branchCode: "ACRAI-B",
+    store,
+    options: probeOptions({
+      fetchResult: () => Promise.resolve(makeResult([branchEvent(null)])),
+    }),
+  });
+
+  assert.equal(filled, false);
+  assert.deepEqual(store.claims, [`${CARRIER}::ACRAI-B`]);
+});

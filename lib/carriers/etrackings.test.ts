@@ -15,15 +15,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  MONTHLY_QUOTA,
-  countUsage,
+  cleanBranchAddress,
   parseETrackingsTime,
-  resetUsage,
   resolveCourier,
   splitDescription,
   toShipmentDetails,
   toTrackingResult,
-  usageThisMonth,
   type ETrackingsData,
 } from "./etrackings.ts";
 
@@ -106,6 +103,7 @@ test("แยกสถานที่ที่ห้อยท้ายออก�
     {
       description: "พัสดุของคุณอยู่ระหว่างขนส่ง",
       location: "ศูนย์คัดแยกสินค้าสมุทรสาคร, กรุงเทพมหานคร",
+      address: "",
     },
   );
 });
@@ -121,6 +119,7 @@ test("ไม่มีสถานที่ต่อท้าย → ไม่แ
   assert.deepEqual(splitDescription("13:35 เคอรี่เข้ารับพัสดุแล้ว"), {
     description: "เคอรี่เข้ารับพัสดุแล้ว",
     location: "",
+    address: "",
   });
 });
 
@@ -314,42 +313,68 @@ test("ขนส่งที่ ETrackings ไม่รองรับ → คื
   assert.equal(resolveCourier("X1234567", "ninja-van"), null);
 });
 
-/* --------------------------- นับโควตา --------------------------- */
 
-test("นับการเรียกสะสมภายในเดือนเดียวกัน", () => {
-  resetUsage();
-  const now = Date.parse("2026-08-31T10:00:00+07:00");
+/* ------------------ ที่อยู่สาขาที่ห้อยท้าย description ------------------ */
 
-  assert.equal(countUsage(now), 1);
-  assert.equal(countUsage(now + 1_000), 2);
-  assert.equal(countUsage(now + 2_000), 3);
-  assert.equal(usageThisMonth(now), 3);
-});
+/** ข้อความจริงที่ยิงมาจาก API ของ Shopee Xpress */
+const WITH_ADDRESS =
+  "09:28 พัสดุถึงสาขาปลายทาง: ACRAI-B - เมืองเชียงราย - อยู่ที่ TH " +
+  "จังหวัดเชียงราย 57000 อำเภอเมืองเชียงราย 639 หมู่ที่1 ตำบลบ้านดู่ " +
+  "อำเภอเมืองเชียงราย จังหวัดเชียงราย 57100";
 
-test("ข้ามเดือน → เริ่มนับใหม่", () => {
-  resetUsage();
+test("แยกรหัสสาขาและที่อยู่เต็มออกจากกันได้", () => {
+  const parsed = splitDescription(WITH_ADDRESS);
 
-  countUsage(Date.parse("2026-08-31T23:00:00+07:00"));
-  countUsage(Date.parse("2026-08-31T23:30:00+07:00"));
-
-  assert.equal(countUsage(Date.parse("2026-09-01T00:30:00+07:00")), 1);
-});
-
-test("นับตามเวลาไทย ไม่ใช่ UTC", () => {
-  resetUsage();
-
-  // 31 ส.ค. 23:00 น. ไทย = 31 ส.ค. 16:00 UTC — ยังเป็นเดือนเดียวกันทั้งคู่
-  // แต่ 1 ก.ย. 01:00 น. ไทย = 31 ส.ค. 18:00 UTC ซึ่งถ้านับแบบ UTC จะยังเป็น ส.ค.
-  countUsage(Date.parse("2026-08-31T23:00:00+07:00"));
+  assert.equal(parsed.description, "พัสดุถึงสาขาปลายทาง");
+  assert.equal(parsed.location, "ACRAI-B - เมืองเชียงราย");
   assert.equal(
-    countUsage(Date.parse("2026-09-01T01:00:00+07:00")),
-    1,
-    "ผู้ให้บริการไทยนับรอบบิลตามเวลาไทย",
+    parsed.address,
+    "639 หมู่ที่1 ตำบลบ้านดู่ อำเภอเมืองเชียงราย จังหวัดเชียงราย 57100",
+  );
+});
+
+test("ที่อยู่ที่แยกได้ต้องตัดส่วนที่ซ้ำซ้อนนำหน้าทิ้ง", () => {
+  // "TH จังหวัดเชียงราย 57000 อำเภอเมืองเชียงราย" ที่นำหน้ามาไม่ใช่ที่อยู่จริง
+  // ถ้าปล่อยติดไป Google จะเอนไปตอบเป็นหมุดกลางจังหวัดแทนที่จะเป็นตัวสาขา
+  const address = cleanBranchAddress(
+    "TH จังหวัดเชียงราย 57000 อำเภอเมืองเชียงราย 639 หมู่ที่1 ตำบลบ้านดู่ " +
+      "อำเภอเมืองเชียงราย จังหวัดเชียงราย 57100",
   );
 
-  resetUsage();
+  assert.ok(!address.startsWith("TH"));
+  assert.ok(!address.startsWith("จังหวัด"));
+  assert.equal(address.match(/จังหวัด/g)?.length, 1);
 });
 
-test("เพดานของแผนฟรีถูกประกาศไว้ให้ log อ้างถึงได้", () => {
-  assert.equal(MONTHLY_QUOTA, 50);
+test("ไม่มีระดับตำบล → ไม่เดา คืนค่าว่าง", () => {
+  // แยกไม่ได้แน่ๆ ดีกว่าเดาแล้วเอาพิกัดผิดไปเขียนลงตารางที่ทั้งระบบเชื่อว่าถูก
+  assert.equal(cleanBranchAddress("TH กรุงเทพมหานคร"), "");
+  assert.equal(cleanBranchAddress("บริเวณศูนย์คัดแยก"), "");
+});
+
+test("ไม่มีจังหวัดและไม่มีรหัสไปรษณีย์ → ไม่เดา คืนค่าว่าง", () => {
+  assert.equal(cleanBranchAddress("12 ตำบลบ้านดู่"), "");
+});
+
+test("รูปแบบไม่ครบสามส่วน → ตกไปใช้ตรรกะเดิม ไม่มีที่อยู่", () => {
+  const noColon = splitDescription("พัสดุถึงสาขา ACRAI-B - อยู่ที่ TH ตำบลบ้านดู่");
+  assert.equal(noColon.address, "");
+
+  const noMarker = splitDescription(
+    "08:10 พัสดุถึงสาขา: ACRAI-B - เมืองเชียงราย",
+  );
+  assert.equal(noMarker.address, "");
+});
+
+test("ที่อยู่ถูกส่งต่อไปอยู่ในเหตุการณ์ ไม่ใช่หายไประหว่างทาง", () => {
+  const result = toTrackingResult("SPXTH046012345678", {
+    courierKey: "shopee-express",
+    status: "ON_OTHER_STATUS",
+    timelines: [
+      { date: "2026-08-30", details: [{ time: "09:28", description: WITH_ADDRESS }] },
+    ],
+  });
+
+  assert.equal(result.events[0].location, "ACRAI-B - เมืองเชียงราย");
+  assert.match(result.events[0].address ?? "", /ตำบลบ้านดู่/);
 });

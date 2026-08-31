@@ -266,3 +266,74 @@ test("โค้ดที่อ้างชื่อสามตารางน�
     );
   }
 });
+
+/* -------------- สิทธิ์ของตารางของกลางที่เพิ่มมาทีหลัง -------------- */
+
+const USAGE_MIGRATION = join(
+  PROJECT_DIR,
+  "supabase/migrations/0006_provider_usage_and_branch_probe.sql",
+);
+
+test("ตาราง provider_usage ต้องล็อกสิทธิ์แบบเดียวกับตารางของกลางอื่น", () => {
+  const sql = readFileSync(USAGE_MIGRATION, "utf8");
+
+  assert.match(
+    sql,
+    /revoke all on table public\.provider_usage from anon, authenticated/,
+  );
+  assert.match(
+    sql,
+    /alter table public\.provider_usage enable row level security/,
+  );
+  assert.match(
+    sql,
+    /grant select, insert, update, delete on table public\.provider_usage to service_role/,
+  );
+  assert.deepEqual(
+    sql.split("\n").filter((line) => /^\s*create policy/i.test(line)),
+    [],
+  );
+});
+
+test("ฟังก์ชันใหม่ต้องถูก revoke จาก role อื่น แล้ว grant ให้ service_role เท่านั้น", () => {
+  const sql = readFileSync(USAGE_MIGRATION, "utf8");
+
+  const functions = [
+    "public\\.bump_provider_usage\\(text, text\\)",
+    "public\\.record_unknown_branch\\(text, text, text, text\\)",
+    "public\\.claim_branch_probe\\(text, text, integer\\)",
+  ];
+
+  for (const signature of functions) {
+    assert.match(
+      sql,
+      new RegExp(`revoke all on function ${signature} from anon, authenticated, public`),
+      `ยังไม่ได้ revoke ${signature}`,
+    );
+    assert.match(
+      sql,
+      new RegExp(`grant execute on function ${signature} to service_role`),
+      `ยังไม่ได้ grant ${signature}`,
+    );
+  }
+});
+
+test("ฟังก์ชันของกลางต้องไม่เป็น security definer", () => {
+  // ข้อยกเว้นเดียวคือ admin_member_stats ใน 0007 ซึ่งมีเหตุผลเขียนกำกับไว้
+  // และถูกตรวจแยกที่ lib/admin-privacy.test.ts
+  assert.doesNotMatch(readFileSync(USAGE_MIGRATION, "utf8"), /security\s+definer/i);
+});
+
+test("ลายเซ็นเก่าของ record_unknown_branch ต้องถูก drop ก่อนสร้างตัวใหม่", () => {
+  // ถ้าไม่ drop จะมีสองฟังก์ชันชื่อเดียวกันอยู่พร้อมกัน แล้วการเรียกด้วย
+  // สามพารามิเตอร์จะกำกวมจน Postgres ปฏิเสธ
+  const sql = readFileSync(USAGE_MIGRATION, "utf8");
+
+  const dropAt = sql.indexOf(
+    "drop function if exists public.record_unknown_branch(text, text, text);",
+  );
+  const createAt = sql.indexOf("create or replace function public.record_unknown_branch");
+
+  assert.ok(dropAt !== -1, "ต้อง drop ลายเซ็นเดิม");
+  assert.ok(dropAt < createAt, "ต้อง drop ก่อนสร้างตัวใหม่");
+});

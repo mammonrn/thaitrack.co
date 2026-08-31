@@ -186,3 +186,39 @@ test("ข้อความเดียวกันที่พิมพ์ต�
     "ข้อความที่ต่างกันจริงต้องไม่ถูกยุบรวม",
   );
 });
+
+/* ---------------- รหัสสาขาที่ไม่มีขีดและไม่มีตัวเลข ---------------- */
+
+test("รหัสล้วนอย่าง SOCN ต้องเป็นรหัสสาขา ไม่ใช่ที่อยู่", () => {
+  // เดิมข้อความแบบนี้ผ่าน looksLikeAddress (มีแต่ตัวอักษร) แล้วถูกส่งให้ Google
+  // ซึ่งเป็นรูรั่วของหลักการ "เมื่อไม่แน่ใจ ห้ามปักหมุด" ที่เหลืออยู่
+  const parsed = parseLocationText("SOCN");
+
+  assert.equal(parsed.kind, "branch");
+  assert.equal(parsed.branchCode, "SOCN");
+  assert.equal(parsed.geocodeQuery, null);
+  assert.equal(parsed.displayText, "SOCN", "ผู้ใช้ต้องยังเห็นว่าขนส่งบอกอะไรมา");
+});
+
+test("คำอังกฤษตัวพิมพ์ใหญ่ที่มาโดดๆ ก็ถือเป็นรหัสสาขาด้วย", () => {
+  // แลกกันตรงๆ: เสียหมุดของคำที่หาพิกัดได้จริง ไปแลกกับการไม่ปักหมุดมั่ว
+  // ให้รหัสสาขา — ทางแรกกู้คืนได้ด้วยการให้แอดมินกรอกพิกัด ทางหลังกู้ไม่ได้
+  assert.equal(parseLocationText("BANGKOK").kind, "branch");
+});
+
+test("ชื่อสถานที่ที่มีเนื้อความอื่นต่อท้าย ยังหาพิกัดได้ตามปกติ", () => {
+  const parsed = parseLocationText("SHENZHEN sorting centre");
+
+  assert.equal(parsed.kind, "address");
+  assert.equal(parsed.geocodeQuery, "SHENZHEN sorting centre");
+});
+
+test("ตัวย่อสั้นเกินไปหรือยาวเกินไป ไม่เข้าข่ายรหัสสาขาแบบไม่มีขีด", () => {
+  // ตัวเดียวไม่ใช่รหัส ส่วนคำยาวๆ ตัวพิมพ์ใหญ่ล้วนมักเป็นชื่อสถานที่จริง
+  assert.notEqual(parseLocationText("A").kind, "branch");
+  assert.equal(parseLocationText("SUVARNABHUMIPORT").kind, "address");
+});
+
+test("ข้อความไทยไม่เข้าข่ายรหัสสาขาแบบไม่มีขีด", () => {
+  assert.equal(parseLocationText("ศูนย์คัดแยกสมุทรสาคร").kind, "address");
+});
