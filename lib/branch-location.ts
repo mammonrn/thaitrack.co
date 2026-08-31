@@ -1,0 +1,170 @@
+/**
+ * แยกแยะว่าข้อความสถานที่จากขนส่งเป็น "รหัสสาขาภายใน" หรือ "ที่อยู่จริง"
+ *
+ * ปัญหาที่แก้: ขนส่งส่งข้อความสถานที่มาสองแบบปนกัน
+ *
+ *   "ACRAI-B - เมืองเชียงราย"   ← รหัสสาขาภายใน Google ไม่มีทางรู้จัก
+ *   "ศูนย์ไปรษณีย์หลักสี่"        ← ที่อยู่จริงที่ Google หาเจอ
+ *
+ * เดิมเราส่งทั้งสองแบบเข้า Geocoding เหมือนกันหมด แบบแรก Google เดาจากคำที่พอ
+ * เดาได้ ("เชียงราย") แล้วคืนหมุดกลางเมือง ผู้ใช้เห็นแล้วเข้าใจว่าพัสดุอยู่ตรงนั้น
+ *
+ * หลักการของไฟล์นี้: **เมื่อไม่แน่ใจ ห้ามปักหมุด**
+ * ทางที่ผิดพลาดได้อย่างปลอดภัยคือ "ไม่แสดงแผนที่แล้วบอกชื่อสาขาแทน" ไม่ใช่
+ * "ปักหมุดที่ไหนสักแห่งที่ใกล้เคียง" เพราะแบบหลังผู้ใช้แยกไม่ออกว่าข้อมูลผิด
+ *
+ * ทั้งไฟล์เป็นฟังก์ชันบริสุทธิ์ ไม่แตะเครือข่ายหรือฐานข้อมูล
+ */
+
+/** ข้อความสถานที่หนึ่งอันเป็นแบบไหน */
+export type LocationKind =
+  /** รหัสสาขาภายในของขนส่ง — หาพิกัดได้จากตาราง carrier_branches เท่านั้น */
+  | "branch"
+  /** ข้อความที่ดูเหมือนที่อยู่จริง — ส่งให้ Google หาพิกัดได้ */
+  | "address"
+  /** อ่านไม่ออกว่าเป็นอะไร — ไม่ปักหมุด และไม่เสีย quota ไปกับการเดา */
+  | "unknown";
+
+export interface ParsedLocation {
+  kind: LocationKind;
+  /** รหัสสาขาที่แยกได้ (ตัวพิมพ์ใหญ่) — null เมื่อไม่ใช่รหัสสาขา */
+  branchCode: string | null;
+  /** ชื่อสาขาที่ตามหลังรหัส เช่น "เมืองเชียงราย" — null เมื่อไม่มี */
+  branchName: string | null;
+  /** ข้อความที่แสดงให้ผู้ใช้เห็น — ไม่เคยเป็นค่าว่างถ้า input ไม่ว่าง */
+  displayText: string;
+  /**
+   * ข้อความที่ส่งให้ Google หาพิกัดได้ — null เมื่อ "ห้ามหา"
+   *
+   * รหัสสาขาได้ null เสมอ รวมถึงกรณีที่มีชื่อสาขาต่อท้ายด้วย เพราะการเอาชื่อ
+   * อย่าง "เมืองเชียงราย" ไปหาพิกัดจะได้หมุดกลางอำเภอ ซึ่งคือปัญหาเดิมเป๊ะๆ
+   */
+  geocodeQuery: string | null;
+}
+
+/**
+ * รูปแบบของรหัสสาขาภายใน
+ *
+ * บังคับสองอย่างเพื่อไม่ให้ไปจับคำภาษาอังกฤษปกติ:
+ *   1. ตัวพิมพ์ใหญ่ล้วน (ข้อความไทยและชื่อเมืองปกติจึงไม่เข้าข่าย)
+ *   2. ต้องมีขีด/ขีดล่างคั่น หรือมีตัวเลขปน — สัญญาณว่าเป็นรหัส ไม่ใช่คำ
+ *
+ * ข้อ 2 คือตัวแยกที่สำคัญที่สุด: "ACRAI-B" และ "NO4_HUB" เข้าข่าย
+ * ส่วน "BANGKOK" ไม่เข้า จึงยังถูกส่งไปหาพิกัดได้ตามปกติ
+ */
+const BRANCH_CODE_PATTERN =
+  "(?:[A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+)+|[A-Z]{2,}\\d[A-Z0-9]*)";
+
+/**
+ * รหัสสาขาที่อยู่ต้นข้อความ พร้อมชื่อที่อาจตามมา
+ *
+ * เลขนำหน้ามีบ้างไม่มีบ้าง (พบกับ Flash: "08 NO4_HUB-เชียงราย") จึงเขียนเป็น
+ * ทางเลือกไว้ ส่วนตัวคั่นระหว่างรหัสกับชื่อมีได้หลายแบบ (-, –, :, ,)
+ */
+const LEADING_BRANCH_CODE = new RegExp(
+  `^\\d*\\s*(${BRANCH_CODE_PATTERN})\\s*[-–—:,]?\\s*(.*)$`,
+);
+
+/** อักษรไทยช่วงใดก็ได้ */
+const THAI_LETTER = /[฀-๿]/;
+
+/** รหัสไปรษณีย์ไทย 5 หลัก */
+const POSTCODE = /(?<!\d)\d{5}(?!\d)/;
+
+/**
+ * ข้อความที่ประกอบด้วยตัวอักษรกับเครื่องหมายวรรคตอนเบาๆ เท่านั้น
+ *
+ * ใช้รับชื่อสถานที่ภาษาอังกฤษที่ไม่มีรหัสปน เช่น "Bangkok" หรือ
+ * "Shenzhen sorting centre" ซึ่งหาพิกัดได้จริง
+ */
+const WORDS_ONLY = /^[\p{L}\s.,'’-]+$/u;
+
+/** มีคำยาวพอจะเป็นชื่อสถานที่ ไม่ใช่ตัวย่อสองสามตัว */
+const HAS_REAL_WORD = /\p{L}{3,}/u;
+
+/** ตัดช่องว่างซ้ำและช่องว่างหัวท้าย */
+function tidy(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+/**
+ * ข้อความนี้ "ดูเหมือนที่อยู่จริง" พอจะส่งให้ Google หาพิกัดไหม
+ *
+ * ต้องเรียกหลังตัดกรณีรหัสสาขาออกไปแล้วเท่านั้น เพราะ "ACRAI-B" ก็ผ่านเงื่อนไข
+ * WORDS_ONLY เหมือนกัน (มีแต่ตัวอักษรกับขีด)
+ */
+export function looksLikeAddress(text: string): boolean {
+  const value = tidy(text);
+  if (value === "") return false;
+
+  // ข้อความไทยหรือมีรหัสไปรษณีย์ = ที่อยู่ในไทยแทบแน่นอน
+  if (THAI_LETTER.test(value) || POSTCODE.test(value)) return true;
+
+  // ชื่อสถานที่ภาษาอังกฤษล้วนที่ไม่มีรหัสปน
+  return WORDS_ONLY.test(value) && HAS_REAL_WORD.test(value);
+}
+
+/** ผลลัพธ์สำหรับข้อความว่าง — ไม่มีอะไรให้แสดงและไม่มีอะไรให้หา */
+const EMPTY: ParsedLocation = {
+  kind: "unknown",
+  branchCode: null,
+  branchName: null,
+  displayText: "",
+  geocodeQuery: null,
+};
+
+/**
+ * แยกข้อความสถานที่หนึ่งอันออกเป็นส่วนๆ พร้อมบอกว่าควรทำอย่างไรต่อ
+ *
+ * ลำดับการตัดสินสำคัญ: ตรวจรหัสสาขาก่อนเสมอ เพราะรหัสอย่าง "ACRAI-B"
+ * ผ่านเงื่อนไข "ดูเหมือนที่อยู่" ได้ด้วยถ้าตรวจสลับลำดับ
+ */
+export function parseLocationText(raw: string): ParsedLocation {
+  const value = tidy(raw ?? "");
+  if (value === "") return EMPTY;
+
+  const match = LEADING_BRANCH_CODE.exec(value);
+  if (match !== null) {
+    const branchCode = match[1];
+    const trailing = tidy(match[2]).replace(/^[-–—:,\s]+/, "").trim();
+    const branchName = trailing === "" ? null : trailing;
+
+    return {
+      kind: "branch",
+      branchCode,
+      branchName,
+      // ชื่อที่คนอ่านรู้เรื่องดีกว่ารหัสเสมอ แต่ถ้าไม่มีชื่อก็ต้องโชว์รหัส
+      // ไม่ใช่ปล่อยว่าง — ผู้ใช้ควรเห็นว่าขนส่งบอกอะไรมา
+      displayText: branchName ?? branchCode,
+      geocodeQuery: null,
+    };
+  }
+
+  if (looksLikeAddress(value)) {
+    return {
+      kind: "address",
+      branchCode: null,
+      branchName: null,
+      displayText: value,
+      geocodeQuery: value,
+    };
+  }
+
+  return {
+    kind: "unknown",
+    branchCode: null,
+    branchName: null,
+    displayText: value,
+    geocodeQuery: null,
+  };
+}
+
+/** รูปแบบมาตรฐานของ key ใน geocode_cache — ตัวพิมพ์เล็ก ช่องว่างเดียว */
+export function normalizeGeocodeQuery(text: string): string {
+  return tidy(text).toLowerCase();
+}
+
+/** รูปแบบมาตรฐานของรหัสสาขาที่ใช้เป็น key ในฐานข้อมูล */
+export function normalizeBranchCode(code: string): string {
+  return tidy(code).toUpperCase();
+}

@@ -10,7 +10,7 @@ import { NextResponse } from "next/server";
 
 import { normalizeTrackingNumber, resolveTracking } from "@/lib/carriers/resolve";
 import { CarrierError } from "@/lib/carriers/types";
-import { geocodeLocation } from "@/lib/geocode";
+import { resolveLocation } from "@/lib/location-resolve";
 import { NICKNAME_MAX_LENGTH, SAVED_TRACKING_COLUMNS } from "@/lib/saved-trackings";
 import { SupabaseConfigError } from "@/lib/supabase/env";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
@@ -156,11 +156,20 @@ export async function POST(request: Request) {
     throw error;
   }
 
-  const locationText = latestLocation(result.events);
+  const rawLocationText = latestLocation(result.events);
 
-  // หาพิกัดไม่สำเร็จต้องไม่ทำให้การบันทึกล้มเหลว — เก็บ null แล้วไปต่อ
-  const coordinates =
-    locationText === "" ? null : await geocodeLocation(locationText);
+  // หาพิกัดตามลำดับที่ไม่มีทางปักหมุดมั่ว: ตารางพิกัดสาขา → geocode เฉพาะข้อความ
+  // ที่ดูเหมือนที่อยู่จริง → ไม่รู้ก็ไม่ปัก (ดู lib/location-resolve.ts)
+  // หาไม่ได้ต้องไม่ทำให้การบันทึกล้มเหลว — เก็บ null แล้วไปต่อ
+  const location =
+    rawLocationText === ""
+      ? null
+      : await resolveLocation(rawLocationText, result.carrierCode);
+
+  const coordinates = location?.coordinates ?? null;
+
+  // เก็บข้อความที่อ่านรู้เรื่อง (ชื่อสาขา) แทนข้อความดิบที่มีรหัสภายในปนมา
+  const locationText = location?.displayText ?? rawLocationText;
 
   const { data, error } = await supabase
     .from("saved_trackings")

@@ -23,11 +23,9 @@ const STATUS_TEXT_CLASS: Record<TrackingStatus, string> = {
 
 interface HistoryListProps {
   items: SavedTracking[];
-  /** ว่างได้ ถ้าไม่ได้ตั้งคีย์ไว้ก็แค่ไม่แสดงแผนที่ */
-  mapEmbedKey: string;
 }
 
-export default function HistoryList({ items, mapEmbedKey }: HistoryListProps) {
+export default function HistoryList({ items }: HistoryListProps) {
   // ลบแล้วเอาออกจากรายการทันที ไม่ต้องรอโหลดหน้าใหม่
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set());
   const [pendingDelete, setPendingDelete] = useState<SavedTracking | null>(null);
@@ -77,8 +75,9 @@ export default function HistoryList({ items, mapEmbedKey }: HistoryListProps) {
 
       <ul className="mt-5 flex flex-col gap-4">
         {visible.map((item) => {
-          const hasCoordinates = item.lastLat !== null && item.lastLng !== null;
-          const showMap = hasCoordinates && mapEmbedKey !== "";
+          // ไม่มีพิกัด = เราไม่รู้ว่าสาขานี้อยู่ไหนจริงๆ ห้ามปักหมุดเดา
+          // (ดู lib/location-resolve.ts) แสดงชื่อสถานที่เป็นข้อความแทน
+          const showMap = item.lastLat !== null && item.lastLng !== null;
 
           return (
             <li
@@ -114,19 +113,50 @@ export default function HistoryList({ items, mapEmbedKey }: HistoryListProps) {
                 </p>
               </div>
 
-              {/* bg-paper รองไว้ข้างหลัง เผื่อแผนที่โหลดไม่ขึ้น (คีย์หมดโควตา หรือ
-                  เน็ตของผู้ใช้บล็อก Google) จะได้ไม่เห็นกล่องเทาของเบราว์เซอร์ */}
-              {showMap && (
+              {/* แผนที่เป็นภาพนิ่ง ลาก/ซูม/กดเข้าไปดูส่วนอื่นไม่ได้ — สิ่งที่ผู้ใช้
+                  ต้องรู้คือ "พัสดุอยู่แถวนี้" ภาพเดียวจบ
+
+                  ยิงผ่าน /api/map ของเราเอง ไม่ใช่ URL ของ Google ตรงๆ คีย์จึง
+                  ไม่เคยออกจากเครื่องเรา (Embed API เดิมบังคับให้ใส่คีย์ลงใน URL
+                  ที่ผู้ใช้เปิดดู source เห็นได้)
+
+                  bg-paper รองไว้ข้างหลัง เผื่อรูปโหลดไม่ขึ้น (โควตาหมด หรือเน็ต
+                  ของผู้ใช้บล็อก) จะได้ไม่เห็นกล่องเทาของเบราว์เซอร์ */}
+              {showMap ? (
                 <div className="border-t border-line bg-paper">
-                  <iframe
-                    // Embed API แสดงหมุดเดียวจากพิกัดที่เก็บไว้ ไม่ต้องยิง geocode ซ้ำ
-                    src={`https://www.google.com/maps/embed/v1/place?key=${encodeURIComponent(mapEmbedKey)}&q=${item.lastLat},${item.lastLng}&zoom=14&language=th`}
-                    title={`แผนที่ตำแหน่งล่าสุดของ ${displayTitleOf(item)}`}
+                  {/* eslint-disable-next-line @next/next/no-img-element --
+                      next/image ไม่ช่วยอะไรตรงนี้ ภาพมาจาก API route ของเราเอง
+                      ที่กำหนดขนาดตายตัวและตั้ง Cache-Control ไว้แล้ว การให้ Next
+                      มาแปลงซ้ำมีแต่จะเพิ่มงานฝั่งเซิร์ฟเวอร์เปล่าๆ */}
+                  <img
+                    src={`/api/map?lat=${item.lastLat}&lng=${item.lastLng}`}
+                    alt={
+                      item.lastLocationText === null
+                        ? `แผนที่ตำแหน่งล่าสุดของ ${displayTitleOf(item)}`
+                        : `แผนที่แสดงตำแหน่งของ ${displayTitleOf(item)} ที่ ${item.lastLocationText}`
+                    }
                     loading="lazy"
-                    referrerPolicy="no-referrer-when-downgrade"
-                    className="block h-44 w-full border-0 sm:h-52"
+                    width={640}
+                    height={288}
+                    className="block h-44 w-full object-cover sm:h-52"
                   />
                 </div>
+              ) : (
+                item.lastLocationText !== null && (
+                  /* ไม่รู้พิกัดของสาขานี้ — บอกตรงๆ ว่าอยู่ที่ไหนเป็นข้อความ
+                     ดีกว่าปักหมุดมั่ว และดีกว่าปล่อยช่องว่างเปล่าให้ผู้ใช้เดาเอง */
+                  <div className="flex items-start gap-2.5 border-t border-line bg-paper px-5 py-4">
+                    <PlaceMark className="mt-0.5 h-4 w-4 shrink-0 text-faint" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium leading-snug text-body">
+                        {item.lastLocationText}
+                      </p>
+                      <p className="mt-0.5 text-xs text-faint">
+                        ยังไม่มีพิกัดของจุดนี้ จึงยังแสดงแผนที่ไม่ได้
+                      </p>
+                    </div>
+                  </div>
+                )
               )}
 
               <div className="flex flex-wrap gap-2.5 border-t border-line bg-paper/60 px-5 py-3.5">
@@ -157,5 +187,24 @@ export default function HistoryList({ items, mapEmbedKey }: HistoryListProps) {
         onCancel={() => setPendingDelete(null)}
       />
     </>
+  );
+}
+
+/** หมุดเล็กหน้าชื่อสถานที่ — ชุดเดียวกับที่ใช้ในไทม์ไลน์หน้าแรก */
+function PlaceMark({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 21c4-4.4 6-7.6 6-10a6 6 0 1 0-12 0c0 2.4 2 5.6 6 10z" />
+      <circle cx="12" cy="11" r="2.3" />
+    </svg>
   );
 }

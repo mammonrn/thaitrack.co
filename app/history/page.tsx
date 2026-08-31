@@ -65,20 +65,6 @@ async function loadHistory(): Promise<PageState> {
   };
 }
 
-/**
- * คีย์สำหรับ Google Maps Embed API
- *
- * แยกจาก GOOGLE_MAPS_API_KEY ที่ใช้ทำ geocode โดยตั้งใจ เพราะ Embed API ต้องใส่
- * คีย์ลงใน URL ของ iframe ซึ่งผู้ใช้เปิดดู source เห็นได้เสมอ ถ้าเอาคีย์ตัวเดียว
- * กับที่ใช้ฝั่ง server มาใช้ตรงนี้ คีย์ที่ตั้งใจซ่อนไว้จะหลุดออกไปทันที
- *
- * คีย์ตัวนี้จึงควรเป็นคนละตัว และตั้ง HTTP referrer restriction ไว้ใน Google
- * Cloud Console ถ้าไม่ได้ตั้งค่าไว้ หน้าประวัติจะไม่แสดงแผนที่ (ไม่ error)
- */
-function readEmbedKey(): string {
-  return process.env.GOOGLE_MAPS_EMBED_KEY?.trim() ?? "";
-}
-
 export default async function HistoryPage() {
   const state = await loadHistory();
 
@@ -155,7 +141,7 @@ export default async function HistoryPage() {
                   </Link>
                 </div>
               ) : (
-                <HistoryList items={state.items} mapEmbedKey={readEmbedKey()} />
+                <HistoryList items={state.items} />
               )}
             </>
           )}
