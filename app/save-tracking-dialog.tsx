@@ -56,12 +56,14 @@ export default function SaveTrackingDialog({
       className="m-auto w-[min(26rem,calc(100vw-2rem))] rounded-2xl border border-line-strong bg-paper p-0 text-body shadow-2xl animate-rise backdrop:bg-ink/40"
     >
       <div className="p-5 sm:p-6">
-        <h2
+        <p
           id="save-dialog-title"
+          role="heading"
+          aria-level={2}
           className="font-display text-lg font-bold tracking-tight text-ink"
         >
           {isEditing ? "แก้ชื่อที่บันทึกไว้" : "บันทึกพัสดุนี้ไว้"}
-        </h2>
+        </p>
         <p className="mt-2 font-mono text-xs uppercase tracking-[0.12em] text-faint">
           {trackingNumber}
         </p>

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { CARRIER_LANDINGS } from "@/lib/carriers/landing";
+import { fitTitle } from "@/lib/seo";
 import { absoluteUrl } from "@/lib/site";
 import SiteHeader from "./site-header";
 import TrackingSearch from "./tracking-search";
@@ -15,11 +16,22 @@ const CARRIERS = [
   "SPX Express",
 ];
 
+const TITLE = fitTitle("เช็คพัสดุทุกขนส่งในที่เดียว ด้วยเลขพัสดุ");
+const DESCRIPTION =
+  "เช็คพัสดุทุกขนส่งในที่เดียว พิมพ์เลขพัสดุครั้งเดียว เราไล่ถามให้ทั้งไปรษณีย์ไทย " +
+  "Flash Kerry J&T SPX และเจ้าอื่น ดูสถานะล่าสุดและเส้นทางที่ผ่านมา ฟรี";
+
 export const metadata: Metadata = {
-  title: "เช็คพัสดุทุกขนส่งในที่เดียว — พัสดุไทย.com",
-  description:
-    "พิมพ์เลขพัสดุครั้งเดียว เราไล่ถามให้ทุกขนส่ง ไปรษณีย์ไทย Flash Kerry J&T SPX และอื่นๆ ฟรี ไม่ต้องสมัครสมาชิก",
+  title: TITLE,
+  description: DESCRIPTION,
   alternates: { canonical: absoluteUrl("/") },
+  openGraph: {
+    title: TITLE,
+    description: DESCRIPTION,
+    url: absoluteUrl("/"),
+    type: "website",
+    locale: "th_TH",
+  },
 };
 
 export default function Home() {

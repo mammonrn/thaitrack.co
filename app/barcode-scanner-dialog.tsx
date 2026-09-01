@@ -158,12 +158,14 @@ export default function BarcodeScannerDialog({
     >
       <div className="flex h-full flex-col">
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
-          <h2
+          <p
             id="scanner-title"
+            role="heading"
+            aria-level={2}
             className="font-display text-base font-bold tracking-tight text-ink"
           >
             สแกนเลขพัสดุ
-          </h2>
+          </p>
           <button
             type="button"
             onClick={onClose}

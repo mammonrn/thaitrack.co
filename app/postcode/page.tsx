@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { DATA_SOURCE, PROVINCES } from "@/lib/postcodes";
+import { fitTitle } from "@/lib/seo";
 import { absoluteUrl } from "@/lib/site";
 import SiteHeader from "../site-header";
 import PostcodeSearch from "./postcode-search";
@@ -12,11 +13,22 @@ import PostcodeSearch from "./postcode-search";
  * ⚠️ ทั้งสายนี้เป็น static ล้วน ไม่มีการยิง API ของขนส่งเลยแม้แต่ครั้งเดียว
  * ข้อมูลมาจากไฟล์ในโปรเจกต์ (ดู lib/postcodes.ts)
  */
+const TITLE = fitTitle("รหัสไปรษณีย์ไทย ค้นตามจังหวัด อำเภอ ตำบล");
+const DESCRIPTION =
+  "ค้นรหัสไปรษณีย์ไทยครบทั้ง 77 จังหวัด 928 อำเภอ ไล่ดูรายตำบลได้ทุกแห่ง " +
+  "หรือกรอกรหัส 5 หลักที่มีอยู่เพื่อดูว่าเป็นอำเภอและจังหวัดไหน ใช้ฟรีไม่ต้องสมัคร";
+
 export const metadata: Metadata = {
-  title: "รหัสไปรษณีย์ไทย ค้นตามจังหวัด อำเภอ ตำบล — พัสดุไทย.com",
-  description:
-    "ค้นรหัสไปรษณีย์ทุกจังหวัดในไทย ไล่ดูตามอำเภอและตำบล หรือกรอกรหัสเพื่อดูว่าเป็นพื้นที่ไหน",
+  title: TITLE,
+  description: DESCRIPTION,
   alternates: { canonical: absoluteUrl("/รหัสไปรษณีย์") },
+  openGraph: {
+    title: TITLE,
+    description: DESCRIPTION,
+    url: absoluteUrl("/รหัสไปรษณีย์"),
+    type: "website",
+    locale: "th_TH",
+  },
 };
 
 export default function PostcodeIndexPage() {

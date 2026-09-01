@@ -16,7 +16,7 @@ export default function SiteHeader() {
   return (
   <header className="sticky top-0 z-10 border-b border-line bg-paper/90 backdrop-blur">
     <div className="mx-auto flex h-14 w-full max-w-3xl items-center justify-between px-4 sm:h-16 sm:px-6">
-      <Link href="/" className="flex items-center gap-2.5">
+      <Link href="/" className="flex min-h-11 items-center gap-2.5">
         <BrandMark className="h-8 w-8 text-ink sm:h-9 sm:w-9" />
         <span className="font-display text-lg font-bold tracking-tight text-ink sm:text-xl">
           พัสดุไทย

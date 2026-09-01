@@ -53,7 +53,12 @@ export default function PostcodeSearch() {
         id="postcode"
         type="text"
         inputMode="numeric"
-        autoComplete="postal-code"
+        /*
+          ปิด autofill โดยตั้งใจ: ช่องนี้ใช้ "ค้นหา" รหัส ไม่ใช่ "กรอกที่อยู่ของตัวเอง"
+          รายการที่เบราว์เซอร์เสนอจะลอยทับผลลัพธ์ที่อยู่ถัดลงไปเพียง 10px พอดี
+          ซึ่งบังสิ่งเดียวที่ผู้ใช้มาดู
+        */
+        autoComplete="off"
         maxLength={5}
         value={code}
         onChange={(event) => {
@@ -74,7 +79,9 @@ export default function PostcodeSearch() {
                 <li key={`${province}/${amphoe}`}>
                   <Link
                     href={`/รหัสไปรษณีย์/${province}/${amphoe}`}
-                    className="text-ink underline decoration-line-strong underline-offset-4 hover:decoration-ink"
+                    // พื้นที่กด 44px ตามเกณฑ์นิ้วสัมผัส — ผลลัพธ์คือสิ่งที่ผู้ใช้
+                    // ตั้งใจกดต่อ ไม่ใช่ลิงก์ประกอบในเนื้อความ
+                    className="inline-flex min-h-11 items-center text-ink underline decoration-line-strong underline-offset-4 hover:decoration-ink"
                   >
                     อำเภอ{amphoe} จังหวัด{province}
                   </Link>

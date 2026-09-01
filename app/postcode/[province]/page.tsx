@@ -9,6 +9,7 @@ import {
   postcodesOf,
   provincePostcodes,
 } from "@/lib/postcodes";
+import { fitDescription, fitTitle } from "@/lib/seo";
 import { absoluteUrl } from "@/lib/site";
 import SiteHeader from "../../site-header";
 
@@ -28,15 +29,31 @@ export async function generateMetadata({
   if (province === undefined) return {};
 
   const codes = provincePostcodes(province);
-  const title = `รหัสไปรษณีย์จังหวัด${province.name} ครบทุกอำเภอ — พัสดุไทย.com`;
+  const url = absoluteUrl(`/รหัสไปรษณีย์/${province.name}`);
+
+  const title = fitTitle(`รหัสไปรษณีย์จังหวัด${province.name} ครบทุกอำเภอ`);
+
+  const description = fitDescription(
+    `รหัสไปรษณีย์จังหวัด${province.name} ครบทั้ง ${province.amphoes.length} อำเภอ ` +
+      `${countTambons(province)} ตำบล ใช้รหัส ${codes.length} รหัส ` +
+      `ตั้งแต่ ${codes[0]} ถึง ${codes[codes.length - 1]}`,
+    [
+      "เช่น",
+      ...province.amphoes.map((amphoe) => `อำเภอ${amphoe.name}`),
+      "เลือกอำเภอเพื่อดูรหัสรายตำบล",
+    ],
+  );
 
   return {
     title,
-    description:
-      `รหัสไปรษณีย์จังหวัด${province.name} ทั้งหมด ${codes.length} รหัส ` +
-      `ครอบคลุม ${province.amphoes.length} อำเภอ ${countTambons(province)} ตำบล`,
-    alternates: {
-      canonical: absoluteUrl(`/รหัสไปรษณีย์/${province.name}`),
+    description,
+    alternates: { canonical: url },
+    openGraph: {
+      title,
+      description,
+      url,
+      type: "website",
+      locale: "th_TH",
     },
   };
 }
@@ -77,8 +94,16 @@ export default async function ProvincePage({
       <SiteHeader />
 
       <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-10 sm:px-6 sm:py-14">
-        <nav aria-label="เส้นทาง" className="text-xs text-faint">
-          <Link href="/รหัสไปรษณีย์" className="hover:text-ink">
+        {/* ลิงก์ในเส้นทางต้องกดติดบนมือถือ จึงให้พื้นที่กดสูง 44px
+            ด้วย inline-flex + min-h แทนที่จะเป็นข้อความสูง 19px */}
+        <nav
+          aria-label="เส้นทาง"
+          className="flex flex-wrap items-center text-xs text-faint"
+        >
+          <Link
+            href="/รหัสไปรษณีย์"
+            className="inline-flex min-h-11 items-center pr-1 hover:text-ink"
+          >
             รหัสไปรษณีย์
           </Link>
           <span className="mx-1.5">›</span>

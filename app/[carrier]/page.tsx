@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { CARRIER_LANDINGS, findLanding } from "@/lib/carriers/landing";
+import { fitTitle } from "@/lib/seo";
 import { absoluteUrl } from "@/lib/site";
 import SiteHeader from "../site-header";
 import TrackingSearch from "../tracking-search";
@@ -42,7 +43,7 @@ export async function generateMetadata({
   const landing = findLanding(decodeURIComponent(carrier));
   if (landing === undefined) return {};
 
-  const title = `${landing.heading} ด้วยเลขพัสดุ — พัสดุไทย.com`;
+  const title = fitTitle(`${landing.heading} ด้วยเลขพัสดุ`);
 
   return {
     title,

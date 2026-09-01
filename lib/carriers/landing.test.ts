@@ -9,6 +9,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import {
+  DESCRIPTION_MAX,
+  DESCRIPTION_MIN,
+  TITLE_MAX,
+  fitTitle,
+  textLength,
+} from "../seo.ts";
 import { CARRIER_LANDINGS, findLanding } from "./landing.ts";
 import { canTrack } from "./etrackings.ts";
 
@@ -48,9 +55,19 @@ test("ทุกแถวต้องมีเนื้อหาครบ ไม�
 
 test("คำอธิบายยาวพอจะเป็น meta description ที่ใช้ได้จริง", () => {
   for (const entry of CARRIER_LANDINGS) {
-    // สั้นกว่านี้ Google มักเขียนใหม่เอง ยาวกว่านี้ก็ถูกตัดกลางประโยค
-    assert.ok(entry.description.length >= 60, `${entry.slug} สั้นไป`);
-    assert.ok(entry.description.length <= 160, `${entry.slug} ยาวไป`);
+    // สั้นกว่านี้ Google มักเขียนใหม่เองโดยดึงข้อความจากหน้ามาแทน
+    // ยาวกว่านี้ก็ถูกตัดกลางประโยค — นับเป็นตัวอักษรจริง ไม่ใช่ code unit
+    const length = textLength(entry.description);
+
+    assert.ok(length >= DESCRIPTION_MIN, `${entry.slug} สั้นไป (${length})`);
+    assert.ok(length <= DESCRIPTION_MAX, `${entry.slug} ยาวไป (${length})`);
+  }
+});
+
+test("title อยู่ในความยาวที่ไม่ถูกตัดกลางคำ", () => {
+  for (const entry of CARRIER_LANDINGS) {
+    const title = fitTitle(`${entry.heading} ด้วยเลขพัสดุ`);
+    assert.ok(textLength(title) <= TITLE_MAX, `${entry.slug}: ${title}`);
   }
 });
 

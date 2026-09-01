@@ -79,12 +79,14 @@ export default function InstallGuideDialog({
       className="m-auto w-[min(26rem,calc(100vw-2rem))] rounded-2xl border border-line-strong bg-paper p-0 text-body shadow-2xl animate-rise backdrop:bg-ink/40"
     >
       <div className="p-5 sm:p-6">
-        <h2
+        <p
           id="install-guide-title"
+          role="heading"
+          aria-level={2}
           className="font-display text-lg font-bold tracking-tight text-ink"
         >
           เพิ่มลงหน้าจอโฮม
-        </h2>
+        </p>
         <p className="mt-2 text-sm leading-relaxed text-faint">
           เปิดใช้เหมือนแอพได้เลย ไม่ต้องพิมพ์ที่อยู่เว็บทุกครั้ง
         </p>

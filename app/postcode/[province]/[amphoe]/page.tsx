@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { PROVINCES, findAmphoe, findProvince, postcodesOf } from "@/lib/postcodes";
+import { fitDescription, fitTitle } from "@/lib/seo";
 import { absoluteUrl } from "@/lib/site";
 import SiteHeader from "../../../site-header";
 
@@ -47,15 +48,37 @@ export async function generateMetadata({
 
   const { province, amphoe } = found;
   const codes = postcodesOf(amphoe);
-  const title = `รหัสไปรษณีย์อำเภอ${amphoe.name} จังหวัด${province.name} — พัสดุไทย.com`;
+  const url = absoluteUrl(`/รหัสไปรษณีย์/${province.name}/${amphoe.name}`);
+
+  const title = fitTitle(
+    `รหัสไปรษณีย์อำเภอ${amphoe.name} จังหวัด${province.name}`,
+  );
+
+  // ส่วนขยายเป็นชื่อตำบลจริงของอำเภอนี้ — ข้อมูลเฉพาะหน้า ไม่ใช่ประโยคที่
+  // เหมือนกันทุกหน้า ซึ่งจะกลายเป็นเนื้อหาซ้ำ 928 หน้า
+  const description = fitDescription(
+    `รหัสไปรษณีย์อำเภอ${amphoe.name} จังหวัด${province.name} ` +
+      `คือ ${codes.join(", ")} ครอบคลุมทั้งหมด ${amphoe.tambons.length} ตำบล`,
+    [
+      "ได้แก่",
+      ...amphoe.tambons.map((tambon) => `ตำบล${tambon.name}`),
+      // อำเภอที่มีไม่กี่ตำบลและชื่อสั้น จะยังยาวไม่ถึงเกณฑ์แม้ใส่ชื่อครบแล้ว
+      // ประโยคนี้เติมข้อมูลที่เกี่ยวกับหน้านี้จริง แทนคำโฆษณากลางๆ
+      `ดูอีก ${province.amphoes.length - 1} อำเภอในจังหวัดเดียวกันได้`,
+      "ดูรหัสรายตำบลครบทุกแห่งได้ในหน้าเดียว",
+    ],
+  );
 
   return {
     title,
-    description:
-      `รหัสไปรษณีย์อำเภอ${amphoe.name} จังหวัด${province.name} ` +
-      `คือ ${codes.join(", ")} ครอบคลุม ${amphoe.tambons.length} ตำบล`,
-    alternates: {
-      canonical: absoluteUrl(`/รหัสไปรษณีย์/${province.name}/${amphoe.name}`),
+    description,
+    alternates: { canonical: url },
+    openGraph: {
+      title,
+      description,
+      url,
+      type: "website",
+      locale: "th_TH",
     },
   };
 }
@@ -102,14 +125,22 @@ export default async function AmphoePage({
       <SiteHeader />
 
       <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-10 sm:px-6 sm:py-14">
-        <nav aria-label="เส้นทาง" className="text-xs text-faint">
-          <Link href="/รหัสไปรษณีย์" className="hover:text-ink">
+        {/* ลิงก์ในเส้นทางต้องกดติดบนมือถือ จึงให้พื้นที่กดสูง 44px
+            ด้วย inline-flex + min-h แทนที่จะเป็นข้อความสูง 19px */}
+        <nav
+          aria-label="เส้นทาง"
+          className="flex flex-wrap items-center text-xs text-faint"
+        >
+          <Link
+            href="/รหัสไปรษณีย์"
+            className="inline-flex min-h-11 items-center pr-1 hover:text-ink"
+          >
             รหัสไปรษณีย์
           </Link>
           <span className="mx-1.5">›</span>
           <Link
             href={`/รหัสไปรษณีย์/${province.name}`}
-            className="hover:text-ink"
+            className="inline-flex min-h-11 items-center px-1 hover:text-ink"
           >
             {province.name}
           </Link>
@@ -168,7 +199,7 @@ export default async function AmphoePage({
               <li key={other.name}>
                 <Link
                   href={`/รหัสไปรษณีย์/${province.name}/${other.name}`}
-                  className="flex min-h-10 items-center rounded-lg border border-line bg-white px-3 text-[13px] text-ink transition-colors hover:border-line-strong"
+                  className="flex min-h-11 items-center rounded-lg border border-line bg-white px-3 text-[13px] text-ink transition-colors hover:border-line-strong"
                 >
                   {other.name}
                 </Link>

@@ -73,7 +73,9 @@ const ITEMS: NavItem[] = [
     href: "/",
     label: "ติดตาม",
     Icon: ParcelIcon,
-    isActive: (pathname) => pathname === "/",
+    // หน้า landing รายขนส่ง (/เช็คพัสดุ-flash) เป็นหน้าติดตามเหมือนกัน
+    // คนที่เข้ามาจาก Google แล้วเห็นเมนูไม่สว่างสักแท็บ จะไม่รู้ว่าตัวเองอยู่ไหน
+    isActive: (pathname) => pathname === "/" || pathname.startsWith("/เช็คพัสดุ-"),
   },
   {
     href: "/history",
@@ -91,7 +93,10 @@ const ITEMS: NavItem[] = [
     href: "/รหัสไปรษณีย์",
     label: "รหัสไปรษณีย์",
     Icon: PinIcon,
-    isActive: (pathname) => pathname.startsWith("/รหัสไปรษณีย์"),
+    // รับ /postcode ด้วย เพราะเป็นปลายทางจริงของ rewrite — ผู้ใช้ไม่เห็น path นี้
+    // แต่ถ้าวันหนึ่งมีการ render จาก path ที่ rewrite แล้ว เมนูต้องยังถูกต้อง
+    isActive: (pathname) =>
+      pathname.startsWith("/รหัสไปรษณีย์") || pathname.startsWith("/postcode"),
   },
 ];
 
@@ -107,8 +112,26 @@ const ITEMS: NavItem[] = [
 /** เมนูที่มีหน้าปลายทางจริงแล้วเท่านั้น */
 const VISIBLE_ITEMS = ITEMS.filter((item) => item.comingSoon !== true);
 
+/**
+ * path ที่เทียบกับกติกาของเมนูได้จริง
+ *
+ * ⚠️ usePathname() คืน path ที่ยัง percent-encoded อยู่ ("/%E0%B8%A3...") ส่วน
+ * กติกาของเราเขียนเป็นภาษาไทย ถ้าไม่ decode ก่อน เมนูจะไม่มีวัน active บนหน้า
+ * ที่ URL เป็นภาษาไทยเลย (เจอจากการยิงจริง — ทุกหน้าใหม่ไม่มีแท็บไหนสว่าง)
+ *
+ * decode ล้มได้เมื่อเจอ % ที่ไม่ใช่ escape ที่ถูกต้อง ซึ่งเกิดได้จาก URL ที่คน
+ * พิมพ์เอง — คืนค่าเดิมไปแทนที่จะโยน error ใส่หน้าเว็บ
+ */
+function readablePath(pathname: string): string {
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return pathname;
+  }
+}
+
 export default function SiteNav() {
-  const pathname = usePathname();
+  const pathname = readablePath(usePathname());
 
   return (
     <nav

@@ -63,12 +63,14 @@ export default function LogoutDialog({
       className="m-auto w-[min(24rem,calc(100vw-2rem))] rounded-2xl border border-line-strong bg-paper p-0 text-body shadow-2xl animate-rise backdrop:bg-ink/40"
     >
       <div className="p-5 sm:p-6">
-        <h2
+        <p
           id="logout-dialog-title"
+          role="heading"
+          aria-level={2}
           className="font-display text-lg font-bold tracking-tight text-ink"
         >
           ต้องการออกจากระบบใช่ไหม
-        </h2>
+        </p>
         <p className="mt-2 text-sm leading-relaxed text-faint">
           {userName === ""
             ? "หลังออกจากระบบยังค้นหาพัสดุได้ตามปกติ และกลับเข้ามาใหม่เมื่อไรก็ได้"
