@@ -41,13 +41,19 @@ test("ที่อยู่เว็บต้องไม่ลงท้าย�
   assert.equal(absoluteUrl("/a"), "https://example.com/a");
 });
 
-test("ไม่ได้ตั้ง env → ใช้โดเมนเริ่มต้นที่เป็น ASCII แล้ว", (t) => {
+test("ไม่ได้ตั้ง env → ใช้โดเมนจริงของเว็บ", (t) => {
   t.after(() => {
     delete process.env.NEXT_PUBLIC_SITE_URL;
   });
 
   process.env.NEXT_PUBLIC_SITE_URL = "";
+
   // โดเมนภาษาไทยต้องอยู่ในรูป punycode เสมอ เพราะ URL ที่ส่งให้ Google
   // ต้องเป็น ASCII
   assert.doesNotMatch(siteUrl(), /[^\x20-\x7E]/);
+
+  // ⚠️ ตรึงค่าไว้เพราะเคยเดาผิดมาแล้ว — punycode ก้อนนี้คือ "พัสดุไทย.com"
+  // ตรวจซ้ำได้ด้วย: python3 -c "print('xn--l3cgts1b3bzcvf'.encode().decode('idna'))"
+  // ถ้ามีคนแก้ค่านี้โดยไม่ได้ตรวจ canonical ของทั้งเว็บจะชี้ไปโดเมนที่ไม่ใช่ของเรา
+  assert.equal(siteUrl(), "https://xn--l3cgts1b3bzcvf.com");
 });
