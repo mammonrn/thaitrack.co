@@ -16,6 +16,13 @@
  */
 
 import {
+  nextResetAt,
+  periodKey,
+  normalizeResetDay,
+  type BillingCycle,
+  type BillingPeriod,
+} from "./billing-period";
+import {
   supabaseProviderUsageStore,
   type ProviderUsageStore,
 } from "./supabase/provider-usage";
@@ -42,11 +49,47 @@ export const PROVIDER_LABEL: Record<ProviderId, string> = {
   etrackings: "ETrackings",
 };
 
-/** ชื่อตัวแปร env ของเพดานแต่ละเจ้า */
+/**
+ * ชื่อตัวแปร env ของเพดานแต่ละเจ้า
+ *
+ * ชื่อเดิมมีคำว่า MONTHLY อยู่ ซึ่งกลายเป็นคำโกหกตั้งแต่รู้ว่ารอบบิลของสามเจ้า
+ * ไม่เหมือนกันเลย — ชื่อใหม่จึงตัดคำนั้นออก แต่ยังอ่านชื่อเดิมเป็นทางสำรอง
+ * เพื่อไม่ให้ค่าที่ตั้งไว้แล้วบนเซิร์ฟเวอร์หายไปเงียบๆ ตอน deploy
+ */
 export const QUOTA_VARS: Record<ProviderId, string> = {
-  "thailand-post": "THAILAND_POST_MONTHLY_CALL_LIMIT",
-  track123: "TRACK123_MONTHLY_CALL_LIMIT",
-  etrackings: "ETRACKINGS_MONTHLY_CALL_LIMIT",
+  "thailand-post": "THAILAND_POST_CALL_LIMIT",
+  track123: "TRACK123_CALL_LIMIT",
+  etrackings: "ETRACKINGS_CALL_LIMIT",
+};
+
+/** ชื่อตัวแปร env ของรูปแบบรอบบิล (daily | monthly | lifetime) */
+export const CYCLE_VARS: Record<ProviderId, string> = {
+  "thailand-post": "THAILAND_POST_BILLING_CYCLE",
+  track123: "TRACK123_BILLING_CYCLE",
+  etrackings: "ETRACKINGS_BILLING_CYCLE",
+};
+
+/** ชื่อตัวแปร env ของวันที่รอบเริ่มใหม่ (ใช้เฉพาะ monthly) */
+export const RESET_DAY_VARS: Record<ProviderId, string> = {
+  "thailand-post": "THAILAND_POST_BILLING_RESET_DAY",
+  track123: "TRACK123_BILLING_RESET_DAY",
+  etrackings: "ETRACKINGS_BILLING_RESET_DAY",
+};
+
+/**
+ * รอบบิลเริ่มต้นของแต่ละเจ้า — ยืนยันจาก dashboard จริงทั้งสามเจ้าแล้ว
+ *
+ * ⚠️ ทั้งสามค่านี้เป็นข้อเท็จจริงของ **แผนที่ใช้อยู่ตอนนี้** ไม่ใช่คุณสมบัติถาวร
+ * ของผู้ให้บริการ — ETrackings ที่เป็น lifetime อยู่เพราะใช้แผนฟรี ถ้าอัปแผน
+ * เมื่อไรมันจะกลายเป็นรายเดือนทันที จึงต้องตั้งผ่าน env ได้ทุกค่า
+ */
+export const DEFAULT_PERIOD: Record<ProviderId, BillingPeriod> = {
+  // รีเซ็ตทุกเที่ยงคืนเวลาไทย
+  "thailand-post": { cycle: "daily", resetDay: 1 },
+  // รายเดือนตามวันที่ซื้อแพ็กเกจ
+  track123: { cycle: "monthly", resetDay: 29 },
+  // แผนฟรี = โควตาก้อนเดียวตลอดอายุบัญชี ใช้หมดแล้วหมดเลย
+  etrackings: { cycle: "lifetime", resetDay: 1 },
 };
 
 /**
@@ -60,10 +103,13 @@ export const QUOTA_VARS: Record<ProviderId, string> = {
  * ทั้งคู่ปรับได้ผ่าน env และ **ควรปรับให้ตรงกับแผนที่ใช้จริง**
  */
 export const DEFAULT_QUOTA: Record<ProviderId, number> = {
-  // 1,000 ชิ้น/เดือนตามที่เข้าใจว่าเป็นเพดานของบัญชีทั่วไป — ตัวเลขนี้ไม่ได้
-  // ยืนยันจากเอกสารทางการ ถ้ารู้เพดานจริงของบัญชีที่ใช้อยู่ ให้ตั้งผ่าน env
+  // 1,000 ครั้ง/วัน
   "thailand-post": 1_000,
-  track123: 1_000,
+  // 300 ชิ้น/รอบ ตามแพ็กเกจที่ซื้อจริง (เดิมตั้งไว้ 1,000 ซึ่งสูงเกินจริงสามเท่า
+  // แปลว่ากลไกเกลี่ยโหลดจะไม่เริ่มทำงานจนกว่าจะใช้ไป 800 ครั้ง = เกินเพดานจริง
+  // ไปนานแล้ว)
+  track123: 300,
+  // แผนฟรี — ก้อนเดียวตลอดอายุบัญชี
   etrackings: 50,
 };
 
@@ -78,40 +124,53 @@ export const LEAN_RATIO_VAR = "PROVIDER_QUOTA_LEAN_RATIO";
  */
 export const DEFAULT_LEAN_RATIO = 0.8;
 
-/** ยอดที่นับได้ในเดือนปัจจุบัน แยกตามเจ้า */
+/**
+ * ชื่อตัวแปร env ของโควตาที่สงวนไว้ให้การเก็บที่อยู่สาขาโดยเฉพาะ
+ *
+ * ดูเหตุผลที่ readHarvestReserve()
+ */
+export const HARVEST_RESERVE_VAR = "ETRACKINGS_HARVEST_RESERVE";
+
+/**
+ * จำนวนครั้งท้ายๆ ของโควตา ETrackings ที่สงวนไว้ให้ branch-harvest เท่านั้น
+ *
+ * ------------------------------------------------------------------
+ * นโยบายที่ตัดสินใจแล้ว: โควตา ETrackings ที่เหลือมีค่ากับ "การเก็บที่อยู่สาขา"
+ * มากกว่า "การค้นหาทั่วไป" อย่างเทียบกันไม่ติด
+ *
+ *   ค้นหาทั่วไป      Track123 ก็ทำได้ ผลที่ได้หมดอายุพร้อม cache
+ *   เก็บที่อยู่สาขา   ETrackings เป็นเจ้าเดียวที่ให้ที่อยู่เต็มมา และพิกัดที่
+ *                    ได้มาอยู่ในตารางของกลางถาวร ใช้ซ้ำได้กับพัสดุทุกใบที่
+ *                    ผ่านสาขานั้นตลอดไป = จ่ายครั้งเดียวได้ผลไม่รู้จบ
+ *
+ * 30 ครั้งสุดท้ายจากเพดาน 50 จึงถูกกันไว้ให้การเก็บที่อยู่ ส่วนการค้นหาทั่วไป
+ * ใช้ได้แค่ 20 ครั้งแรกเท่านั้น
+ * ------------------------------------------------------------------
+ */
+export const DEFAULT_HARVEST_RESERVE = 30;
+
+/** ยอดที่นับได้ในรอบปัจจุบันของแต่ละเจ้า */
 interface UsageState {
-  /** "2026-08" ตามเวลาไทย — ต่างจากนี้เมื่อไรคือข้ามเดือนแล้ว ต้องเริ่มนับใหม่ */
-  month: string;
+  /** คีย์รอบที่กำลังนับอยู่ของแต่ละเจ้า — ต่างจากนี้เมื่อไรคือขึ้นรอบใหม่แล้ว */
+  periods: Record<ProviderId, string>;
   counts: Record<ProviderId, number>;
-  /** เดือนที่อ่านยอดจากฐานข้อมูลมาแล้ว — null คือยังไม่เคยอ่าน */
-  loadedMonth: string | null;
+  /** คีย์รอบที่อ่านยอดจากฐานข้อมูลมาแล้ว — null คือยังไม่เคยอ่าน */
+  loaded: Record<ProviderId, string | null>;
 }
 
 function emptyCounts(): Record<ProviderId, number> {
   return { "thailand-post": 0, track123: 0, etrackings: 0 };
 }
 
-let state: UsageState = {
-  month: "",
-  counts: emptyCounts(),
-  loadedMonth: null,
-};
-
-/** "2026-08" ตามเวลาไทย — รอบบิลของผู้ให้บริการไทยย่อมนับตามเวลาไทย */
-export function currentMonth(now: number = Date.now()): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    year: "numeric",
-    month: "2-digit",
-    timeZone: "Asia/Bangkok",
-  }).format(now);
+function emptyState(): UsageState {
+  return {
+    periods: { "thailand-post": "", track123: "", etrackings: "" },
+    counts: emptyCounts(),
+    loaded: { "thailand-post": null, track123: null, etrackings: null },
+  };
 }
 
-/** ข้ามเดือนแล้วเริ่มนับใหม่ — เรียกก่อนแตะ state ทุกครั้ง */
-function rollOver(now: number): void {
-  const month = currentMonth(now);
-  if (state.month === month) return;
-  state = { month, counts: emptyCounts(), loadedMonth: null };
-}
+let state: UsageState = emptyState();
 
 /** อ่านตัวเลขบวกจาก env — คืน fallback เมื่อไม่ได้ตั้งหรือตั้งค่าที่ใช้ไม่ได้ */
 function readPositiveNumber(raw: string | undefined, fallback: number): number {
@@ -119,18 +178,95 @@ function readPositiveNumber(raw: string | undefined, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-/** เพดานต่อเดือนของเจ้านี้ */
-export function readQuota(provider: ProviderId): number {
-  // เขียนชื่อตัวแปรเต็มๆ ไม่อ้างแบบไดนามิก เพราะ Next แทนค่า process.env.X
-  // ตอน build จากชื่อที่เขียนตรงๆ เท่านั้น (เหตุผลเดียวกับ lib/supabase/env.ts)
-  const raw =
-    provider === "thailand-post"
-      ? process.env.THAILAND_POST_MONTHLY_CALL_LIMIT
-      : provider === "track123"
-        ? process.env.TRACK123_MONTHLY_CALL_LIMIT
-        : process.env.ETRACKINGS_MONTHLY_CALL_LIMIT;
+/**
+ * ค่า env ทั้งหมดของเจ้านี้ — เขียนชื่อตัวแปรเต็มๆ ไม่อ้างแบบไดนามิก
+ *
+ * Next แทนค่า process.env.X ตอน build จากชื่อที่เขียนตรงๆ เท่านั้น การเขียน
+ * process.env[name] จะได้ undefined เสมอบน production (เหตุผลเดียวกับ
+ * lib/supabase/env.ts)
+ */
+function readEnv(provider: ProviderId): {
+  quota: string | undefined;
+  cycle: string | undefined;
+  resetDay: string | undefined;
+} {
+  if (provider === "thailand-post") {
+    return {
+      quota:
+        process.env.THAILAND_POST_CALL_LIMIT ??
+        process.env.THAILAND_POST_MONTHLY_CALL_LIMIT,
+      cycle: process.env.THAILAND_POST_BILLING_CYCLE,
+      resetDay: process.env.THAILAND_POST_BILLING_RESET_DAY,
+    };
+  }
+  if (provider === "track123") {
+    return {
+      quota:
+        process.env.TRACK123_CALL_LIMIT ??
+        process.env.TRACK123_MONTHLY_CALL_LIMIT,
+      cycle: process.env.TRACK123_BILLING_CYCLE,
+      resetDay: process.env.TRACK123_BILLING_RESET_DAY,
+    };
+  }
+  return {
+    quota:
+      process.env.ETRACKINGS_CALL_LIMIT ??
+      process.env.ETRACKINGS_MONTHLY_CALL_LIMIT,
+    cycle: process.env.ETRACKINGS_BILLING_CYCLE,
+    resetDay: process.env.ETRACKINGS_BILLING_RESET_DAY,
+  };
+}
 
-  return readPositiveNumber(raw, DEFAULT_QUOTA[provider]);
+/** ค่าที่รับได้ของรูปแบบรอบบิล — ค่าอื่นถูกเมินแล้วใช้ค่าเริ่มต้นแทน */
+const CYCLES: ReadonlySet<string> = new Set(["daily", "monthly", "lifetime"]);
+
+/** รอบบิลของเจ้านี้ตามที่ตั้งไว้ */
+export function readPeriod(provider: ProviderId): BillingPeriod {
+  const env = readEnv(provider);
+  const fallback = DEFAULT_PERIOD[provider];
+
+  const raw = (env.cycle ?? "").trim().toLowerCase();
+  const cycle: BillingCycle = CYCLES.has(raw)
+    ? (raw as BillingCycle)
+    : fallback.cycle;
+
+  return {
+    cycle,
+    resetDay: normalizeResetDay(
+      readPositiveNumber(env.resetDay, fallback.resetDay),
+    ),
+  };
+}
+
+/** คีย์รอบที่กำลังใช้อยู่ของเจ้านี้ */
+export function currentPeriodKey(
+  provider: ProviderId,
+  now: number = Date.now(),
+): string {
+  return periodKey(readPeriod(provider), now);
+}
+
+/** เวลาที่รอบถัดไปของเจ้านี้จะเริ่ม — null เมื่อไม่มีวันรีเซ็ต */
+export function nextResetOf(
+  provider: ProviderId,
+  now: number = Date.now(),
+): number | null {
+  return nextResetAt(readPeriod(provider), now);
+}
+
+/** ขึ้นรอบใหม่แล้วเริ่มนับใหม่ — เรียกก่อนแตะ state ของเจ้านี้ทุกครั้ง */
+function rollOver(provider: ProviderId, now: number): void {
+  const key = currentPeriodKey(provider, now);
+  if (state.periods[provider] === key) return;
+
+  state.periods[provider] = key;
+  state.counts[provider] = 0;
+  state.loaded[provider] = null;
+}
+
+/** เพดานต่อรอบของเจ้านี้ */
+export function readQuota(provider: ProviderId): number {
+  return readPositiveNumber(readEnv(provider).quota, DEFAULT_QUOTA[provider]);
 }
 
 /** สัดส่วนที่ถือว่าใกล้เพดาน — บีบให้อยู่ในช่วง 0–1 เสมอ */
@@ -142,12 +278,23 @@ export function readLeanRatio(): number {
   return Math.min(value, 1);
 }
 
-/** ยอดที่นับได้ในเดือนนี้ของเจ้านี้ */
+/** โควตาที่สงวนไว้ให้การเก็บที่อยู่สาขา — บีบไม่ให้เกินเพดานของเจ้านั้น */
+export function readHarvestReserve(provider: ProviderId): number {
+  if (provider !== "etrackings") return 0;
+
+  const value = readPositiveNumber(
+    process.env.ETRACKINGS_HARVEST_RESERVE,
+    DEFAULT_HARVEST_RESERVE,
+  );
+  return Math.min(value, readQuota(provider));
+}
+
+/** ยอดที่นับได้ในรอบนี้ของเจ้านี้ */
 export function usageOf(
   provider: ProviderId,
   now: number = Date.now(),
 ): number {
-  rollOver(now);
+  rollOver(provider, now);
   return state.counts[provider];
 }
 
@@ -167,6 +314,34 @@ export function isNearQuota(
   return quotaPressure(provider, now) >= readLeanRatio();
 }
 
+/**
+ * โควตาหมดแล้ว — ห้ามยิงเจ้านี้อีกจนกว่าจะขึ้นรอบใหม่
+ *
+ * ต่างจาก isNearQuota ที่แปลว่า "เอียงไปใช้อีกเจ้าก่อน" (ยังยิงได้ถ้าจำเป็น)
+ * ข้อนี้คือห้ามเด็ดขาด เพราะยิงไปก็ได้ error กลับมาอย่างเดียว เสียเวลาผู้ใช้
+ * ฟรีๆ และทำให้ log เต็มไปด้วยความล้มเหลวที่รู้ล่วงหน้าอยู่แล้ว
+ */
+export function isExhausted(
+  provider: ProviderId,
+  now: number = Date.now(),
+): boolean {
+  return usageOf(provider, now) >= readQuota(provider);
+}
+
+/**
+ * ยังใช้เจ้านี้กับ "การค้นหาทั่วไป" ได้อยู่ไหม
+ *
+ * ต่างจาก isExhausted ตรงที่กันโควตาส่วนที่สงวนไว้ให้ branch-harvest ออกไปด้วย
+ * (ดู readHarvestReserve) — การเก็บที่อยู่สาขายังใช้โควตาส่วนนั้นได้ต่อ
+ */
+export function canUseForLookup(
+  provider: ProviderId,
+  now: number = Date.now(),
+): boolean {
+  const budget = readQuota(provider) - readHarvestReserve(provider);
+  return usageOf(provider, now) < budget;
+}
+
 export interface UsageOptions {
   now?: number;
   /** ชั้นเก็บยอดถาวร (ค่าเริ่มต้น: ตาราง provider_usage ใน Supabase) */
@@ -174,7 +349,7 @@ export interface UsageOptions {
 }
 
 /**
- * ดึงยอดของเดือนนี้จากฐานข้อมูลมาใส่ตัวนับใน memory — ทำครั้งเดียวต่อเดือน
+ * ดึงยอดของรอบปัจจุบันจากฐานข้อมูลมาใส่ตัวนับใน memory — ทำครั้งเดียวต่อรอบ
  *
  * จำเป็นเพราะหลัง restart ตัวนับใน memory เป็นศูนย์ ถ้าไม่อ่านของจริงมาก่อน
  * การตัดสินใจเรื่องลำดับจะเชื่อว่า "ยังไม่ได้ใช้อะไรเลย" ทั้งที่โควตาอาจใกล้หมด
@@ -186,27 +361,35 @@ export async function loadProviderUsage(
   options: UsageOptions = {},
 ): Promise<void> {
   const now = options.now ?? Date.now();
-  rollOver(now);
 
-  if (state.loadedMonth === state.month) return;
+  const wanted: Record<string, string> = {};
+  for (const provider of PROVIDER_IDS) {
+    rollOver(provider, now);
+    if (state.loaded[provider] !== state.periods[provider]) {
+      wanted[provider] = state.periods[provider];
+    }
+  }
+
+  if (Object.keys(wanted).length === 0) return;
 
   const store = options.store ?? supabaseProviderUsageStore;
-  const counts = await store.read(state.month);
+  const counts = await store.read(wanted);
 
   // ระหว่างรออ่าน อาจมีการนับเพิ่มไปแล้ว จึงเอาค่าที่มากกว่าเสมอ
   // ไม่ใช่ทับทิ้ง — ตัวนับต้องไม่เดินถอยหลัง
   for (const provider of PROVIDER_IDS) {
+    if (wanted[provider] === undefined) continue;
+
     const fromStore = counts[provider];
     if (typeof fromStore === "number" && fromStore > state.counts[provider]) {
       state.counts[provider] = fromStore;
     }
+    state.loaded[provider] = state.periods[provider];
   }
-
-  state.loadedMonth = state.month;
 }
 
 /**
- * นับการยิงหนึ่งครั้ง แล้วคืนยอดสะสมของเดือนนี้
+ * นับการยิงหนึ่งครั้ง แล้วคืนยอดสะสมของรอบนี้
  *
  * นับใน memory ก่อนเสมอ แล้วค่อยไปบันทึกลงฐานข้อมูล — ถ้าฐานข้อมูลล่ม
  * ตัวนับยังเดินต่อได้ (แค่กลับไปเป็นยอดของโปรเซสเดียวเหมือนของเดิม)
@@ -216,12 +399,12 @@ export async function countProviderCall(
   options: UsageOptions = {},
 ): Promise<number> {
   const now = options.now ?? Date.now();
-  rollOver(now);
+  rollOver(provider, now);
 
   state.counts[provider] += 1;
 
   const store = options.store ?? supabaseProviderUsageStore;
-  const persisted = await store.bump(provider, state.month);
+  const persisted = await store.bump(provider, state.periods[provider]);
 
   // ยอดจากฐานข้อมูลรวมของทุก instance จึงเป็นตัวจริง แต่ต้องไม่ทำให้ตัวนับ
   // เดินถอยหลังในกรณีที่ฐานข้อมูลตามไม่ทัน
@@ -242,5 +425,5 @@ export function usageLabel(
 
 /** ล้างตัวนับ — ใช้ในเทสต์เท่านั้น */
 export function resetProviderUsage(): void {
-  state = { month: "", counts: emptyCounts(), loadedMonth: null };
+  state = emptyState();
 }

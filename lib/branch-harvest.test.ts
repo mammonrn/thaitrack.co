@@ -320,7 +320,7 @@ function probeOptions(overrides: Record<string, unknown> = {}) {
   return {
     fetchResult: () => Promise.resolve(makeResult([branchEvent()])),
     canProbe: () => true,
-    nearQuota: () => false,
+    outOfQuota: () => false,
     geocode: makeGeocoder().geocode,
     ...overrides,
   };
@@ -366,7 +366,7 @@ test("ด่าน 1 — เลขที่ ETrackings ตามไม่ได�
   assert.deepEqual(store.claims, []);
 });
 
-test("ด่าน 2 — โควตาใกล้เต็ม → ไม่ยิง และไม่เผา cooldown ของสาขา", async () => {
+test("ด่าน 2 — โควตาหมด → ไม่ยิง และไม่เผา cooldown ของสาขา", async () => {
   resetProbeBudget();
   const store = makeStore();
 
@@ -375,7 +375,7 @@ test("ด่าน 2 — โควตาใกล้เต็ม → ไม่�
     carrierCode: CARRIER,
     branchCode: "ACRAI-B",
     store,
-    options: probeOptions({ nearQuota: () => true }),
+    options: probeOptions({ outOfQuota: () => true }),
   });
 
   assert.equal(filled, false);
@@ -492,7 +492,7 @@ test("ด่าน 1 — เลข TH… ที่ไม่มี hint → ต�
     store,
     options: {
       fetchResult: () => Promise.resolve(makeResult([branchEvent()])),
-      nearQuota: () => false,
+      outOfQuota: () => false,
       geocode: makeGeocoder().geocode,
     },
   });
@@ -519,7 +519,7 @@ test("ด่าน 1 — เลข TH… พร้อม courier ที่ยื
         hints.push(hint);
         return Promise.resolve(makeResult([branchEvent()]));
       },
-      nearQuota: () => false,
+      outOfQuota: () => false,
       geocode: makeGeocoder().geocode,
     },
   });
@@ -540,7 +540,7 @@ test("ด่าน 1 — hint เป็นเจ้าที่ ETrackings ไ�
     store,
     options: {
       fetchResult: () => Promise.resolve(makeResult([branchEvent()])),
-      nearQuota: () => false,
+      outOfQuota: () => false,
       geocode: makeGeocoder().geocode,
     },
   });

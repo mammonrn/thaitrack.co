@@ -334,6 +334,10 @@ test("ฟังก์ชันสรุปที่เพิ่มทีหล�
       file: "supabase/migrations/0014_tracking_shape.sql",
       signature: "public\\.admin_unfound_shapes\\(integer, integer\\)",
     },
+    {
+      file: "supabase/migrations/0016_health_snapshot.sql",
+      signature: "public\\.admin_health_snapshot\\(integer\\)",
+    },
   ];
 
   for (const { file, signature } of cases) {

@@ -1,7 +1,12 @@
 /**
- * ทางเข้าเดียวของตาราง provider_usage — ยอดการยิงของแต่ละผู้ให้บริการต่อเดือน
+ * ทางเข้าเดียวของตาราง provider_usage — ยอดการยิงของแต่ละผู้ให้บริการต่อรอบบิล
+ *
+ * ⚠️ "รอบบิล" ไม่ใช่ "เดือน" — สามเจ้าที่ใช้อยู่มีรอบไม่เหมือนกันเลย (รายวัน /
+ * รายเดือนตามวันที่ซื้อ / ไม่รีเซ็ตเลย) คอลัมน์ period จึงเก็บคีย์ที่คำนวณจาก
+ * รอบของเจ้านั้นๆ ไม่ใช่เดือนปฏิทิน (ดู lib/billing-period.ts)
  *
  * ดู supabase/migrations/0006_provider_usage_and_branch_probe.sql
+ * และ supabase/migrations/0015_provider_billing_period.sql
  *
  * กติกาเดียวกับ ./locations.ts: **ห้ามโยน error ออกไปเด็ดขาด** การนับโควตา
  * ไม่สำเร็จต้องไม่ทำให้การค้นหาพัสดุล้มเหลว ทุกทางที่พังจบที่ log แล้วคืนค่า
@@ -16,10 +21,10 @@ import { getServiceSupabaseClient } from "./service";
 
 const USAGE_TABLE = "provider_usage";
 
-/** ยอดของผู้ให้บริการหนึ่งเจ้าในเดือนหนึ่ง */
+/** ยอดของผู้ให้บริการหนึ่งเจ้าในรอบหนึ่ง */
 export interface ProviderUsageRow {
   provider: string;
-  month: string;
+  period: string;
   callCount: number;
   lastCallAt: string | null;
 }
@@ -31,8 +36,14 @@ export interface ProviderUsageRow {
  * ข้าม instance ได้โดยไม่ต้องอ่านซ้ำอีกรอบ
  */
 export interface ProviderUsageStore {
-  bump(provider: string, month: string): Promise<number | null>;
-  read(month: string): Promise<Record<string, number>>;
+  bump(provider: string, period: string): Promise<number | null>;
+  /**
+   * อ่านยอดของหลายเจ้าพร้อมกัน โดยแต่ละเจ้าอยู่คนละรอบกันได้
+   *
+   * รับเป็น { provider: periodKey } เพราะรอบของแต่ละเจ้าไม่ตรงกัน — การอ่าน
+   * ด้วยคีย์รอบเดียวแบบเดิมจะได้ยอดของเจ้าที่รอบไม่ตรงกลับมาผิดทั้งหมด
+   */
+  read(periods: Record<string, string>): Promise<Record<string, number>>;
 }
 
 function warn(action: string, detail: string): void {
@@ -55,14 +66,14 @@ function toCount(value: unknown): number | null {
 }
 
 export const supabaseProviderUsageStore: ProviderUsageStore = {
-  async bump(provider, month) {
+  async bump(provider, period) {
     const supabase = getServiceSupabaseClient();
     if (supabase === null) return null;
 
     try {
       const { data, error } = await supabase.rpc("bump_provider_usage", {
         p_provider: provider,
-        p_month: month,
+        p_period: period,
       });
 
       if (error) {
@@ -76,15 +87,22 @@ export const supabaseProviderUsageStore: ProviderUsageStore = {
     }
   },
 
-  async read(month) {
+  async read(periods) {
     const supabase = getServiceSupabaseClient();
     if (supabase === null) return {};
 
+    const providers = Object.keys(periods);
+    if (providers.length === 0) return {};
+
     try {
+      // ยิงรอบเดียวแล้วค่อยจับคู่ฝั่งแอป — การกรองด้วย in() สองชั้นได้แถวเกินมา
+      // บ้าง (เจ้า A กับรอบของเจ้า B) แต่ถูกคัดทิ้งตอนจับคู่ ซึ่งถูกกว่าการยิง
+      // หนึ่งครั้งต่อเจ้า
       const { data, error } = await supabase
         .from(USAGE_TABLE)
-        .select("provider, call_count")
-        .eq("month", month);
+        .select("provider, period, call_count")
+        .in("provider", providers)
+        .in("period", [...new Set(Object.values(periods))]);
 
       if (error) {
         warn("อ่านโควตาที่ใช้", error.message);
@@ -95,9 +113,10 @@ export const supabaseProviderUsageStore: ProviderUsageStore = {
       for (const row of data ?? []) {
         const record = row as Record<string, unknown>;
         const count = toCount(record.call_count);
-        if (typeof record.provider === "string" && count !== null) {
-          counts[record.provider] = count;
-        }
+        if (typeof record.provider !== "string" || count === null) continue;
+        if (record.period !== periods[record.provider]) continue;
+
+        counts[record.provider] = count;
       }
       return counts;
     } catch (cause) {
@@ -108,21 +127,27 @@ export const supabaseProviderUsageStore: ProviderUsageStore = {
 };
 
 /**
- * ยอดของทุกเจ้าในเดือนที่ระบุ — สำหรับหน้าสถิติของแอดมิน
+ * ยอดของทุกเจ้าในรอบปัจจุบันของแต่ละเจ้า — สำหรับหน้าสถิติของแอดมิน
+ *
+ * รับ { provider: periodKey } เพราะรอบของแต่ละเจ้าไม่ตรงกัน (ดู read ข้างบน)
  *
  * ⚠️ ไม่ได้ตรวจสิทธิ์เอง ผู้เรียกต้องผ่าน requireAdmin() มาก่อนเสมอ
  */
 export async function listProviderUsage(
-  month: string,
+  periods: Record<string, string>,
 ): Promise<ProviderUsageRow[]> {
   const supabase = getServiceSupabaseClient();
   if (supabase === null) return [];
 
+  const providers = Object.keys(periods);
+  if (providers.length === 0) return [];
+
   try {
     const { data, error } = await supabase
       .from(USAGE_TABLE)
-      .select("provider, month, call_count, last_call_at")
-      .eq("month", month)
+      .select("provider, period, call_count, last_call_at")
+      .in("provider", providers)
+      .in("period", [...new Set(Object.values(periods))])
       .order("provider");
 
     if (error) {
@@ -135,10 +160,11 @@ export async function listProviderUsage(
         const record = row as Record<string, unknown>;
         const count = toCount(record.call_count);
         if (typeof record.provider !== "string" || count === null) return null;
+        if (record.period !== periods[record.provider]) return null;
 
         return {
           provider: record.provider,
-          month: typeof record.month === "string" ? record.month : month,
+          period: record.period,
           callCount: count,
           lastCallAt:
             typeof record.last_call_at === "string" ? record.last_call_at : null,

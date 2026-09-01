@@ -51,7 +51,12 @@
 
 import { harvestBranchCoordinates } from "../branch-harvest";
 import { InflightMap } from "../inflight";
-import { isNearQuota, loadProviderUsage, usageLabel } from "../provider-usage";
+import {
+  canUseForLookup,
+  isNearQuota,
+  loadProviderUsage,
+  usageLabel,
+} from "../provider-usage";
 import type { PersistentTrackingCache } from "../supabase/tracking-cache";
 import {
   supabaseTrackingCourierStore,
@@ -381,6 +386,14 @@ export interface ProviderOrderInput {
   fallbackNearQuota: boolean;
   /** โควตาของ ETrackings ใกล้เพดานแล้ว */
   backupNearQuota: boolean;
+  /**
+   * โควตาของ ETrackings ส่วนที่ให้ใช้กับการค้นหาทั่วไปหมดแล้ว
+   *
+   * ต่างจาก backupNearQuota ที่แปลว่า "เอาไว้ทีหลัง" — ข้อนี้แปลว่า **ห้ามใช้**
+   * เพราะที่เหลือถูกสงวนไว้ให้การเก็บที่อยู่สาขา หรือหมดเกลี้ยงแล้วจริงๆ
+   * (ดู canUseForLookup ใน lib/provider-usage.ts)
+   */
+  backupOutOfLookupBudget: boolean;
 }
 
 /**
@@ -403,6 +416,12 @@ export function chooseProviderOrder(
   input: ProviderOrderInput,
 ): readonly PaidProvider[] {
   if (!input.backupUsable) return ["fallback"];
+
+  // โควตาส่วนของการค้นหาหมดแล้ว → ตัดออกจากลำดับไปเลย ไม่ใช่แค่ไว้ทีหลัง
+  //
+  // การคงไว้เป็นตัวสำรองไม่ได้ช่วยอะไร เพราะยิงไปก็ได้ error กลับมาอย่างเดียว
+  // แต่ทำให้ผู้ใช้ต้องรออีกหนึ่งรอบก่อนจะได้คำตอบจากเจ้าที่ยังใช้ได้จริง
+  if (input.backupOutOfLookupBudget) return ["fallback"];
 
   if (input.backupNearQuota && !input.fallbackNearQuota) {
     return ["fallback", "backup"];
@@ -486,6 +505,10 @@ async function resolveFresh(
     backupUsable,
     fallbackNearQuota: isNearQuota("track123"),
     backupNearQuota: isNearQuota("etrackings"),
+    // นโยบายที่ตัดสินใจแล้ว: โควตา ETrackings ที่เหลือมีค่ากับการเก็บที่อยู่สาขา
+    // มากกว่าการค้นหาทั่วไป เพราะพิกัดสาขาที่ได้มาอยู่ถาวรและใช้ซ้ำได้กับพัสดุ
+    // ทุกใบที่ผ่านสาขานั้น ส่วนการค้นหาทั่วไป Track123 ก็ทำได้อยู่แล้ว
+    backupOutOfLookupBudget: !canUseForLookup("etrackings"),
   });
 
   console.info(

@@ -15,9 +15,13 @@ import {
   PROVIDER_IDS,
   PROVIDER_LABEL,
   QUOTA_VARS,
+  canUseForLookup,
+  readHarvestReserve,
   countProviderCall,
-  currentMonth,
+  currentPeriodKey,
+  isExhausted,
   isNearQuota,
+  nextResetOf,
   loadProviderUsage,
   readLeanRatio,
   readQuota,
@@ -53,7 +57,7 @@ const brokenStore: ProviderUsageStore = {
 
 const AUGUST = Date.parse("2026-08-15T10:00:00+07:00");
 
-test("นับสะสมภายในเดือนเดียวกัน", async () => {
+test("นับสะสมภายในรอบเดียวกัน", async () => {
   resetProviderUsage();
   const { store } = makeStore();
 
@@ -63,7 +67,22 @@ test("นับสะสมภายในเดือนเดียวกั�
   assert.equal(usageOf("etrackings", AUGUST), 0, "แต่ละเจ้านับแยกกัน");
 });
 
-test("ข้ามเดือน → เริ่มนับใหม่", async () => {
+test("ขึ้นรอบใหม่ → เริ่มนับใหม่", async () => {
+  resetProviderUsage();
+  const { store } = makeStore();
+
+  // Track123 รีเซ็ตวันที่ 29 ของทุกเดือน
+  await countProviderCall("track123", {
+    store,
+    now: Date.parse("2026-08-28T23:00:00+07:00"),
+  });
+
+  assert.equal(usageOf("track123", Date.parse("2026-08-29T00:30:00+07:00")), 0);
+});
+
+test("ETrackings ไม่รีเซ็ตเลย — ข้ามเดือน ข้ามปี ก็ยังเป็นยอดเดิม", async () => {
+  // แผนฟรีให้โควตาก้อนเดียวตลอดอายุบัญชี ถ้าตัวนับรีเซ็ตตามเดือน เราจะเชื่อว่า
+  // ยังใช้ได้อีก 50 ครั้งทุกต้นเดือน ทั้งที่ของจริงหมดไปแล้ว
   resetProviderUsage();
   const { store } = makeStore();
 
@@ -72,14 +91,66 @@ test("ข้ามเดือน → เริ่มนับใหม่", asy
     now: Date.parse("2026-08-31T23:00:00+07:00"),
   });
 
-  const september = Date.parse("2026-09-01T00:30:00+07:00");
-  assert.equal(usageOf("etrackings", september), 0);
+  assert.equal(usageOf("etrackings", Date.parse("2027-03-05T10:00:00+07:00")), 1);
+});
+
+test("ไปรษณีย์ไทยรีเซ็ตทุกเที่ยงคืนเวลาไทย", async () => {
+  resetProviderUsage();
+  const { store } = makeStore();
+
+  await countProviderCall("thailand-post", {
+    store,
+    now: Date.parse("2026-08-31T23:00:00+07:00"),
+  });
+
+  assert.equal(
+    usageOf("thailand-post", Date.parse("2026-08-31T23:59:00+07:00")),
+    1,
+    "ยังเป็นวันเดิมอยู่",
+  );
+  assert.equal(
+    usageOf("thailand-post", Date.parse("2026-09-01T00:01:00+07:00")),
+    0,
+    "ข้ามเที่ยงคืนแล้วต้องเริ่มใหม่",
+  );
 });
 
 test("นับตามเวลาไทย ไม่ใช่ UTC", () => {
-  // 1 ก.ย. 01:00 น. ไทย = 31 ส.ค. 18:00 UTC — ถ้านับแบบ UTC จะยังเป็น ส.ค.
-  assert.equal(currentMonth(Date.parse("2026-08-31T23:00:00+07:00")), "2026-08");
-  assert.equal(currentMonth(Date.parse("2026-09-01T01:00:00+07:00")), "2026-09");
+  // 1 ก.ย. 01:00 น. ไทย = 31 ส.ค. 18:00 UTC — ถ้านับแบบ UTC จะยังเป็นวันที่ 31
+  assert.equal(
+    currentPeriodKey("thailand-post", Date.parse("2026-08-31T23:00:00+07:00")),
+    "2026-08-31",
+  );
+  assert.equal(
+    currentPeriodKey("thailand-post", Date.parse("2026-09-01T01:00:00+07:00")),
+    "2026-09-01",
+  );
+});
+
+test("คีย์รอบของแต่ละเจ้าเป็นคนละแบบกัน", () => {
+  const now = Date.parse("2026-09-01T10:00:00+07:00");
+
+  assert.equal(currentPeriodKey("thailand-post", now), "2026-09-01");
+  assert.equal(
+    currentPeriodKey("track123", now),
+    "2026-08-29",
+    "1 ก.ย. ยังอยู่ในรอบที่เริ่ม 29 ส.ค.",
+  );
+  assert.equal(currentPeriodKey("etrackings", now), "lifetime");
+});
+
+test("วันที่รีเซ็ตครั้งถัดไป — null เมื่อไม่มีวันรีเซ็ต", () => {
+  const now = Date.parse("2026-09-01T10:00:00+07:00");
+
+  assert.equal(
+    nextResetOf("thailand-post", now),
+    Date.parse("2026-09-02T00:00:00+07:00"),
+  );
+  assert.equal(
+    nextResetOf("track123", now),
+    Date.parse("2026-09-29T00:00:00+07:00"),
+  );
+  assert.equal(nextResetOf("etrackings", now), null);
 });
 
 test("ฐานข้อมูลเป็นตัวจริง — ยอดจากที่นั่นชนะยอดใน memory", async () => {
@@ -116,15 +187,15 @@ test("ตัวนับต้องไม่เดินถอยหลัง �
 
 test("อ่านยอดจากฐานข้อมูลตอนเริ่ม — หลัง restart ต้องไม่เชื่อว่ายังไม่ได้ใช้อะไรเลย", async () => {
   resetProviderUsage();
-  const { store } = makeStore({ track123: 900, etrackings: 45 });
+  const { store } = makeStore({ track123: 290, etrackings: 45 });
 
   await loadProviderUsage({ store, now: AUGUST });
 
-  assert.equal(usageOf("track123", AUGUST), 900);
+  assert.equal(usageOf("track123", AUGUST), 290);
   assert.equal(usageOf("etrackings", AUGUST), 45);
 });
 
-test("อ่านซ้ำในเดือนเดิม → ไม่ไปถามฐานข้อมูลอีก", async () => {
+test("อ่านซ้ำในรอบเดิม → ไม่ไปถามฐานข้อมูลอีก", async () => {
   resetProviderUsage();
   let reads = 0;
   const store: ProviderUsageStore = {
@@ -162,11 +233,11 @@ test("ไม่ได้ตั้ง env → ใช้ค่าเริ่ม�
 
 test("ตั้ง env → ใช้ค่าที่ตั้ง", (t) => {
   t.after(() => {
-    delete process.env.ETRACKINGS_MONTHLY_CALL_LIMIT;
+    delete process.env.ETRACKINGS_CALL_LIMIT;
     delete process.env.PROVIDER_QUOTA_LEAN_RATIO;
   });
 
-  process.env.ETRACKINGS_MONTHLY_CALL_LIMIT = "500";
+  process.env.ETRACKINGS_CALL_LIMIT = "500";
   process.env.PROVIDER_QUOTA_LEAN_RATIO = "0.5";
 
   assert.equal(readQuota("etrackings"), 500);
@@ -175,11 +246,11 @@ test("ตั้ง env → ใช้ค่าที่ตั้ง", (t) => {
 
 test("ค่าที่ใช้ไม่ได้ใน env → กลับไปใช้ค่าเริ่มต้น ไม่พังและไม่กลายเป็นศูนย์", (t) => {
   t.after(() => {
-    delete process.env.ETRACKINGS_MONTHLY_CALL_LIMIT;
+    delete process.env.ETRACKINGS_CALL_LIMIT;
   });
 
   for (const bad of ["", "   ", "abc", "0", "-5"]) {
-    process.env.ETRACKINGS_MONTHLY_CALL_LIMIT = bad;
+    process.env.ETRACKINGS_CALL_LIMIT = bad;
     assert.equal(readQuota("etrackings"), DEFAULT_QUOTA.etrackings, bad);
   }
 });
@@ -195,11 +266,11 @@ test("สัดส่วนเกิน 1 ถูกบีบลงมา — ไ
 
 test("ใช้ถึงสัดส่วนที่ตั้งไว้ → ถือว่าใกล้เพดาน", async (t) => {
   t.after(() => {
-    delete process.env.ETRACKINGS_MONTHLY_CALL_LIMIT;
+    delete process.env.ETRACKINGS_CALL_LIMIT;
   });
 
   resetProviderUsage();
-  process.env.ETRACKINGS_MONTHLY_CALL_LIMIT = "10";
+  process.env.ETRACKINGS_CALL_LIMIT = "10";
   const { store } = makeStore({ etrackings: 7 });
 
   await loadProviderUsage({ store, now: AUGUST });
@@ -251,4 +322,74 @@ test("ทุกเจ้าที่ประกาศไว้ต้องม�
     assert.ok(QUOTA_VARS[provider], provider);
     assert.ok(DEFAULT_QUOTA[provider] > 0, provider);
   }
+});
+
+/* -------- โควตาที่สงวนไว้ให้การเก็บที่อยู่สาขา (นโยบาย ETrackings) -------- */
+
+test("การค้นหาทั่วไปใช้ได้แค่ส่วนที่ไม่ได้สงวนไว้", async (t) => {
+  t.after(() => {
+    delete process.env.ETRACKINGS_CALL_LIMIT;
+    delete process.env.ETRACKINGS_HARVEST_RESERVE;
+  });
+
+  process.env.ETRACKINGS_CALL_LIMIT = "50";
+  process.env.ETRACKINGS_HARVEST_RESERVE = "30";
+
+  resetProviderUsage();
+  const { store } = makeStore({ etrackings: 19 });
+  await loadProviderUsage({ store, now: AUGUST });
+
+  assert.equal(canUseForLookup("etrackings", AUGUST), true, "19 < 20 ยังค้นได้");
+
+  await countProviderCall("etrackings", { store, now: AUGUST });
+
+  assert.equal(
+    canUseForLookup("etrackings", AUGUST),
+    false,
+    "ครบ 20 แล้ว ที่เหลือเป็นของการเก็บที่อยู่สาขา",
+  );
+  assert.equal(
+    isExhausted("etrackings", AUGUST),
+    false,
+    "แต่ยังไม่หมด — การเก็บที่อยู่สาขายังใช้ต่อได้อีก 30 ครั้ง",
+  );
+});
+
+test("ใช้ครบเพดาน → หมดทั้งสองทาง", async (t) => {
+  t.after(() => {
+    delete process.env.ETRACKINGS_CALL_LIMIT;
+  });
+
+  process.env.ETRACKINGS_CALL_LIMIT = "50";
+  resetProviderUsage();
+  const { store } = makeStore({ etrackings: 50 });
+  await loadProviderUsage({ store, now: AUGUST });
+
+  assert.equal(isExhausted("etrackings", AUGUST), true);
+  assert.equal(canUseForLookup("etrackings", AUGUST), false);
+});
+
+test("เจ้าที่ไม่ได้สงวนโควตา → ใช้ได้จนถึงเพดานเต็มๆ", async () => {
+  resetProviderUsage();
+  const { store } = makeStore({ track123: DEFAULT_QUOTA.track123 - 1 });
+  await loadProviderUsage({ store, now: AUGUST });
+
+  assert.equal(canUseForLookup("track123", AUGUST), true);
+  assert.equal(isExhausted("track123", AUGUST), false);
+});
+
+test("สงวนเกินเพดาน → ถูกบีบลงมา ไม่ทำให้ค้นไม่ได้ตั้งแต่ครั้งแรก", (t) => {
+  t.after(() => {
+    delete process.env.ETRACKINGS_HARVEST_RESERVE;
+    delete process.env.ETRACKINGS_CALL_LIMIT;
+  });
+
+  process.env.ETRACKINGS_CALL_LIMIT = "50";
+  process.env.ETRACKINGS_HARVEST_RESERVE = "999";
+  resetProviderUsage();
+
+  // สงวนเท่ากับเพดานพอดี = การค้นหาทั่วไปใช้ไม่ได้เลย ซึ่งเป็นผลที่ตั้งใจของ
+  // การตั้งค่าแบบนั้น แต่ต้องไม่ติดลบจนคำนวณเพี้ยน
+  assert.equal(readHarvestReserve("etrackings"), 50);
+  assert.equal(canUseForLookup("etrackings", AUGUST), false);
 });

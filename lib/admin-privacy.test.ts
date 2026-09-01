@@ -493,6 +493,27 @@ test("ฝั่งเบราว์เซอร์ต้องส่งได�
   }
 });
 
+test("endpoint ตรวจสุขภาพต้องไม่ส่งตัวเลขใดๆ ออกไป", () => {
+  // endpoint นี้เปิดสาธารณะเพราะ uptime monitor ล็อกอินไม่ได้ ถ้าใส่ยอดค้นหา
+  // หรือยอดโควตาลงในคำตอบ ใครก็ตามที่เดา URL เจอจะรู้ปริมาณธุรกิจของเราทันที
+  const route = allFiles.find(
+    (file) => file.path === "app/api/health/tracking/route.ts",
+  );
+  assert.ok(route !== undefined, "ต้องมี endpoint ให้ตรวจจริง");
+
+  const body = route.source.slice(route.source.indexOf("NextResponse.json("));
+
+  for (const forbidden of ["snapshot.total", "snapshot.found", "snapshot.error", "nearQuota.length", "usageOf"]) {
+    assert.ok(
+      !body.includes(forbidden),
+      `คำตอบของ endpoint ต้องไม่มี ${forbidden}`,
+    );
+  }
+
+  // ตัวเลขไปอยู่ใน log ฝั่งเซิร์ฟเวอร์เท่านั้น ซึ่งมีแต่เจ้าของเว็บเข้าถึงได้
+  assert.match(route.source, /console\.warn\(healthLogLine\(/);
+});
+
 test("endpoint นับการติดตั้งแอพต้องไม่เก็บอะไรที่ระบุตัวคน", () => {
   const route = allFiles.find(
     (file) => file.path === "app/api/installed/route.ts",

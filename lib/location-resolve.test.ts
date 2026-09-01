@@ -463,7 +463,7 @@ test("สาขาที่ยังไม่รู้พิกัด → ไป
     probe: {
       fetchResult: () => Promise.resolve(resultWithAddress()),
       canProbe: () => true,
-      nearQuota: () => false,
+      outOfQuota: () => false,
       geocode: geocoder.geocode,
     },
   });
@@ -493,7 +493,7 @@ test("จองสิทธิ์ไม่ได้ (เพิ่งถามไ
         return Promise.resolve(resultWithAddress());
       },
       canProbe: () => true,
-      nearQuota: () => false,
+      outOfQuota: () => false,
     },
   });
 
@@ -501,7 +501,10 @@ test("จองสิทธิ์ไม่ได้ (เพิ่งถามไ
   assert.equal(result.coordinates, null);
 });
 
-test("โควตาใกล้เต็ม → ไม่ไปขอที่อยู่ เก็บโควตาไว้ให้การค้นหาจริง", async () => {
+test("โควตาหมดเกลี้ยง → ไม่ไปขอที่อยู่", async () => {
+  // ⚠️ เกณฑ์นี้กลับด้านจากเดิม: เดิมหยุดตอน "ใกล้เต็ม" เพื่อเก็บโควตาไว้ให้
+  // การค้นหา ตอนนี้การเก็บที่อยู่สาขาได้สิทธิ์ก่อน เพราะพิกัดที่ได้อยู่ถาวร
+  // ส่วนการค้นหาทั่วไป Track123 ก็ทำได้ (ดู canUseForLookup)
   const store = makeStore();
   let fetched = 0;
 
@@ -515,7 +518,7 @@ test("โควตาใกล้เต็ม → ไม่ไปขอที่
         return Promise.resolve(resultWithAddress());
       },
       canProbe: () => true,
-      nearQuota: () => true,
+      outOfQuota: () => true,
     },
   });
 
@@ -650,7 +653,7 @@ test("ส่ง courier ที่ยืนยันแล้วต่อไป�
         seen.push(hint);
         return true;
       },
-      nearQuota: () => false,
+      outOfQuota: () => false,
       fetchResult: () => Promise.resolve(resultWithAddress()),
     },
   });

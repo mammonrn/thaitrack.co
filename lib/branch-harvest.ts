@@ -48,7 +48,7 @@ import {
   type GeocodeHit,
   type LocationAccuracy,
 } from "./geocode";
-import { isNearQuota } from "./provider-usage";
+import { isExhausted } from "./provider-usage";
 import {
   supabaseLocationStore,
   type LocationStore,
@@ -314,8 +314,8 @@ export interface ProbeOptions extends HarvestOptions {
   ) => Promise<TrackingResult>;
   /** ETrackings ตามเลขนี้ได้ไหม (ค่าเริ่มต้น: ตาราง prefix + courier hint) */
   canProbe?: (trackingNumber: string, courierHint?: string) => boolean;
-  /** โควตาของ ETrackings ใกล้เต็มหรือยัง */
-  nearQuota?: () => boolean;
+  /** โควตาของ ETrackings หมดเกลี้ยงหรือยัง */
+  outOfQuota?: () => boolean;
 }
 
 /**
@@ -331,8 +331,16 @@ export interface ProbeOptions extends HarvestOptions {
  *      courierHint สำคัญมากในทางปฏิบัติ: เลข SPX ในไทยส่วนใหญ่ขึ้นต้นด้วย
  *      `TH` ซึ่งใช้ร่วมกับ Flash จึงฟันธงจาก prefix ไม่ได้ตลอดกาล ถ้าไม่มี
  *      hint ด่านนี้จะตกเสมอและการเติมพิกัดสาขาจะไม่เคยทำงานกับเลขส่วนใหญ่เลย
- *   2. โควตาของ ETrackings ใกล้เต็มหรือยัง — ใกล้เต็มแล้วต้องเก็บไว้ให้การ
- *      ค้นหาจริงของผู้ใช้ก่อน การเติมพิกัดรอวันหลังได้
+ *   2. โควตาของ ETrackings **หมดเกลี้ยง**หรือยัง
+ *
+ *      ⚠️ กลับด้านจากเดิมโดยตั้งใจ เดิมด่านนี้หยุดตอน "ใกล้เต็ม" เพราะคิดว่า
+ *      ต้องเก็บโควตาไว้ให้การค้นหาของผู้ใช้ก่อน แต่พอดูของจริงแล้วกลับกัน:
+ *      การค้นหาทั่วไป Track123 ก็ทำได้และผลหมดอายุพร้อม cache ส่วนพิกัดสาขา
+ *      ที่ได้จากด่านนี้อยู่ในตารางของกลางถาวร ใช้ซ้ำได้กับพัสดุทุกใบที่ผ่าน
+ *      สาขานั้นตลอดไป — จ่ายครั้งเดียวได้ผลไม่รู้จบ
+ *
+ *      ตอนนี้จึงเป็นฝั่งการค้นหาที่ถูกตัดก่อน (canUseForLookup ใน
+ *      lib/provider-usage.ts) ส่วนด่านนี้ใช้ได้จนหยดสุดท้าย
  *   3. งบต่อวันของโปรเซสนี้ (BRANCH_PROBE_DAILY_LIMIT) — เพดานบนแบบหยาบๆ
  *      กันกรณีที่มีสาขาใหม่โผล่พรวดเดียวเป็นร้อย
  *   4. การจองสิทธิ์ในฐานข้อมูล (claim_branch_probe) — ด่านเดียวที่เป็น atomic
@@ -359,7 +367,7 @@ export async function probeBranchAddress(input: {
       hint === undefined ? track(no) : trackWithCourier(no, hint));
   const canProbe =
     options.canProbe ?? ((no: string, hint?: string) => canTrack(no, hint));
-  const nearQuota = options.nearQuota ?? (() => isNearQuota("etrackings", now));
+  const outOfQuota = options.outOfQuota ?? (() => isExhausted("etrackings", now));
 
   // ด่าน 0: ยังไม่ได้ตั้งค่าเจ้านี้ → ไม่มีอะไรให้ถาม
   if (options.fetchResult === undefined && !isConfigured()) return false;
@@ -368,9 +376,9 @@ export async function probeBranchAddress(input: {
   if (!canProbe(input.trackingNumber, input.courierHint)) return false;
 
   // ด่าน 2
-  if (nearQuota()) {
+  if (outOfQuota()) {
     console.info(
-      "[branch-harvest] ข้ามการถามที่อยู่สาขาเพราะโควตา ETrackings ใกล้เต็ม",
+      "[branch-harvest] ข้ามการถามที่อยู่สาขาเพราะโควตา ETrackings หมดแล้ว",
     );
     return false;
   }
