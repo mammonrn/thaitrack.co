@@ -7,6 +7,8 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import {
@@ -97,4 +99,38 @@ test("courierCode ที่ใส่ไว้ต้องเป็นรหั�
 test("ค้นหา landing ด้วย slug ได้ และ slug ที่ไม่มีคืน undefined", () => {
   assert.equal(findLanding("เช็คพัสดุ-flash")?.name, "Flash Express");
   assert.equal(findLanding("เช็คพัสดุ-ไม่มีเจ้านี้"), undefined);
+});
+
+/* ---------------- JSON-LD ของหน้า landing ---------------- */
+
+/*
+ * ตรวจจากซอร์สของหน้า เพราะ JSON-LD ถูกประกอบใน generateMetadata/หน้าโดยตรง
+ * ไม่ได้อยู่ในโมดูลที่เรียกทดสอบได้ — ด่านนี้จับกรณีที่มีคนลบทิ้งโดยไม่ตั้งใจ
+ * ระหว่างแก้เรื่องอื่น ซึ่งจะไม่มีอะไรฟ้องเลยจนกว่าจะมีคนเปิด Search Console ดู
+ */
+const LANDING_PAGE = readFileSync(
+  join(import.meta.dirname, "..", "..", "app", "[carrier]", "page.tsx"),
+  "utf8",
+);
+
+test("หน้า landing ต้องมีทั้ง BreadcrumbList และ FAQPage", () => {
+  assert.match(LANDING_PAGE, /"@type": "BreadcrumbList"/);
+  assert.match(LANDING_PAGE, /"@type": "FAQPage"/);
+
+  // แยกเป็นสองแท็ก ไม่ใช่รายการในแท็กเดียว — รูปที่ผ่านการตรวจกับ
+  // validator.schema.org บน URL production จริงมาแล้ว
+  const tags = LANDING_PAGE.match(/type="application\/ld\+json"/g) ?? [];
+  assert.equal(tags.length, 2);
+});
+
+test("ต้องคงคำอธิบายไว้ว่าทำไม Rich Results Test ถึงไม่เจอ FAQPage", () => {
+  // ⚠️ ด่านนี้ไม่ได้ตรวจโค้ด แต่ตรวจ "ความรู้ที่แลกมาด้วยการไล่หาสาเหตุหนึ่งรอบ"
+  // ถ้าคอมเมนต์นี้หายไป คนถัดไป (หรือเราเอง) จะเสียเวลาไล่หาสาเหตุเดิมซ้ำ
+  // แล้วอาจสรุปผิดว่า markup พังจนไปแก้ของที่ยังดีอยู่
+  assert.match(LANDING_PAGE, /No items detected/);
+  assert.match(LANDING_PAGE, /7 พ\.ค\. 2026/);
+  assert.match(
+    LANDING_PAGE,
+    /developers\.google\.com\/search\/updates#removing-faq-rich-result/,
+  );
 });
