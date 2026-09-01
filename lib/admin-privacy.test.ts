@@ -43,6 +43,10 @@ const PROMPT_MIGRATION = join(
   PROJECT_DIR,
   "supabase/migrations/0013_install_prompt_events.sql",
 );
+const REFERRER_MIGRATION = join(
+  PROJECT_DIR,
+  "supabase/migrations/0017_referrer_channels.sql",
+);
 const MIGRATIONS_DIR = join(PROJECT_DIR, "supabase/migrations");
 
 interface SourceFile {
@@ -344,7 +348,7 @@ test("ตารางสถิติที่เพิ่มใหม่ต้�
   // ตรวจเฉพาะนิยามของตาราง ไม่ใช่ทั้งไฟล์ — ฟังก์ชันสรุปอ่าน user_id จาก
   // saved_trackings เพื่อ "นับผู้ใช้ที่ไม่ซ้ำ" ได้ ตราบใดที่คืนออกมาแค่ตัวเลข
   // (มีเทสต์แยกเฝ้าเรื่องนั้นอยู่ข้างล่าง)
-  for (const file of [STATS_MIGRATION, PROMPT_MIGRATION]) {
+  for (const file of [STATS_MIGRATION, PROMPT_MIGRATION, REFERRER_MIGRATION]) {
     const sql = withoutSqlComments(readFileSync(file, "utf8"));
 
     const definitions = [
@@ -393,6 +397,7 @@ test("ตารางสถิติใหม่ต้องล็อกสิ�
     { file: COURIERS_MIGRATION, table: "tracking_couriers" },
     { file: STATS_MIGRATION, table: "install_events" },
     { file: PROMPT_MIGRATION, table: "install_prompt_events" },
+    { file: REFERRER_MIGRATION, table: "referrer_daily" },
   ];
 
   for (const { file, table } of cases) {
@@ -490,6 +495,42 @@ test("ฝั่งเบราว์เซอร์ต้องส่งได�
         `${caller.path} ส่งอะไรที่ระบุตัวคนได้ไปกับสถิติ`,
       );
     }
+  }
+});
+
+test("ตาราง referrer_daily ต้องแตะผ่านฟังก์ชันในฐานข้อมูลเท่านั้น", () => {
+  // เข้มกว่ากติกา "ไฟล์ละหนึ่งที่" ของตารางอื่น: ตารางนี้ไม่ควรมีโค้ดฝั่งแอป
+  // ที่อ้างชื่อมันเลยแม้แต่ไฟล์เดียว เพราะทุกทางเข้าเป็น RPC ซึ่งจำกัดสิ่งที่
+  // ทำได้ไว้ในตัวฟังก์ชันแล้ว (บวกหนึ่ง / อ่านยอดรวม) ไม่มีทาง select ดิบออกมา
+  const users = allFiles
+    .filter((file) => /["'`]referrer_daily["'`]/.test(file.source))
+    .map((file) => file.path);
+
+  assert.deepEqual(users, [], "มีโค้ดที่อ้างชื่อตารางตรงๆ");
+});
+
+test("endpoint นับช่องทางที่มาต้องรับได้แค่คำเดียวจากชุดปิด", () => {
+  // ⚠️ referrer เต็มคือการรู้ว่าคนคนหนึ่งเพิ่งอ่านอะไรอยู่ก่อนมาถึงเรา
+  // ซึ่งไม่ใช่เรื่องของเรา ฝั่งเบราว์เซอร์จำแนกเป็นคำเดียวก่อนส่ง เซิร์ฟเวอร์
+  // จึงต้องไม่มีทางไหนที่จะเผลออ่านหรือเก็บ URL ต้นทางได้เลย
+  const route = allFiles.find(
+    (file) => file.path === "app/api/referrer/route.ts",
+  );
+  assert.ok(route !== undefined, "ต้องมี endpoint ให้ตรวจจริง");
+
+  assert.doesNotMatch(
+    route.source,
+    /headers\.get|document\.referrer|getUser|user_id|userAgent/i,
+    "endpoint ต้องไม่แตะ header หรืออะไรที่ระบุตัวคนได้",
+  );
+
+  // ฝั่งเบราว์เซอร์ก็ต้องส่งแค่ channel ไม่ใช่ referrer ดิบ
+  const probe = allFiles.find((file) => file.path === "app/referrer-probe.tsx");
+  assert.ok(probe !== undefined);
+
+  for (const call of probe.source.split("JSON.stringify({").slice(1)) {
+    const payload = call.slice(0, call.indexOf("})"));
+    assert.doesNotMatch(payload, /referrer|document|userAgent|location/i);
   }
 });
 

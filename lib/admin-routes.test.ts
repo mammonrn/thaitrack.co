@@ -338,6 +338,14 @@ test("ฟังก์ชันสรุปที่เพิ่มทีหล�
       file: "supabase/migrations/0016_health_snapshot.sql",
       signature: "public\\.admin_health_snapshot\\(integer\\)",
     },
+    {
+      file: "supabase/migrations/0017_referrer_channels.sql",
+      signature: "public\\.admin_referrer_channels\\(integer\\)",
+    },
+    {
+      file: "supabase/migrations/0017_referrer_channels.sql",
+      signature: "public\\.bump_referrer_visit\\(text\\)",
+    },
   ];
 
   for (const { file, signature } of cases) {

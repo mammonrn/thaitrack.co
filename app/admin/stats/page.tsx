@@ -33,6 +33,7 @@ import {
 import { requireAdmin } from "@/lib/supabase/admin-guard";
 import { countBranches } from "@/lib/supabase/locations";
 import { listProviderUsage } from "@/lib/supabase/provider-usage";
+import { readReferrerChannels } from "@/lib/supabase/referrer";
 import {
   readErrorBreakdown,
   readInstallPromptStats,
@@ -58,6 +59,17 @@ const UNFOUND_SHAPE_LIMIT = 12;
 
 /** จำนวนแบบอ่านง่าย เช่น 12,345 */
 const count = (value: number) => value.toLocaleString("th-TH");
+
+/** ชื่อไทยของช่องทางที่มา */
+const REFERRER_LABEL: Record<string, string> = {
+  google: "Google",
+  facebook: "Facebook",
+  tiktok: "TikTok",
+  line: "LINE",
+  instagram: "Instagram",
+  direct: "มาตรงๆ",
+  other: "อื่นๆ",
+};
 
 /** ชื่อไทยของชั้นที่ตอบคำค้น */
 const SOURCE_LABEL: Record<string, string> = {
@@ -216,6 +228,8 @@ export default async function AdminStatsPage() {
     unknownCourier,
     invite,
     unfoundShapes,
+    referrers7d,
+    referrers30d,
   ] = await Promise.all([
     readMemberStats(),
     readMemberActivity(),
@@ -231,7 +245,17 @@ export default async function AdminStatsPage() {
     readUnknownCourierFailures(WINDOW_DAYS),
     readInstallPromptStats(WINDOW_DAYS),
     readUnfoundShapes(WINDOW_DAYS, UNFOUND_SHAPE_LIMIT),
+    readReferrerChannels(7),
+    readReferrerChannels(WINDOW_DAYS),
   ]);
+
+  // เรียงตามยอด 30 วันเพื่อให้ลำดับนิ่ง ไม่กระโดดไปมาตามความผันผวนของ 7 วัน
+  const referrerRows = referrers30d.map((row) => ({
+    channel: row.channel,
+    last7d: referrers7d.find((item) => item.channel === row.channel)?.total ?? 0,
+    last30d: row.total,
+  }));
+  const referrerTotal30d = referrers30d.reduce((sum, row) => sum + row.total, 0);
 
   const answered = recent.found + recent.notFound;
   const cacheable = recent.fromCache + recent.fromApi;
@@ -503,6 +527,44 @@ export default async function AdminStatsPage() {
                 value={`${count(installs.ios)} · ${count(installs.desktop)}`}
               />
             </div>
+          </Section>
+
+          <Section
+            title="ช่องทางที่มา"
+            note="นับครั้งเดียวต่อเซสชัน · ไม่ผูกกับบัญชีผู้ใช้และไม่เก็บ URL ต้นทาง เก็บแค่ชื่อช่องทางคำเดียว"
+          >
+            {referrerRows.length === 0 ? (
+              <Empty>ยังไม่มีข้อมูลช่องทางที่มาในช่วงนี้</Empty>
+            ) : (
+              <>
+                <ul className="flex flex-col gap-1">
+                  {referrerRows.map((row) => (
+                    <li
+                      key={row.channel}
+                      className="flex items-center gap-3 border-b border-line py-1.5 last:border-0"
+                    >
+                      <span className="text-[13px] text-ink">
+                        {REFERRER_LABEL[row.channel] ?? row.channel}
+                      </span>
+                      <span className="ml-auto font-mono text-[11px] text-faint">
+                        7 วัน {count(row.last7d)}
+                      </span>
+                      <span className="w-24 shrink-0 text-right font-mono text-[11px] text-ink">
+                        30 วัน {count(row.last30d)}
+                      </span>
+                      <span className="w-14 shrink-0 text-right font-mono text-[11px] text-faint">
+                        {percent(row.last30d, referrerTotal30d)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-3 text-xs leading-relaxed text-faint">
+                  “มาตรงๆ” รวมคนที่พิมพ์ที่อยู่เว็บเอง คนที่เปิดจากแอปที่ไม่ส่ง
+                  referrer มาให้ และคนที่เปิดจากแอปที่ติดตั้งไว้ — สามอย่างนี้
+                  แยกจากกันไม่ได้ด้วยข้อมูลที่เราเก็บ
+                </p>
+              </>
+            )}
           </Section>
 
           <Section

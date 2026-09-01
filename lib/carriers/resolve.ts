@@ -128,6 +128,27 @@ export interface ResolveOptions {
    * พร้อมสถานะพัสดุ (ดู lib/supabase/tracking-couriers.ts)
    */
   courierStore?: TrackingCourierStore;
+  /**
+   * ขนส่งที่ "หน้าที่ผู้ใช้ยืนอยู่" บอกใบ้มา (หน้า landing รายขนส่ง)
+   *
+   * ------------------------------------------------------------------
+   * ⚠️ ต่างจาก courier ที่จำไว้ในตาราง tracking_couriers อย่างสิ้นเชิง
+   *
+   * ตารางนั้นเก็บ "ข้อเท็จจริงที่พิสูจน์แล้ว" ว่าเลขนี้เป็นของเจ้าไหน ส่วนค่านี้
+   * เป็นแค่ "คนนี้เปิดหน้า Flash อยู่" ซึ่งเดาผิดได้ง่ายมาก — คนเปิดหน้า Flash
+   * แล้ววางเลข SPX มีจริงและต้องได้คำตอบที่ถูก
+   *
+   * จึงใช้มันในจุดเดียวที่ผิดแล้วไม่เสียอะไร: **ท้ายสุด หลังการตรวจจับอัตโนมัติ
+   * ตอบว่าไม่พบแล้ว** (ดู runFallback) ผลคือ
+   *   เดาถูก  → กู้เคสที่ auto-detect พลาดได้ โดยไม่เสีย call เพิ่มในทางที่สำเร็จ
+   *   เดาผิด  → ไม่มีอะไรเปลี่ยน เพราะขั้นนั้นจะถูกไล่อยู่แล้วด้วยรายการมาตรฐาน
+   *
+   * และ **ห้ามเอาไปใช้กับ ETrackings เด็ดขาด** โควตาที่นั่นเหลือน้อยและถูกสงวน
+   * ไว้ให้การเก็บที่อยู่สาขา (ดู canUseForLookup ใน lib/provider-usage.ts)
+   * การยิงไปด้วยการเดาคือการเผาของหายากไปกับความน่าจะเป็น
+   * ------------------------------------------------------------------
+   */
+  pageCourierHint?: string;
 }
 
 /** ชั้นที่ตอบคำค้นนี้ — "api" คือยิงถามขนส่งจริง */
@@ -312,11 +333,20 @@ async function retryWithCourierCodes(
   trackingNumber: string,
   adapter: CarrierAdapter,
   alreadyTried: readonly string[],
+  /** ขนส่งที่หน้า landing บอกใบ้มา — ลองก่อนรายการมาตรฐาน */
+  preferred?: string,
 ): Promise<{ result: TrackingResult | null; codes: string[] }> {
   const trackWithCourier = adapter.trackWithCourier;
   if (trackWithCourier === undefined) return { result: null, codes: [] };
 
-  const candidates = (adapter.retryCourierCodes ?? [])
+  // ใบ้จากหน้ามาก่อนเสมอ เพราะเจาะจงกว่ารายการกลางที่เรียงตาม "เจอปัญหาบ่อย"
+  // แต่ยังอยู่ใต้เพดานเดียวกัน จึงไม่ทำให้การค้นหนึ่งครั้งกิน quota เพิ่ม
+  const ordered = [
+    ...(preferred === undefined ? [] : [preferred]),
+    ...(adapter.retryCourierCodes ?? []),
+  ];
+
+  const candidates = [...new Set(ordered)]
     .filter((code) => !alreadyTried.includes(code))
     .slice(0, MAX_COURIER_RETRIES);
 
@@ -457,6 +487,7 @@ async function resolveFresh(
   cache: PersistentTrackingCache | undefined,
   courierHint: string | undefined,
   courierStore: TrackingCourierStore,
+  pageCourierHint: string | undefined,
 ): Promise<FreshResult> {
   // เจ้าที่ยิงไปแล้ว ไว้กันไม่ให้ขั้นถัดไปถามซ้ำคำถามเดิม และไว้อธิบายใน log
   const tried: string[] = [];
@@ -526,7 +557,13 @@ async function resolveFresh(
       const found =
         slot === "backup"
           ? await runBackup(normalized, backup, backupCourier)
-          : await runFallback(normalized, fallback, shortcut, tried);
+          : await runFallback(
+              normalized,
+              fallback,
+              shortcut,
+              tried,
+              pageCourierHint,
+            );
 
       if (found !== null) {
         // เก็บที่อยู่สาขาก่อนคืนผล — ทำหลังจากนี้ไม่ได้เพราะ Next อาจตัด
@@ -638,6 +675,7 @@ async function runFallback(
   fallback: CarrierAdapter,
   shortcut: PrefixShortcut | null,
   tried: string[],
+  pageCourierHint?: string,
 ): Promise<TrackingResult | null> {
   if (shortcut !== null) {
     const byPrefix = await attempt(shortcut.track);
@@ -653,7 +691,12 @@ async function runFallback(
   // การตรวจจับขนส่งอัตโนมัติเดาผิดได้ เช่นเลขของ Shopee Xpress ที่ถูกเดาเป็น
   // Flash Express แล้วตอบว่าไม่พบทั้งที่พัสดุมีอยู่จริง จึงลองยิงซ้ำโดยระบุ
   // ขนส่งเจาะจงจากรายชื่อที่รู้ว่ามีปัญหา
-  const retried = await retryWithCourierCodes(normalized, fallback, tried);
+  const retried = await retryWithCourierCodes(
+    normalized,
+    fallback,
+    tried,
+    pageCourierHint,
+  );
   tried.push(...retried.codes);
   return retried.result;
 }
@@ -726,6 +769,7 @@ export async function resolveTracking(
       options.persistentCache,
       courierHint,
       courierStore,
+      options.pageCourierHint,
     ),
   );
 

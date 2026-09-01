@@ -16,7 +16,7 @@ import LogoutDialog from "./logout-dialog";
 import WelcomeToast from "./welcome-toast";
 
 const BUTTON_CLASS =
-  "rounded-lg px-3 py-2 text-sm font-medium text-faint transition-colors hover:bg-ink/5 hover:text-ink disabled:cursor-not-allowed disabled:opacity-60";
+  "inline-flex min-h-11 items-center rounded-lg px-3 text-sm font-medium text-faint transition-colors hover:bg-ink/5 hover:text-ink disabled:cursor-not-allowed disabled:opacity-60";
 
 /**
  * ปุ่มเข้าสู่ระบบ / ออกจากระบบ บนหัวเว็บ

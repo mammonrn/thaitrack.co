@@ -4,7 +4,7 @@ import { useInstallState } from "@/lib/use-install-state";
 import InstallGuideDialog from "./install-guide-dialog";
 
 const BUTTON_CLASS =
-  "rounded-lg px-3 py-2 text-sm font-medium text-faint transition-colors hover:bg-ink/5 hover:text-ink";
+  "inline-flex min-h-11 items-center rounded-lg px-3 text-sm font-medium text-faint transition-colors hover:bg-ink/5 hover:text-ink";
 
 /**
  * ปุ่มติดตั้งแอพลงเครื่อง บนหัวเว็บ

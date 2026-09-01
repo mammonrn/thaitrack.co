@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Anuphan, IBM_Plex_Sans_Thai } from "next/font/google";
 import "./globals.css";
 import InstallInvite from "./install-invite";
+import ReferrerProbe from "./referrer-probe";
 import ServiceWorkerRegistrar from "./service-worker-registrar";
 import SiteNav from "./site-nav";
 
@@ -56,6 +57,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         {children}
         <SiteNav />
         <InstallInvite />
+        <ReferrerProbe />
         <ServiceWorkerRegistrar />
       </body>
     </html>

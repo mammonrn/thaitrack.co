@@ -366,6 +366,13 @@ export function formatPostmark(
 export async function requestTracking(
   trackingNumber: string,
   fetchImpl: typeof fetch = fetch,
+  /**
+   * ขนส่งที่หน้านี้เจาะจงอยู่ (หน้า landing รายขนส่ง) — undefined บนหน้าแรก
+   *
+   * เป็นแค่บริบทของหน้า ไม่ใช่ข้อเท็จจริงของเลขพัสดุ ฝั่งเซิร์ฟเวอร์จึงใช้มัน
+   * เฉพาะตอนที่การตรวจจับอัตโนมัติตอบว่าไม่พบแล้วเท่านั้น
+   */
+  courierHint?: string,
 ): Promise<TrackingOutcome> {
   const value = trackingNumber.trim();
   if (value === "") {
@@ -376,7 +383,10 @@ export async function requestTracking(
     const response = await fetchImpl("/api/track", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ trackingNumber: value }),
+      body: JSON.stringify({
+        trackingNumber: value,
+        ...(courierHint === undefined ? {} : { courierHint }),
+      }),
     });
 
     const payload: unknown = await response.json().catch(() => null);
