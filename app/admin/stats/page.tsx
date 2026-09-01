@@ -21,7 +21,15 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { PROVIDER_IDS, PROVIDER_LABEL, currentMonth, readQuota } from "@/lib/provider-usage";
+import {
+  PROVIDER_IDS,
+  PROVIDER_LABEL,
+  currentPeriodKey,
+  nextResetOf,
+  readHarvestReserve,
+  readLeanRatio,
+  readQuota,
+} from "@/lib/provider-usage";
 import { requireAdmin } from "@/lib/supabase/admin-guard";
 import { countBranches } from "@/lib/supabase/locations";
 import { listProviderUsage } from "@/lib/supabase/provider-usage";
@@ -86,6 +94,77 @@ function Tile({ label, value, hint }: TileProps) {
   );
 }
 
+interface QuotaTileProps {
+  label: string;
+  used: number;
+  quota: number;
+  /** โควตาที่สงวนไว้ให้การเก็บที่อยู่สาขา — 0 เมื่อไม่ได้สงวน */
+  reserve: number;
+  /** เวลาที่รอบถัดไปเริ่ม — null เมื่อรอบนี้ไม่มีวันรีเซ็ต */
+  resetAt: number | null;
+  /** ใช้เกินสัดส่วนนี้แล้วเปลี่ยนเป็นสีเตือน (0–1) */
+  warnAt: number;
+}
+
+/**
+ * การ์ดโควตาหนึ่งเจ้า — เปลี่ยนสีเมื่อใช้เกินเกณฑ์
+ *
+ * ใช้สีชาดซึ่งเป็นสีเดียวในเว็บที่ไม่ใช่น้ำเงิน/กระดาษ (ดู DESIGN.md) เพราะ
+ * นี่คือสิ่งเดียวบนหน้านี้ที่ต้อง "เห็นแล้วรีบทำอะไรสักอย่าง" ไม่ใช่ตัวเลข
+ * ที่อ่านเอาความรู้
+ */
+function QuotaTile({
+  label,
+  used,
+  quota,
+  reserve,
+  resetAt,
+  warnAt,
+}: QuotaTileProps) {
+  const ratio = quota > 0 ? used / quota : 0;
+  const warning = ratio >= warnAt;
+
+  // ไม่มีวันรีเซ็ต = ใช้หมดแล้วหมดเลย ต้องบอกให้ชัดกว่าการเว้นว่างไว้
+  const reset =
+    resetAt === null
+      ? "ไม่รีเซ็ต — ใช้หมดแล้วหมดเลย"
+      : `รีเซ็ต ${formatResetDate(resetAt)}`;
+
+  return (
+    <div
+      className={`rounded-xl border p-4 ${
+        warning ? "border-seal/40 bg-seal/5" : "border-line bg-white/60"
+      }`}
+    >
+      <p className="text-xs text-faint">{label}</p>
+      <p
+        className={`mt-1 font-display text-2xl font-bold tracking-tight ${
+          warning ? "text-seal" : "text-ink"
+        }`}
+      >
+        {count(used)} / {count(quota)}
+      </p>
+      <p className="mt-1 font-mono text-[11px] text-faint">
+        {percent(used, quota)} · {reset}
+      </p>
+      {reserve > 0 && (
+        <p className="mt-1 text-[11px] leading-snug text-faint">
+          กัน {count(reserve)} ครั้งสุดท้ายไว้ให้การเก็บที่อยู่สาขาเท่านั้น
+          การค้นหาทั่วไปใช้ได้ถึง {count(quota - reserve)}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** "5 ก.ย. 2569 00:00" — เวลาไทยเสมอ เพราะรอบบิลนับตามเวลาไทย */
+function formatResetDate(at: number): string {
+  return new Intl.DateTimeFormat("th-TH", {
+    dateStyle: "medium",
+    timeZone: "Asia/Bangkok",
+  }).format(at);
+}
+
 function Section({
   title,
   note,
@@ -113,7 +192,14 @@ export default async function AdminStatsPage() {
     notFound();
   }
 
-  const month = currentMonth();
+  // รอบบิลของแต่ละเจ้าไม่ตรงกัน จึงต้องถามยอดด้วยคีย์รอบของเจ้านั้นๆ
+  // (รายวัน / รายเดือนตามวันที่ซื้อ / ไม่รีเซ็ตเลย — ดู lib/billing-period.ts)
+  // ปล่อยให้ตัวช่วยอ่านเวลาปัจจุบันเอง — การเรียก Date.now() ตรงๆ ใน component
+  // เป็นการอ่านค่าที่เปลี่ยนตลอดระหว่าง render ซึ่ง eslint ห้ามไว้ด้วยเหตุผลนั้น
+  const periods = Object.fromEntries(
+    PROVIDER_IDS.map((provider) => [provider, currentPeriodKey(provider)]),
+  );
+  const leanRatio = readLeanRatio();
 
   const [
     members,
@@ -138,7 +224,7 @@ export default async function AdminStatsPage() {
     readSearchDaily(WINDOW_DAYS),
     readTopCarriers(WINDOW_DAYS, TOP_CARRIER_LIMIT),
     countBranches(),
-    listProviderUsage(month),
+    listProviderUsage(periods),
     readErrorBreakdown(WINDOW_DAYS),
     readLatency(WINDOW_DAYS),
     readInstallStats(),
@@ -380,18 +466,24 @@ export default async function AdminStatsPage() {
 
           <Section
             title="โควตาที่ใช้ของแต่ละเจ้า"
-            note={`เดือน ${month} · นับเป็นจำนวน request ที่ยิงออกไปจริง ซึ่งสูงกว่ายอดบิลของเจ้าที่คิดเป็นรายเลขพัสดุ`}
+            note={`นับเป็น "จำนวน request ที่ยิงออกจากเราจริง" ทุกรอบที่ลองใหม่ก็นับ — ไม่ใช่ยอดบิล ซึ่งบางเจ้าคิดเป็นรายเลขพัสดุ ตัวเลขสองอันนี้ไม่มีวันตรงกัน · แถบสีขึ้นเมื่อใช้เกิน ${Math.round(leanRatio * 100)}%`}
           >
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {PROVIDER_IDS.map((provider) => {
                 const used = usageByProvider.get(provider)?.callCount ?? 0;
                 const quota = readQuota(provider);
+                const reserve = readHarvestReserve(provider);
+                const reset = nextResetOf(provider);
+
                 return (
-                  <Tile
+                  <QuotaTile
                     key={provider}
                     label={PROVIDER_LABEL[provider]}
-                    value={`${count(used)} / ${count(quota)}`}
-                    hint={`ใช้ไป ${percent(used, quota)} ของเพดานที่ตั้งไว้`}
+                    used={used}
+                    quota={quota}
+                    reserve={reserve}
+                    resetAt={reset}
+                    warnAt={leanRatio}
                   />
                 );
               })}

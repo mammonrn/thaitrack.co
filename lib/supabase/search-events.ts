@@ -22,8 +22,23 @@
  * ไม่สำเร็จต้องไม่ทำให้การค้นหาของผู้ใช้ล้มเหลว
  */
 
+import type { HealthSnapshot } from "../health-check";
 import { explainPermissionDenied } from "./key-role";
 import { getServiceSupabaseClient } from "./service";
+
+/**
+ * ยอดว่างเปล่า — ใช้เมื่ออ่านไม่ได้
+ *
+ * total = 0 แปลว่า "ไม่มีข้อมูลพอจะสรุป" ซึ่งทำให้ judgeHealth ตอบว่าปกติ
+ * ตั้งใจให้เป็นแบบนั้น: ฐานข้อมูลอ่านไม่ได้ไม่ใช่หลักฐานว่าการค้นหาพัง และการ
+ * ตอบ 503 จากความไม่รู้จะทำให้ monitor ปลุกคนโดยไม่มีอะไรให้แก้
+ */
+const EMPTY_SNAPSHOT: HealthSnapshot = {
+  total: 0,
+  found: 0,
+  notFound: 0,
+  error: 0,
+};
 
 const EVENTS_TABLE = "search_events";
 
@@ -370,6 +385,42 @@ export async function readUnknownCourierFailures(days: number): Promise<number> 
   } catch (cause) {
     warn("อ่านจำนวนคำขอที่ไม่รู้ขนส่ง", reason(cause));
     return 0;
+  }
+}
+
+/**
+ * ยอดรวมของคำค้นในกี่นาทีล่าสุด — สำหรับ endpoint ตรวจสุขภาพระบบ
+ *
+ * ⚠️ ผู้เรียกเป็น endpoint สาธารณะที่ไม่ต้องล็อกอิน (uptime monitor เรียกไม่ได้
+ * ถ้าต้องล็อกอิน) จึงต้องไม่ส่งตัวเลขพวกนี้กลับออกไปในคำตอบ — ใช้ตัดสิน
+ * 200/503 เท่านั้น ดู app/api/health/tracking/route.ts
+ */
+export async function readHealthSnapshot(
+  minutes: number,
+): Promise<HealthSnapshot> {
+  const supabase = getServiceSupabaseClient();
+  if (supabase === null) return EMPTY_SNAPSHOT;
+
+  try {
+    const { data, error } = await supabase.rpc("admin_health_snapshot", {
+      p_minutes: minutes,
+    });
+
+    if (error) {
+      warn("อ่านสถานะระบบ", error.message);
+      return EMPTY_SNAPSHOT;
+    }
+
+    const row = (data ?? {}) as Record<string, unknown>;
+    return {
+      total: toCount(row.total),
+      found: toCount(row.found),
+      notFound: toCount(row.not_found),
+      error: toCount(row.error),
+    };
+  } catch (cause) {
+    warn("อ่านสถานะระบบ", reason(cause));
+    return EMPTY_SNAPSHOT;
   }
 }
 

@@ -1188,6 +1188,7 @@ const ORDER_BASE = {
   backupUsable: true,
   fallbackNearQuota: false,
   backupNearQuota: false,
+  backupOutOfLookupBudget: false,
 };
 
 test("ETrackings ตามเลขนี้ไม่ได้ → เหลือ Track123 เจ้าเดียว", () => {
@@ -1211,6 +1212,25 @@ test("เจ้าที่ควรได้ไปก่อนใกล้ช�
     chooseProviderOrder({ ...ORDER_BASE, fallbackNearQuota: true }),
     ["backup", "fallback"],
     "Track123 ใกล้เต็มแต่ ETrackings ยังว่าง → ลำดับเดิมอยู่แล้ว",
+  );
+});
+
+test("โควตาส่วนค้นหาของ ETrackings หมด → ตัดออกจากลำดับ ไม่ใช่แค่ไว้ทีหลัง", () => {
+  // ที่เหลือถูกสงวนไว้ให้การเก็บที่อยู่สาขา (ดู canUseForLookup) การคงไว้เป็น
+  // ตัวสำรองมีแต่ทำให้ผู้ใช้รออีกรอบก่อนได้คำตอบจากเจ้าที่ยังใช้ได้จริง
+  assert.deepEqual(
+    chooseProviderOrder({ ...ORDER_BASE, backupOutOfLookupBudget: true }),
+    ["fallback"],
+  );
+
+  assert.deepEqual(
+    chooseProviderOrder({
+      ...ORDER_BASE,
+      backupOutOfLookupBudget: true,
+      fallbackNearQuota: true,
+    }),
+    ["fallback"],
+    "ถึง Track123 จะใกล้เต็มก็ยังต้องตัด ETrackings ออกอยู่ดี",
   );
 });
 
