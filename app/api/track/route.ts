@@ -10,6 +10,7 @@ import {
   type TrackingErrorCode,
   type TrackingResult,
 } from "@/lib/carriers/types";
+import { CARRIER_LANDINGS } from "@/lib/carriers/landing";
 import { canRevealProof } from "@/lib/proof-access";
 import { SupabaseConfigError } from "@/lib/supabase/env";
 import { recordSearchEvent } from "@/lib/supabase/search-events";
@@ -111,6 +112,19 @@ async function readProofPhotos(
   }
 }
 
+/**
+ * ขนส่งที่ยอมรับเป็น hint จากหน้า landing ได้ — ชุดปิด
+ *
+ * รับเฉพาะรหัสที่เรามีหน้า landing อยู่จริง ไม่ใช่ค่าอะไรก็ได้ที่ client ส่งมา
+ * ถ้ารับดิบๆ ใครก็ตามที่ยิง API ตรงจะสั่งให้เราไปถามขนส่งเจ้าไหนก็ได้ ซึ่ง
+ * กลายเป็นช่องให้เผาโควตาของเราด้วยคำขอที่รู้อยู่แล้วว่าไม่มีทางเจอ
+ */
+const ALLOWED_HINTS: ReadonlySet<string> = new Set(
+  CARRIER_LANDINGS.map((carrier) => carrier.courierCode).filter(
+    (code): code is string => code !== null,
+  ),
+);
+
 function errorResponse(code: TrackingErrorCode, message: string) {
   return NextResponse.json(
     { ok: false as const, error: { code, message } },
@@ -144,6 +158,17 @@ export async function POST(request: Request) {
     return errorResponse("invalid_tracking_number", "กรุณากรอกเลขพัสดุ");
   }
 
+  // ค่าที่ไม่อยู่ในชุดปิดถูกทิ้งเงียบๆ ไม่ใช่ตอบ error — มันเป็นแค่ตัวช่วยเดา
+  // การค้นหาต้องทำงานได้เหมือนเดิมทุกประการแม้ไม่มีมัน
+  const rawHint =
+    typeof body === "object" && body !== null && "courierHint" in body
+      ? (body as { courierHint?: unknown }).courierHint
+      : undefined;
+  const pageCourierHint =
+    typeof rawHint === "string" && ALLOWED_HINTS.has(rawHint)
+      ? rawHint
+      : undefined;
+
   const startedAt = Date.now();
   const trackNo = normalizeTrackingNumber(trackingNumber);
 
@@ -152,7 +177,7 @@ export async function POST(request: Request) {
   const shape = trackingShape(trackNo);
 
   try {
-    const resolved = await resolveTracking(trackingNumber);
+    const resolved = await resolveTracking(trackingNumber, { pageCourierHint });
 
     logTracking({
       ts: startedAt,

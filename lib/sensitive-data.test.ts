@@ -157,7 +157,9 @@ test("รูปถ่ายตอนนำจ่ายถูกแตะได�
 
   assert.deepEqual(users, [
     "app/api/track/route.ts",
-    "app/page.tsx",
+    // ย้ายมาจาก app/page.tsx ตอนแยก component ค้นหาออกมาให้หน้า landing ใช้ร่วม
+    // — หน้าแรกกลายเป็น server component ที่ไม่แตะข้อมูลอ่อนไหวเลย
+    "app/tracking-search.tsx",
     "lib/carriers/etrackings.ts",
     "lib/carriers/types.ts",
     "lib/tracking-view.ts",

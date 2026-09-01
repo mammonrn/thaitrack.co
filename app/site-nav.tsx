@@ -88,11 +88,10 @@ const ITEMS: NavItem[] = [
     isActive: (pathname) => pathname.startsWith("/profile"),
   },
   {
-    href: "#",
+    href: "/รหัสไปรษณีย์",
     label: "รหัสไปรษณีย์",
     Icon: PinIcon,
-    isActive: () => false,
-    comingSoon: true,
+    isActive: (pathname) => pathname.startsWith("/รหัสไปรษณีย์"),
   },
 ];
 
