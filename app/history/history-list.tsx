@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import Link from "next/link";
 
 import type { TrackingStatus } from "@/lib/carriers/types";
@@ -48,40 +48,42 @@ export default function HistoryList({ items, mapEnabled }: HistoryListProps) {
   // (ดู app/api/saved/refresh/route.ts) เก็บเป็น state เพื่อทับด้วยของสดทีหลัง
   const [rows, setRows] = useState<SavedTracking[]>(items);
 
-  // มีอะไรให้รีเฟรชจริงไหม — ถ้าทุกใบถึงปลายทางแล้วก็ไม่ต้องยิงอะไรเลย
-  // ตัดสินจาก items (ค่าตั้งต้นจาก server) ไม่ใช่ rows เพื่อไม่ให้ effect
-  // วนซ้ำหลังรีเฟรชเสร็จ
-  const [refreshing, setRefreshing] = useState(() =>
-    items.some(needsStatusRefresh),
-  );
+  /**
+   * ใบไหนกำลังรอผลอยู่ — ว่างเปล่าเมื่อไม่มีอะไรกำลังยิง
+   *
+   * ⚠️ **ไม่มี auto-refresh ตอนเปิดหน้าอีกต่อไป** เดิมมี useEffect ยิงให้เอง
+   * ซึ่งแปลว่าการเปิดหน้าหนึ่งครั้งจุดชนวนการยิง API หลายสิบครั้งโดยที่ผู้ใช้
+   * ไม่ได้ขอ ตัดสินใจใหม่แล้วว่าผู้ใช้ต้องกดเองทุกครั้ง (โมเดลเดียวกับ ThaiEMS)
+   * เพื่อประหยัดโควตาให้มากที่สุด
+   *
+   * ถ้าเห็น useEffect ที่เรียก refreshSavedTrackings() โผล่มาอีก แปลว่ามีคน
+   * เอา auto กลับมาโดยไม่ได้ตั้งใจ — มีเทสต์เฝ้าอยู่ที่ lib/history-refresh.test.ts
+   */
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+  const [refreshError, setRefreshError] = useState(false);
 
-  useEffect(() => {
-    if (!items.some(needsStatusRefresh)) return;
+  /** ยิงรีเฟรชตามที่ผู้ใช้กด — ids ว่าง = ทุกใบที่ยังไม่ถึงปลายทาง */
+  const runRefresh = useCallback(async (ids: string[]) => {
+    if (ids.length === 0) return;
 
-    // หน้าถูกปิดไปแล้วห้าม setState ต่อ — ไม่งั้นได้ warning และเขียนทับ
-    // สิ่งที่ผู้ใช้ทำไปแล้วในหน้าใหม่
-    let alive = true;
+    setRefreshError(false);
+    setBusyIds(new Set(ids));
 
-    void (async () => {
-      const updated = await refreshSavedTrackings();
-      if (!alive) return;
+    const updated = await refreshSavedTrackings(ids);
 
-      if (updated.length > 0) {
-        const byId = new Map(updated.map((row) => [row.id, row]));
-        // ทับทีละใบตามลำดับเดิม ไม่เรียงใหม่ — ผู้ใช้กำลังอ่านรายการอยู่
-        // การสลับที่ระหว่างอ่านคือสิ่งที่น่ารำคาญกว่าสถานะที่ช้าไปสองวินาที
-        setRows((previous) =>
-          previous.map((row) => byId.get(row.id) ?? row),
-        );
-      }
+    if (updated.length > 0) {
+      const byId = new Map(updated.map((row) => [row.id, row]));
+      // ทับทีละใบตามลำดับเดิม ไม่เรียงใหม่ — ผู้ใช้กำลังอ่านรายการอยู่
+      // การสลับที่ระหว่างอ่านคือสิ่งที่น่ารำคาญกว่าสถานะที่ช้าไปสองวินาที
+      setRows((previous) => previous.map((row) => byId.get(row.id) ?? row));
+    } else {
+      // ไม่มีอะไรเปลี่ยน กับ ยิงไม่สำเร็จ แยกจากกันไม่ได้จากฝั่งนี้ (ดู
+      // refreshSavedTrackings) จึงบอกกลางๆ ว่า "ไม่มีอะไรใหม่" ซึ่งจริงทั้งสองทาง
+      setRefreshError(true);
+    }
 
-      setRefreshing(false);
-    })();
-
-    return () => {
-      alive = false;
-    };
-  }, [items]);
+    setBusyIds(new Set());
+  }, []);
 
   const handleConfirmDelete = useCallback(async () => {
     const target = pendingDelete;
@@ -104,6 +106,11 @@ export default function HistoryList({ items, mapEnabled }: HistoryListProps) {
 
   const visible = rows.filter((item) => !removedIds.has(item.id));
 
+  // ใบที่ "กดค้นหาแล้วมีความหมาย" — ที่ถึงปลายทางแล้วไม่มีทางเปลี่ยนอีก
+  // จึงไม่ขึ้นปุ่มให้กด (ดู needsStatusRefresh ใน lib/saved-refresh.ts)
+  const pending = visible.filter(needsStatusRefresh);
+  const anyBusy = busyIds.size > 0;
+
   if (visible.length === 0) {
     return (
       <p className="mt-6 rounded-xl border border-dashed border-line-strong p-6 text-center text-sm text-faint">
@@ -116,15 +123,31 @@ export default function HistoryList({ items, mapEnabled }: HistoryListProps) {
     <>
       <HistorySummary summary={summarizeSavedTrackings(visible)} />
 
-      {refreshing && (
-        /* บอกว่ากำลังทำอะไรอยู่ ไม่ใช่ปล่อยให้ตัวเลขกระโดดเองเฉยๆ — และไม่บัง
-           รายการไว้ระหว่างรอ ผู้ใช้อ่านของเดิมต่อได้ทันทีที่หน้าขึ้น */
-        <p
-          role="status"
-          className="mt-3 flex items-center gap-2 text-xs text-faint"
-        >
-          <Spinner className="h-3.5 w-3.5 shrink-0" />
-          กำลังอัปเดตสถานะล่าสุด
+      {/* ปุ่มเดียวสำหรับทุกใบที่ยังไม่ถึงปลายทาง — ฝั่ง server หรี่การยิงไว้ที่
+          4 ใบพร้อมกันอยู่แล้ว (REFRESH_CONCURRENCY) จึงไม่มีทางชนเพดาน
+          5 req/s ของ Track123 ต่อให้กดตอนมีพัสดุค้างอยู่หลายสิบใบ */}
+      {pending.length > 0 && (
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => void runRefresh(pending.map((item) => item.id))}
+            disabled={anyBusy}
+            className="inline-flex h-10 items-center gap-2 rounded-xl border border-line-strong bg-white px-4 text-sm font-semibold text-ink transition-colors hover:bg-ink/5 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {anyBusy && <Spinner className="h-3.5 w-3.5 shrink-0" />}
+            {anyBusy
+              ? "กำลังค้นหา"
+              : `ค้นหาสถานะล่าสุด (${pending.length})`}
+          </button>
+          <p className="text-xs leading-snug text-faint">
+            อัปเดตเฉพาะพัสดุที่ยังไม่ถึงปลายทาง
+          </p>
+        </div>
+      )}
+
+      {refreshError && (
+        <p role="status" className="mt-3 text-xs text-faint">
+          ยังไม่มีความเคลื่อนไหวใหม่
         </p>
       )}
 
@@ -261,6 +284,19 @@ export default function HistoryList({ items, mapEnabled }: HistoryListProps) {
                 >
                   ดูอีกครั้ง
                 </Link>
+                {needsStatusRefresh(item) && (
+                  <button
+                    type="button"
+                    onClick={() => void runRefresh([item.id])}
+                    disabled={anyBusy}
+                    className="inline-flex h-10 items-center gap-2 rounded-xl border border-line-strong bg-white px-4 text-sm font-medium text-ink transition-colors hover:bg-ink/5 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {busyIds.has(item.id) && (
+                      <Spinner className="h-3.5 w-3.5 shrink-0" />
+                    )}
+                    {busyIds.has(item.id) ? "กำลังค้นหา" : "ค้นหาสถานะ"}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setPendingDelete(item)}

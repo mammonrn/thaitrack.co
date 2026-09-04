@@ -312,19 +312,28 @@ export async function findSavedTracking(
 /**
  * ขออัปเดตสถานะของพัสดุที่ยังไม่ถึงปลายทาง — คืนเฉพาะแถวที่เปลี่ยนจริง
  *
- * ฝั่ง server เป็นคนตัดสินว่าใบไหนต้องรีเฟรช ไม่ใช่ให้ client ส่งรายการมา
- * ด้วยเหตุผลเดียวกับ saveTracking(): ค่าที่ client ส่งมาเชื่อไม่ได้ และ RLS
- * ก็กรองให้เหลือแต่แถวของเจ้าตัวอยู่แล้ว
+ * ⚠️ **ต้องถูกเรียกจากการกดปุ่มของผู้ใช้เท่านั้น ห้ามเรียกอัตโนมัติ**
+ * (ดูเหตุผลพร้อมตัวเลขที่หัว app/api/saved/refresh/route.ts)
+ *
+ * ids เป็นแค่ "ใบไหนที่ผู้ใช้กด" ไม่ใช่คำสั่งที่เชื่อได้ — ฝั่ง server ยังคัด
+ * เฉพาะใบที่ยังไม่ถึงปลายทางเองอยู่ดี และ RLS กรองให้เหลือแต่แถวของเจ้าตัว
+ * ต่อให้ส่ง id ของคนอื่นมาก็หาไม่เจอ
  *
  * คืนอาร์เรย์ว่างทั้งกรณี "ไม่มีอะไรเปลี่ยน" และกรณี "ยิงไม่สำเร็จ" เพราะหน้าเว็บ
  * ทำอย่างเดียวกันทั้งสองกรณีคือแสดงค่าเดิมต่อไป การรีเฟรชเป็นของเสริม
  * ไม่ใช่สิ่งที่ผู้ใช้ต้องมานั่งดูว่าสำเร็จไหม
  */
 export async function refreshSavedTrackings(
+  ids?: readonly string[],
   fetchImpl: typeof fetch = fetch,
 ): Promise<SavedTracking[]> {
   try {
-    const response = await fetchImpl("/api/saved/refresh", { method: "POST" });
+    const response = await fetchImpl("/api/saved/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // ไม่ระบุ ids = ทุกใบที่ยังไม่ถึงปลายทาง · ระบุ = เฉพาะใบที่กด
+      body: JSON.stringify(ids === undefined ? {} : { ids }),
+    });
     if (!response.ok) return [];
 
     const payload: unknown = await response.json().catch(() => null);

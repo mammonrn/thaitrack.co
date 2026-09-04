@@ -15,6 +15,7 @@ import type { TrackingStatus } from "./carriers/types.ts";
 import type { LocationAccuracy } from "./geocode.ts";
 import {
   LOCATION_ACCURACY_NOTICE,
+  refreshSavedTrackings,
   sortBySavedAtDesc,
   summarizeSavedTrackings,
   type SavedTracking,
@@ -196,4 +197,94 @@ test("migration ต้องขยาย constraint ก่อนแก้ข้�
 
   assert.ok(lastConstraint !== -1 && firstUpdate !== -1);
   assert.ok(lastConstraint < firstUpdate, "ต้อง add constraint ให้ครบก่อน update");
+});
+
+/* ------------------- การขอรีเฟรชสถานะ ------------------- *
+ *
+ * ⚠️ ตัวนี้ต้องถูกเรียกจากการกดปุ่มของผู้ใช้เท่านั้น — เทสต์ที่เฝ้าว่าไม่มีใคร
+ * เรียกอัตโนมัติอยู่ที่ lib/history-refresh.test.ts ส่วนที่นี่ตรวจว่าเมื่อถูก
+ * เรียกแล้ว มันส่งอะไรออกไปและรับอะไรกลับมาถูกต้อง
+ */
+
+/** fetch ปลอมที่จำสิ่งที่ถูกส่งออกไป แล้วตอบตามที่กำหนด */
+function recordingFetch(response: { ok: boolean; body?: unknown }) {
+  const calls: { url: string; body: unknown }[] = [];
+
+  const impl = ((url: string, init?: RequestInit) => {
+    calls.push({
+      url,
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
+    });
+
+    return Promise.resolve({
+      ok: response.ok,
+      json: () => Promise.resolve(response.body ?? null),
+    } as Response);
+  }) as unknown as typeof fetch;
+
+  return { calls, impl };
+}
+
+test("ระบุ ids → ส่งเฉพาะใบที่ผู้ใช้กด", async () => {
+  const { calls, impl } = recordingFetch({ ok: true, body: { data: [] } });
+
+  await refreshSavedTrackings(["a", "b"], impl);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "/api/saved/refresh");
+  assert.deepEqual(calls[0].body, { ids: ["a", "b"] });
+});
+
+test("ไม่ระบุ ids → ส่ง body ว่าง แปลว่าทุกใบที่ยังไม่ถึงปลายทาง", async () => {
+  const { calls, impl } = recordingFetch({ ok: true, body: { data: [] } });
+
+  await refreshSavedTrackings(undefined, impl);
+
+  assert.deepEqual(calls[0].body, {});
+});
+
+test("แปลงแถวที่ได้กลับมาเป็นรูปแบบของหน้าเว็บ", async () => {
+  const { impl } = recordingFetch({
+    ok: true,
+    body: {
+      data: [
+        {
+          id: "a",
+          tracking_number: "EY145587896TH",
+          carrier_name: "ไปรษณีย์ไทย",
+          nickname: null,
+          last_status: "delivered",
+          last_status_text: "ส่งถึงแล้ว",
+          last_location_text: null,
+          last_lat: null,
+          last_lng: null,
+          last_location_accuracy: null,
+          last_updated_at: null,
+          created_at: "2026-09-04T00:00:00Z",
+        },
+      ],
+    },
+  });
+
+  const rows = await refreshSavedTrackings(["a"], impl);
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].lastStatus, "delivered");
+});
+
+test("ยิงไม่สำเร็จ → อาร์เรย์ว่าง ไม่โยน error", async () => {
+  const { impl } = recordingFetch({ ok: false });
+  assert.deepEqual(await refreshSavedTrackings(["a"], impl), []);
+});
+
+test("fetch ระเบิด → อาร์เรย์ว่าง ไม่โยน error", async () => {
+  const impl = (() => Promise.reject(new Error("เน็ตหลุด"))) as unknown as typeof fetch;
+  assert.deepEqual(await refreshSavedTrackings(["a"], impl), []);
+});
+
+test("ตอบกลับมาผิดรูป → อาร์เรย์ว่าง ไม่พัง", async () => {
+  for (const body of [null, {}, { data: "ไม่ใช่อาร์เรย์" }]) {
+    const { impl } = recordingFetch({ ok: true, body });
+    assert.deepEqual(await refreshSavedTrackings(["a"], impl), []);
+  }
 });
