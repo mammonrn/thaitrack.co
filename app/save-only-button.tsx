@@ -26,20 +26,26 @@ import { useRouter } from "next/navigation";
 import { displayTitleOf, saveTracking } from "@/lib/saved-trackings";
 import type { UserFacingError } from "@/lib/tracking-view";
 import { useSessionUser } from "@/lib/use-session-user";
-import SaveTrackingDialog from "./save-tracking-dialog";
 import SavedToast from "./saved-toast";
 import SignInPromptDialog from "./sign-in-prompt-dialog";
 
 interface SaveOnlyButtonProps {
   /** เลขที่พิมพ์อยู่ในช่อง — ปุ่มถูกปิดเมื่อยังว่าง */
   trackingNumber: string;
+  /** ชื่อที่ผู้ใช้ตั้งไว้ในฟอร์ม — เว้นว่างได้ */
+  nickname: string;
+  /** บันทึกสำเร็จแล้ว ให้ฟอร์มล้างช่องชื่อ */
+  onSaved: () => void;
 }
 
-export default function SaveOnlyButton({ trackingNumber }: SaveOnlyButtonProps) {
+export default function SaveOnlyButton({
+  trackingNumber,
+  nickname,
+  onSaved,
+}: SaveOnlyButtonProps) {
   const { user } = useSessionUser();
   const router = useRouter();
 
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isSignInOpen, setIsSignInOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [toastTitle, setToastTitle] = useState<string | null>(null);
@@ -47,9 +53,15 @@ export default function SaveOnlyButton({ trackingNumber }: SaveOnlyButtonProps) 
 
   const trimmed = trackingNumber.trim();
 
-  const handleConfirm = useCallback(
-    async (nickname: string) => {
-      setIsDialogOpen(false);
+  /**
+   * บันทึกทันทีที่กด ไม่มีกล่องถามชื่อคั่นกลาง
+   *
+   * ชื่ออยู่ในฟอร์มเดียวกันแล้ว (ดู tracking-search.tsx) การเด้งกล่องมาถามซ้ำ
+   * คือการถามสิ่งที่ผู้ใช้เพิ่งกรอกไปเมื่อครู่ — ต่างจากปุ่มบันทึกบนการ์ด
+   * ผลลัพธ์ ซึ่งไม่มีช่องชื่อให้กรอกจึงยังต้องใช้กล่อง
+   */
+  const handleSave = useCallback(
+    async () => {
       setIsSaving(true);
       setError(null);
 
@@ -59,6 +71,7 @@ export default function SaveOnlyButton({ trackingNumber }: SaveOnlyButtonProps) 
 
       if (outcome.ok) {
         setToastTitle(displayTitleOf(outcome.saved));
+        onSaved();
         // พาไปหน้าประวัติเพื่อให้เห็นว่าของถูกเก็บไว้จริง และเห็นปุ่มค้นหา
         // ที่กดได้เมื่ออยากรู้ — refresh เพื่อให้รายการใหม่โผล่ทันที
         router.refresh();
@@ -68,7 +81,7 @@ export default function SaveOnlyButton({ trackingNumber }: SaveOnlyButtonProps) 
 
       setIsSaving(false);
     },
-    [router, trimmed],
+    [nickname, onSaved, router, trimmed],
   );
 
   function handleClick() {
@@ -76,7 +89,7 @@ export default function SaveOnlyButton({ trackingNumber }: SaveOnlyButtonProps) 
       setIsSignInOpen(true);
       return;
     }
-    setIsDialogOpen(true);
+    void handleSave();
   }
 
   return (
@@ -97,16 +110,6 @@ export default function SaveOnlyButton({ trackingNumber }: SaveOnlyButtonProps) 
             {error.detail}
           </p>
         </div>
-      )}
-
-      {isDialogOpen && (
-        <SaveTrackingDialog
-          trackingNumber={trimmed}
-          defaultNickname=""
-          isEditing={false}
-          onConfirm={handleConfirm}
-          onCancel={() => setIsDialogOpen(false)}
-        />
       )}
 
       {isSignInOpen && (

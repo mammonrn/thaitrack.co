@@ -21,7 +21,7 @@ import SaveTrackingButton from "./save-tracking-button";
 
 import type { TrackingResult, TrackingStatus } from "@/lib/carriers/types";
 import { markSearchSuccess } from "@/lib/install-invite";
-import type { SavedTracking } from "@/lib/saved-trackings";
+import { NICKNAME_MAX_LENGTH, type SavedTracking } from "@/lib/saved-trackings";
 import { translateStatusText } from "@/lib/status-th";
 import { groupEventsByLocation } from "@/lib/timeline-groups";
 import {
@@ -77,6 +77,13 @@ export default function TrackingSearch({
   courierHint,
 }: TrackingSearchProps) {
   const [trackingNumber, setTrackingNumber] = useState("");
+  /**
+   * ชื่อ/ข้อความเตือนความจำ — ใช้กับปุ่ม "บันทึกไว้" เท่านั้น
+   *
+   * ไม่เกี่ยวกับการค้นหาเลยแม้แต่น้อย ปุ่ม "ค้นหาพัสดุ" ไม่เคยอ่านค่านี้
+   * (ตั้งใจให้ช่องนี้ว่างได้ตลอด คนที่มาค้นอย่างเดียวไม่ต้องแตะมัน)
+   */
+  const [nickname, setNickname] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<TrackingResult | null>(null);
   const [error, setError] = useState<UserFacingError | null>(null);
@@ -232,8 +239,9 @@ export default function TrackingSearch({
 
         <form
           onSubmit={handleSubmit}
-          className="mt-6 flex flex-col gap-2.5 sm:mt-8 sm:flex-row"
+          className="mt-6 flex flex-col gap-2.5 sm:mt-8"
         >
+          <div className="flex flex-col gap-2.5 sm:flex-row">
           <label htmlFor="tracking-number" className="sr-only">
             เลขพัสดุ
           </label>
@@ -264,7 +272,30 @@ export default function TrackingSearch({
             {isLoading ? "กำลังค้นหา…" : "ค้นหาพัสดุ"}
           </button>
 
-          <SaveOnlyButton trackingNumber={trackingNumber} />
+          </div>
+
+          {/* ช่องตั้งชื่อ — อยู่ใต้แถวหลักเพราะเป็นของเสริมสำหรับคนที่จะบันทึก
+              ไม่ใช่สิ่งที่คนมาค้นหาต้องกรอก · เว้นว่างได้ตลอด แล้วประวัติจะใช้
+              เลขพัสดุเป็นชื่อแทน (ดู displayTitleOf ใน lib/saved-trackings.ts) */}
+          <label htmlFor="tracking-nickname" className="sr-only">
+            ตั้งชื่อหรือข้อความเตือนความจำ
+          </label>
+          <input
+            id="tracking-nickname"
+            type="text"
+            autoComplete="off"
+            value={nickname}
+            onChange={(event) => setNickname(event.target.value)}
+            maxLength={NICKNAME_MAX_LENGTH}
+            placeholder="ตั้งชื่อไว้กันลืม เช่น รองเท้า, ของฝากแม่ (ไม่ใส่ก็ได้)"
+            className="h-12 w-full rounded-xl border border-line-strong bg-white px-4 text-center font-body text-sm text-body outline-none transition-colors placeholder:text-faint/70 hover:border-ink/30 focus:border-ink sm:text-left"
+          />
+
+          <SaveOnlyButton
+            trackingNumber={trackingNumber}
+            nickname={nickname}
+            onSaved={() => setNickname("")}
+          />
         </form>
 
         <p className="mt-4 text-xs leading-relaxed text-faint sm:mt-5 sm:text-sm">

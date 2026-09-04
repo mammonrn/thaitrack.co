@@ -32,11 +32,17 @@ function read(path: string): string {
   return readFileSync(path, "utf8");
 }
 
-/** ตัดคอมเมนต์ออก ไม่งั้นจะไปโดนคอมเมนต์ที่อธิบายกติกาเอง */
+/**
+ * ตัดคอมเมนต์ออก ไม่งั้นจะไปโดนคอมเมนต์ที่อธิบายกติกาเอง
+ *
+ * ครอบคอมเมนต์ JSX ({/* … *\/) ด้วย เพราะไฟล์ .tsx เขียนคำอธิบายแบบนั้น
+ * ทั้งไฟล์ — ตัวตัดที่ครอบแค่ /* กับ // จะปล่อยให้ข้อความในคอมเมนต์หลุดมา
+ * ทำให้เทสต์ "ห้ามมีคำนี้" ตกเพราะคำอธิบาย ไม่ใช่เพราะโค้ดจริง
+ */
 function code(source: string): string {
   return source
     .split("\n")
-    .filter((line) => !/^\s*(\*|\/\*|\/\/)/.test(line))
+    .filter((line) => !/^\s*(\{?\/\*|\*|\/\/)/.test(line))
     .join("\n");
 }
 
@@ -147,4 +153,54 @@ test('ฟอร์มหน้าแรกต้องมีทั้งปุ�
     /type="submit"/,
     "ปุ่มค้นหาต้องยังเป็น submit — คำสัญญาหลักของสินค้าห้ามเปลี่ยน",
   );
+});
+
+/* ------------- การ์ดในหน้าประวัติ: แตะทั้งใบ ------------- *
+ *
+ * ปุ่ม "ดูอีกครั้ง" กับ "ค้นหาสถานะ" ถูกลบทิ้งเพราะทำหน้าที่เดียวกับการแตะการ์ด
+ * ปุ่มหลายอันที่พาไปที่เดียวกันคือการให้ผู้ใช้ต้องเลือกโดยไม่มีความหมาย
+ */
+
+test("การ์ดต้องแตะได้ทั้งใบ และพาไปหน้าแรกพร้อมเลขพัสดุ", () => {
+  const source = read(HISTORY_LIST);
+  assert.match(source, /href=\{`\/\?track=\$\{encodeURIComponent\(item\.trackingNumber\)\}`\}/);
+});
+
+test("ปุ่มที่ซ้ำซ้อนต้องไม่กลับมา", () => {
+  const source = code(read(HISTORY_LIST));
+  assert.doesNotMatch(source, /ดูอีกครั้ง/, "ปุ่มดูอีกครั้งถูกลบไปแล้ว");
+  assert.doesNotMatch(source, /"ค้นหาสถานะ"/, "ปุ่มค้นหาสถานะรายใบถูกลบไปแล้ว");
+});
+
+test('ปุ่ม "ค้นหาสถานะล่าสุด (N)" ตัวรวมต้องยังอยู่', () => {
+  // ตัวนี้ไม่ได้ถูกลบ — เป็นทางเดียวที่รีเฟรชหลายใบพร้อมกันได้โดยไม่ต้องแตะทีละใบ
+  assert.match(read(HISTORY_LIST), /ค้นหาสถานะล่าสุด/);
+});
+
+test("ปุ่มลบต้องอยู่นอกลิงก์ ไม่งั้นกดลบแล้วเด้งไปหน้าอื่นด้วย", () => {
+  const source = read(HISTORY_LIST);
+
+  const linkClose = source.indexOf("</Link>");
+  const deleteButton = source.indexOf("setPendingDelete(item)");
+
+  assert.ok(linkClose > 0 && deleteButton > 0, "ต้องมีทั้งลิงก์และปุ่มลบ");
+  assert.ok(
+    deleteButton > linkClose,
+    "ปุ่มลบต้องอยู่หลัง </Link> — ถ้าซ้อนอยู่ข้างในจะกดลบไม่ได้",
+  );
+});
+
+/* ------------- ช่องตั้งชื่อบนฟอร์มหน้าแรก ------------- */
+
+test("ฟอร์มหน้าแรกต้องมีช่องตั้งชื่อ และส่งค่าไปกับปุ่มบันทึก", () => {
+  const form = read(SEARCH_FORM);
+  assert.match(form, /id="tracking-nickname"/, "ต้องมีช่องตั้งชื่อ");
+  assert.match(form, /nickname=\{nickname\}/, "ต้องส่งชื่อไปให้ปุ่มบันทึก");
+});
+
+test("ช่องตั้งชื่อต้องไม่ไปยุ่งกับการค้นหา", () => {
+  // คนที่มาค้นอย่างเดียวต้องไม่ต้องแตะช่องนี้เลย และการค้นหาต้องไม่อ่านค่ามัน
+  const form = code(read(SEARCH_FORM));
+  const submit = form.slice(form.indexOf("function handleSubmit"), form.indexOf("function handleSubmit") + 600);
+  assert.doesNotMatch(submit, /nickname/, "handleSubmit ต้องไม่อ่านค่าชื่อ");
 });

@@ -184,6 +184,18 @@ export default function HistoryList({ items, mapEnabled }: HistoryListProps) {
               key={item.id}
               className="overflow-hidden rounded-xl border border-line bg-white"
             >
+              {/* แตะการ์ดทั้งใบ → หน้าแรกพร้อม ?track= ซึ่งจะค้นให้ทันที
+                  นี่คือ action ที่ยิง API แทนปุ่มที่ลบไป — ยังเป็นการกดของผู้ใช้
+                  เอง ไม่ใช่ auto (ดูกติกาที่ app/api/saved/refresh/route.ts)
+
+                  ⚠️ ครอบแค่ "เนื้อการ์ด" ไม่รวมแถวปุ่มลบข้างล่าง — ปุ่มลบซ้อนอยู่
+                  ในลิงก์เมื่อไร การกดลบจะพาไปหน้าอื่นด้วย ซึ่งเป็นกับดักคลาสสิก
+                  ของการทำการ์ดกดได้ทั้งใบ */}
+              <Link
+                href={`/?track=${encodeURIComponent(item.trackingNumber)}`}
+                aria-label={`ดูรายละเอียดของ ${displayTitleOf(item)}`}
+                className="block transition-colors hover:bg-ink/[0.03] focus-visible:bg-ink/[0.03] focus-visible:outline-none"
+              >
               <div className="p-5">
                 <h2 className="font-display text-lg font-semibold leading-snug text-ink">
                   {displayTitleOf(item)}
@@ -284,26 +296,13 @@ export default function HistoryList({ items, mapEnabled }: HistoryListProps) {
                 )
               )}
 
+              </Link>
+
+              {/* เหลือแค่ปุ่มลบ — "ดูอีกครั้ง" กับ "ค้นหาสถานะ" ถูกลบทิ้งเพราะ
+                  ทำหน้าที่เดียวกันกับการแตะการ์ด (ดูลิงก์คลุมทั้งใบข้างบน)
+                  ปุ่มสามอันที่พาไปที่เดียวกันคือการให้ผู้ใช้ต้องเลือกโดยไม่มี
+                  ความหมาย */}
               <div className="flex flex-wrap gap-2.5 border-t border-line bg-paper/60 px-5 py-3.5">
-                <Link
-                  href={`/?track=${encodeURIComponent(item.trackingNumber)}`}
-                  className="inline-flex h-10 items-center rounded-xl bg-ink px-4 text-sm font-semibold text-white transition-colors hover:bg-ink-strong"
-                >
-                  ดูอีกครั้ง
-                </Link>
-                {needsStatusRefresh(item) && (
-                  <button
-                    type="button"
-                    onClick={() => void runRefresh([item.id])}
-                    disabled={anyBusy}
-                    className="inline-flex h-10 items-center gap-2 rounded-xl border border-line-strong bg-white px-4 text-sm font-medium text-ink transition-colors hover:bg-ink/5 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {busyIds.has(item.id) && (
-                      <Spinner className="h-3.5 w-3.5 shrink-0" />
-                    )}
-                    {busyIds.has(item.id) ? "กำลังค้นหา" : "ค้นหาสถานะ"}
-                  </button>
-                )}
                 <button
                   type="button"
                   onClick={() => setPendingDelete(item)}
