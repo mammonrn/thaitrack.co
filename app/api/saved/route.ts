@@ -76,10 +76,32 @@ export async function POST(request: Request) {
     return errorResponse("invalid_request", 400);
   }
 
-  const { trackingNumber, nickname } = (body ?? {}) as {
+  const { trackingNumber, nickname, lookup } = (body ?? {}) as {
     trackingNumber?: unknown;
     nickname?: unknown;
+    lookup?: unknown;
   };
+
+  /**
+   * บันทึกโดยไม่ยิงถามขนส่งเลย — ปุ่ม "บันทึกไว้" ที่หน้าแรก
+   *
+   * ------------------------------------------------------------------
+   * ทำไมต้องมีทางนี้แยกจากทางปกติ
+   *
+   * ทางปกติ (lookup ไม่ใช่ false) อ่านสถานะล่าสุดจาก resolveTracking ก่อนบันทึก
+   * ซึ่งเกือบทุกครั้งตอบจาก cache เพราะผู้ใช้เพิ่งค้นไปเมื่อครู่ (ยืนยันจาก log
+   * จริง: route=saved source=memory ทุกครั้ง) จึงไม่ได้แพงในทางปฏิบัติ
+   *
+   * แต่ปุ่ม "บันทึกไว้" ที่หน้าแรกเป็นคนละเรื่อง — ผู้ใช้ยังไม่ได้ค้นอะไรเลย
+   * cache จึงว่างแน่นอน และการบันทึกหนึ่งครั้งจะกลายเป็นการยิงจริงหนึ่งครั้ง
+   * ซึ่งขัดกับเจตนาของปุ่มนั้นทั้งหมด (เก็บเลขไว้ก่อน ค่อยค้นทีหลังเมื่ออยากรู้)
+   *
+   * ⚠️ ไม่กระทบปุ่ม "ค้นหาพัสดุ" ที่หน้าแรกเลยแม้แต่น้อย — อันนั้นคือคำสัญญา
+   * หลักของสินค้า ("พิมพ์เลขพัสดุครั้งเดียว เราไล่ถามให้ทุกขนส่ง") และไม่ได้
+   * ผ่านเส้นทางนี้ด้วยซ้ำ มันยิง /api/track ตรงๆ
+   * ------------------------------------------------------------------
+   */
+  const skipLookup = lookup === false;
 
   if (typeof trackingNumber !== "string" || trackingNumber.trim() === "") {
     return errorResponse("invalid_request", 400);
@@ -109,10 +131,45 @@ export async function POST(request: Request) {
   // RLS กันอยู่แล้วอีกชั้น แต่ตอบ 401 ตรงนี้เลยเพื่อให้ client แสดงข้อความที่ตรง
   if (user === null) return errorResponse("unauthenticated", 401);
 
+  const trackNo = normalizeTrackingNumber(trackingNumber);
+
+  if (skipLookup) {
+    // เลขต้องอ่านออกก่อน ไม่งั้นจะเก็บขยะไว้ในประวัติที่ค้นยังไงก็ไม่เจอ
+    // ใช้เกณฑ์เดียวกับ resolveTracking เพื่อให้สิ่งที่บันทึกได้กับสิ่งที่ค้นได้
+    // เป็นชุดเดียวกันเสมอ
+    if (!/^[A-Z0-9]{6,40}$/.test(trackNo)) {
+      return errorResponse("invalid_request", 400);
+    }
+
+    // เขียนเฉพาะสามคอลัมน์นี้โดยตั้งใจ — ถ้าเลขนี้เคยบันทึกไว้แล้วพร้อมสถานะ
+    // การกด "บันทึกไว้" ซ้ำต้องไม่ไปล้างสถานะที่มีอยู่ทิ้ง (upsert อัปเดต
+    // เฉพาะคอลัมน์ที่ส่งไป คอลัมน์ที่ไม่ได้ส่งคงค่าเดิม)
+    const { data: savedRow, error: saveError } = await supabase
+      .from("saved_trackings")
+      .upsert(
+        {
+          user_id: user.id,
+          tracking_number: trackNo,
+          nickname: cleanNickname === "" ? null : cleanNickname,
+        },
+        { onConflict: "user_id,tracking_number" },
+      )
+      .select(SAVED_TRACKING_COLUMNS)
+      .single();
+
+    if (saveError !== null) {
+      console.error(`[api/saved] บันทึกแบบไม่ค้นหาไม่สำเร็จ: ${saveError.message}`);
+      return errorResponse("unknown", 500);
+    }
+
+    console.info("[api/saved] บันทึกโดยไม่ยิงถามขนส่ง");
+
+    return NextResponse.json({ ok: true as const, data: savedRow });
+  }
+
   // อ่านสถานะล่าสุดเอง แทนที่จะเชื่อค่าที่ client ส่งมา
   // ปกติจะได้จาก cache เพราะผู้ใช้เพิ่งค้นหาเลขนี้ไปเมื่อครู่
   const resolveStartedAt = Date.now();
-  const trackNo = normalizeTrackingNumber(trackingNumber);
 
   let result;
   try {

@@ -1,13 +1,27 @@
 /**
  * POST /api/saved/refresh — อัปเดตสถานะของพัสดุที่ยังไม่ถึงปลายทาง
  *
- * หน้าประวัติเรียกตอนเปิดหน้า เพราะแถวในตาราง saved_trackings เป็น snapshot
- * ที่เขียนไว้ตอนกดบันทึก แล้วไม่มีอะไรอัปเดตมันอีกเลย ผู้ใช้จึงเห็นสถานะค้าง
- * (เจอจริง: หน้าประวัติโชว์ "อยู่ระหว่างขนส่ง" แต่กดเข้าไปดูเป็น "ส่งถึงแล้ว")
+ * แถวในตาราง saved_trackings เป็น snapshot ที่เขียนไว้ตอนกดบันทึก แล้วไม่มีอะไร
+ * อัปเดตมันอีกเลย ผู้ใช้จึงเห็นสถานะค้าง (เจอจริง: หน้าประวัติโชว์
+ * "อยู่ระหว่างขนส่ง" แต่กดเข้าไปดูเป็น "ส่งถึงแล้ว")
+ *
+ * ------------------------------------------------------------------
+ * ⚠️ **ผู้ใช้ต้องกดเองเท่านั้น ห้ามเรียกอัตโนมัติ**
+ *
+ * เดิมหน้าประวัติเรียกให้เองตอนเปิดหน้า ซึ่งแปลว่าการเปิดหน้าหนึ่งครั้งอาจ
+ * จุดชนวนการยิง API หลายสิบครั้งโดยที่ผู้ใช้ไม่ได้ขอ — ตัดสินใจใหม่แล้วว่า
+ * ไม่เอาแบบนั้นเลยแม้แต่จุดเดียว เพื่อประหยัดโควตาให้มากที่สุด (โมเดลเดียวกับ
+ * ThaiEMS ที่ผู้ใช้กดค้นเองทุกครั้ง)
+ *
+ * ถ้าวันหนึ่งมีคนอยากเอา auto กลับมา ให้ดูตัวเลขก่อน: โควตา Track123 คิดต่อ
+ * เลขพัสดุต่อรอบบิล และรอบล่าสุดใช้ไป 277/300 ก่อนสิ้นรอบ
+ * ------------------------------------------------------------------
  *
  * ------------------------------------------------------------------
  * สิ่งที่ทำให้เรื่องนี้ไม่เผาโควตา — สามชั้นซ้อนกัน เรียงจากถูกไปแพง
  *
+ *   0. ผู้ใช้เลือกเองว่าจะรีเฟรชใบไหน (ids) หรือทั้งหมด — ด่านที่ถูกที่สุด
+ *      เพราะไม่มีอะไรเกิดขึ้นเลยจนกว่าจะมีคนกด
  *   1. คัดเฉพาะใบที่ยังไม่จบ (ดู lib/saved-refresh.ts) พัสดุที่ถึงมือแล้ว
  *      ไม่มีทางเปลี่ยนสถานะอีก ใช้ค่าที่บันทึกไว้ได้เลย ไม่ต้องยิงถาม
  *   2. cache สองชั้นเดิม — resolveTracking() อ่าน cache ก่อนเสมอ ใบที่ยัง
@@ -62,7 +76,37 @@ function changed(before: SavedTracking, after: SavedSnapshot): boolean {
   );
 }
 
-export async function POST() {
+/**
+ * อ่านรายการ id ที่ขอมา — undefined เมื่อไม่ได้ระบุ (แปลว่า "ทั้งหมดที่ยังไม่จบ")
+ *
+ * คืน null เมื่อรูปแบบผิด เพื่อให้ผู้เรียกแยกออกจาก "ไม่ได้ระบุ" ได้ — สองอย่าง
+ * นี้ต้องไม่ปนกัน ไม่งั้น body ที่พิมพ์ผิดจะกลายเป็นการรีเฟรชทั้งหมดโดยไม่ตั้งใจ
+ * ซึ่งตรงข้ามกับเจตนาของคนที่กดปุ่มใบเดียว
+ */
+function readIds(body: unknown): string[] | null | undefined {
+  if (body === null || typeof body !== "object") return undefined;
+
+  const { ids } = body as { ids?: unknown };
+  if (ids === undefined) return undefined;
+
+  if (!Array.isArray(ids)) return null;
+  if (ids.some((id) => typeof id !== "string" || id.trim() === "")) return null;
+
+  return ids as string[];
+}
+
+export async function POST(request: Request) {
+  // body ไม่บังคับ — ไม่มี body = รีเฟรชทุกใบที่ยังไม่ถึงปลายทาง
+  let body: unknown = null;
+  try {
+    body = await request.json();
+  } catch {
+    // ไม่มี body หรือ body ว่าง ถือว่าไม่ได้ระบุ ids
+  }
+
+  const ids = readIds(body);
+  if (ids === null) return errorResponse("invalid_request", 400);
+
   let supabase;
   try {
     supabase = await createServerSupabaseClient();
@@ -91,7 +135,14 @@ export async function POST() {
   }
 
   const saved = (data ?? []).map(toSavedTracking);
-  const targets = pickForRefresh(saved);
+
+  // กรองตามที่ผู้ใช้เลือกก่อน แล้วค่อยคัดใบที่ยังไม่จบ — ลำดับนี้สำคัญ:
+  // ถ้าผู้ใช้กดใบที่ถึงปลายทางแล้ว เราต้องไม่ยิง ไม่ใช่ยิงเพราะเขาขอ
+  // (RLS กรองให้เหลือแต่แถวของเจ้าตัวไปแล้ว id ที่ไม่ใช่ของเขาจึงหาไม่เจอเอง)
+  const chosen =
+    ids === undefined ? saved : saved.filter((item) => ids.includes(item.id));
+
+  const targets = pickForRefresh(chosen);
 
   const outcomes = await mapWithConcurrency(
     targets,
@@ -129,8 +180,8 @@ export async function POST() {
   );
 
   console.info(
-    `[api/saved/refresh] ทั้งหมด=${saved.length} ต้องรีเฟรช=${targets.length}` +
-      ` เปลี่ยนจริง=${updatedRows.length}`,
+    `[api/saved/refresh] ทั้งหมด=${saved.length} ที่ขอมา=${ids === undefined ? "ทุกใบ" : ids.length}` +
+      ` ต้องรีเฟรช=${targets.length} เปลี่ยนจริง=${updatedRows.length}`,
   );
 
   // คืนเฉพาะแถวที่เปลี่ยนจริง หน้าเว็บเอาไปทับของเดิมทีละใบ

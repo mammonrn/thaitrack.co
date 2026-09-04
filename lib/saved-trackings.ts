@@ -243,17 +243,29 @@ function saveFailure(code: unknown): SavedOutcome {
  * ส่งไปแค่เลขพัสดุกับชื่อเล่น ไม่ส่งสถานะไปด้วย เพราะฝั่ง server จะไปอ่านสถานะ
  * ล่าสุดเองจาก cache ที่มีอยู่แล้ว ทำให้ข้อมูลที่บันทึกเชื่อถือได้เสมอ
  * ไม่ขึ้นกับสิ่งที่ client ส่งมา
+ *
+ * options.lookup = false → บันทึกอย่างเดียว **ไม่ยิงถามขนส่งเลย** ใช้กับปุ่ม
+ * "บันทึกไว้" ที่หน้าแรกซึ่งผู้ใช้ยังไม่ได้ค้นอะไร (ดูเหตุผลเต็มที่หัวเส้นทาง
+ * skipLookup ใน app/api/saved/route.ts) รายการที่ได้จะไม่มีสถานะ แล้วหน้า
+ * ประวัติจะขึ้นปุ่มให้กดค้นเมื่อผู้ใช้อยากรู้
  */
 export async function saveTracking(
   trackingNumber: string,
   nickname: string,
+  options: { lookup?: boolean } = {},
   fetchImpl: typeof fetch = fetch,
 ): Promise<SavedOutcome> {
   try {
     const response = await fetchImpl("/api/saved", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ trackingNumber, nickname }),
+      // lookup: false = เก็บเลขไว้เฉยๆ ไม่ยิงถามขนส่ง (ปุ่ม "บันทึกไว้"
+      // ที่หน้าแรก) ค่าเริ่มต้นคือค้นให้ด้วย ซึ่งเป็นพฤติกรรมเดิมทุกประการ
+      body: JSON.stringify({
+        trackingNumber,
+        nickname,
+        ...(options.lookup === false ? { lookup: false } : {}),
+      }),
     });
 
     const payload: unknown = await response.json().catch(() => null);
@@ -312,19 +324,28 @@ export async function findSavedTracking(
 /**
  * ขออัปเดตสถานะของพัสดุที่ยังไม่ถึงปลายทาง — คืนเฉพาะแถวที่เปลี่ยนจริง
  *
- * ฝั่ง server เป็นคนตัดสินว่าใบไหนต้องรีเฟรช ไม่ใช่ให้ client ส่งรายการมา
- * ด้วยเหตุผลเดียวกับ saveTracking(): ค่าที่ client ส่งมาเชื่อไม่ได้ และ RLS
- * ก็กรองให้เหลือแต่แถวของเจ้าตัวอยู่แล้ว
+ * ⚠️ **ต้องถูกเรียกจากการกดปุ่มของผู้ใช้เท่านั้น ห้ามเรียกอัตโนมัติ**
+ * (ดูเหตุผลพร้อมตัวเลขที่หัว app/api/saved/refresh/route.ts)
+ *
+ * ids เป็นแค่ "ใบไหนที่ผู้ใช้กด" ไม่ใช่คำสั่งที่เชื่อได้ — ฝั่ง server ยังคัด
+ * เฉพาะใบที่ยังไม่ถึงปลายทางเองอยู่ดี และ RLS กรองให้เหลือแต่แถวของเจ้าตัว
+ * ต่อให้ส่ง id ของคนอื่นมาก็หาไม่เจอ
  *
  * คืนอาร์เรย์ว่างทั้งกรณี "ไม่มีอะไรเปลี่ยน" และกรณี "ยิงไม่สำเร็จ" เพราะหน้าเว็บ
  * ทำอย่างเดียวกันทั้งสองกรณีคือแสดงค่าเดิมต่อไป การรีเฟรชเป็นของเสริม
  * ไม่ใช่สิ่งที่ผู้ใช้ต้องมานั่งดูว่าสำเร็จไหม
  */
 export async function refreshSavedTrackings(
+  ids?: readonly string[],
   fetchImpl: typeof fetch = fetch,
 ): Promise<SavedTracking[]> {
   try {
-    const response = await fetchImpl("/api/saved/refresh", { method: "POST" });
+    const response = await fetchImpl("/api/saved/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // ไม่ระบุ ids = ทุกใบที่ยังไม่ถึงปลายทาง · ระบุ = เฉพาะใบที่กด
+      body: JSON.stringify(ids === undefined ? {} : { ids }),
+    });
     if (!response.ok) return [];
 
     const payload: unknown = await response.json().catch(() => null);
