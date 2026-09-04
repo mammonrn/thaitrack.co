@@ -21,6 +21,8 @@ import {
   currentPeriodKey,
   isExhausted,
   isNearQuota,
+  isNearLookupQuota,
+  lookupQuotaPressure,
   nextResetOf,
   loadProviderUsage,
   readLeanRatio,
@@ -392,4 +394,93 @@ test("สงวนเกินเพดาน → ถูกบีบลงมา
   // การตั้งค่าแบบนั้น แต่ต้องไม่ติดลบจนคำนวณเพี้ยน
   assert.equal(readHarvestReserve("etrackings"), 50);
   assert.equal(canUseForLookup("etrackings", AUGUST), false);
+});
+
+/* ------------------ งบการค้นหา vs เพดานเต็ม ------------------ *
+ *
+ * เทสต์ชุดนี้เกิดจากบั๊กจริง: ETrackings เพดาน 50 สงวนให้ branch-harvest 30
+ * เหลือให้ค้นหา 20 — แต่ isNearQuota ติดธงที่ 40 (80% ของ 50) ส่วนการค้นหา
+ * ถูกตัดขาดที่ 20 ธงจึงไม่มีทางติดก่อนถูกตัด ทำให้เงื่อนไข "เอียงไปใช้อีกเจ้า
+ * เพื่อถนอม ETrackings" ใน chooseProviderOrder เป็น dead logic มาตลอด
+ */
+
+/** ยิงไปแล้ว n ครั้ง โดยไม่แตะฐานข้อมูลจริง */
+async function spend(provider: "etrackings" | "track123", n: number) {
+  const { store } = makeStore();
+  for (let i = 0; i < n; i += 1) {
+    await countProviderCall(provider, { store, now: AUGUST });
+  }
+}
+
+test("ธง 'ใกล้เต็ม' ของงบค้นหาต้องติดก่อนถูกตัดขาด ไม่ใช่หลัง", async (t) => {
+  t.after(() => {
+    delete process.env.ETRACKINGS_CALL_LIMIT;
+    delete process.env.ETRACKINGS_HARVEST_RESERVE;
+    resetProviderUsage();
+  });
+
+  process.env.ETRACKINGS_CALL_LIMIT = "50";
+  process.env.ETRACKINGS_HARVEST_RESERVE = "30"; // เหลือให้ค้นหา 20
+  resetProviderUsage();
+
+  // 15 ครั้ง = 75% ของงบค้นหา ยังไม่ถึงเกณฑ์ 80%
+  await spend("etrackings", 15);
+  assert.equal(isNearLookupQuota("etrackings", AUGUST), false, "15/20 ยังไม่ใกล้");
+  assert.equal(canUseForLookup("etrackings", AUGUST), true);
+
+  // 16 ครั้ง = 80% พอดี ต้องติดธงแล้ว และยังค้นได้อยู่ = มีช่วงให้เอียงทัน
+  await spend("etrackings", 1);
+  assert.equal(isNearLookupQuota("etrackings", AUGUST), true, "16/20 ใกล้แล้ว");
+  assert.equal(
+    canUseForLookup("etrackings", AUGUST),
+    true,
+    "ต้องยังค้นได้ ไม่งั้นธงติดตอนสายเกินไปเหมือนบั๊กเดิม",
+  );
+
+  // เกณฑ์เดิมที่วัดจากเพดานเต็ม 50 ยังไม่ติดธงเลยตรงจุดนี้ — นั่นคือตัวบั๊ก
+  assert.equal(
+    isNearQuota("etrackings", AUGUST),
+    false,
+    "เกณฑ์เก่าติดที่ 40 ซึ่งเลยจุดที่ถูกตัดขาด (20) ไปแล้ว",
+  );
+});
+
+test("ถูกตัดขาดที่ 20 พอดี และตอนนั้นธงต้องติดไปแล้ว", async (t) => {
+  t.after(() => {
+    delete process.env.ETRACKINGS_CALL_LIMIT;
+    delete process.env.ETRACKINGS_HARVEST_RESERVE;
+    resetProviderUsage();
+  });
+
+  process.env.ETRACKINGS_CALL_LIMIT = "50";
+  process.env.ETRACKINGS_HARVEST_RESERVE = "30";
+  resetProviderUsage();
+
+  await spend("etrackings", 20);
+  assert.equal(canUseForLookup("etrackings", AUGUST), false, "งบค้นหาหมดพอดี");
+  assert.equal(isNearLookupQuota("etrackings", AUGUST), true);
+
+  // โควตาทั้งก้อนยังไม่หมด — ส่วนที่เหลือเป็นของ branch-harvest
+  assert.equal(isExhausted("etrackings", AUGUST), false);
+});
+
+test("เจ้าที่ไม่มีส่วนสงวน → เกณฑ์ใหม่เท่ากับเกณฑ์เดิมทุกประการ", async (t) => {
+  t.after(() => {
+    delete process.env.TRACK123_CALL_LIMIT;
+    resetProviderUsage();
+  });
+
+  process.env.TRACK123_CALL_LIMIT = "100";
+  resetProviderUsage();
+
+  assert.equal(readHarvestReserve("track123"), 0);
+
+  await spend("track123", 79);
+  assert.equal(isNearLookupQuota("track123", AUGUST), isNearQuota("track123", AUGUST));
+  assert.equal(isNearLookupQuota("track123", AUGUST), false);
+
+  await spend("track123", 1);
+  assert.equal(isNearLookupQuota("track123", AUGUST), isNearQuota("track123", AUGUST));
+  assert.equal(isNearLookupQuota("track123", AUGUST), true, "80/100 ใกล้แล้ว");
+  assert.equal(lookupQuotaPressure("track123", AUGUST), 0.8);
 });
