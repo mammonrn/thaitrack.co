@@ -10,8 +10,8 @@ import { NextResponse } from "next/server";
 
 import { normalizeTrackingNumber, resolveTracking } from "@/lib/carriers/resolve";
 import { CarrierError } from "@/lib/carriers/types";
-import { resolveLocation } from "@/lib/location-resolve";
 import { NICKNAME_MAX_LENGTH, SAVED_TRACKING_COLUMNS } from "@/lib/saved-trackings";
+import { buildSavedSnapshot } from "@/lib/saved-snapshot";
 import { SupabaseConfigError } from "@/lib/supabase/env";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { logTracking } from "@/lib/track-log";
@@ -21,15 +21,6 @@ export const runtime = "nodejs";
 
 function errorResponse(code: string, status: number) {
   return NextResponse.json({ ok: false as const, error: { code } }, { status });
-}
-
-/** หาสถานที่ล่าสุดที่ระบุมาจริง — เหตุการณ์ใหม่สุดบางอันไม่ได้บอกสถานที่มาด้วย */
-function latestLocation(events: { location: string }[]): string {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const location = events[index].location.trim();
-    if (location !== "") return location;
-  }
-  return "";
 }
 
 /**
@@ -158,27 +149,11 @@ export async function POST(request: Request) {
     throw error;
   }
 
-  const rawLocationText = latestLocation(result.events);
-
-  // หาพิกัดตามลำดับที่ไม่มีทางปักหมุดมั่ว: ตารางพิกัดสาขา → geocode เฉพาะข้อความ
-  // ที่ดูเหมือนที่อยู่จริง → ไม่รู้ก็ไม่ปัก (ดู lib/location-resolve.ts)
-  // หาไม่ได้ต้องไม่ทำให้การบันทึกล้มเหลว — เก็บ null แล้วไปต่อ
-  // ส่งเลขพัสดุไปด้วย เพื่อให้ตัวหาพิกัดไปขอที่อยู่ของสาขาที่ยังไม่รู้พิกัด
-  // มาเติมเองได้ (มีด่านกันเผาโควตาสี่ชั้น — ดู lib/branch-harvest.ts)
-  const location =
-    rawLocationText === ""
-      ? null
-      : await resolveLocation(rawLocationText, result.carrierCode, {
-          trackingNumber: result.trackingNumber,
-          // ขนส่งที่เพิ่งค้นเจอ = ยืนยันแล้ว ไม่ใช่การเดา ปลดล็อกการขอที่อยู่
-          // สาขาสำหรับเลขที่ prefix บอกไม่ได้ (เช่น TH… ของ SPX)
-          courierHint: result.carrierCode,
-        });
-
-  const coordinates = location?.coordinates ?? null;
-
-  // เก็บข้อความที่อ่านรู้เรื่อง (ชื่อสาขา) แทนข้อความดิบที่มีรหัสภายในปนมา
-  const locationText = location?.displayText ?? rawLocationText;
+  // ประกอบค่าคอลัมน์ด้วยตัวเดียวกับที่เส้นทางรีเฟรชใช้ (ดู lib/saved-snapshot.ts)
+  // ไม่ใส่ skipProbe ตรงนี้ — ตอนกดบันทึกคือจังหวะที่ยอมจ่ายเพื่อไปขอที่อยู่
+  // ของสาขาที่ยังไม่รู้พิกัดมาเติม (มีด่านกันเผาโควตาสี่ชั้น — ดู
+  // lib/branch-harvest.ts) ต่างจากตอนเปิดหน้าประวัติที่เกิดพร้อมกันหลายใบ
+  const snapshot = await buildSavedSnapshot(result);
 
   const { data, error } = await supabase
     .from("saved_trackings")
@@ -186,16 +161,8 @@ export async function POST(request: Request) {
       {
         user_id: user.id,
         tracking_number: result.trackingNumber,
-        carrier_name: result.carrierName,
         nickname: cleanNickname === "" ? null : cleanNickname,
-        last_status: result.status,
-        last_status_text: result.statusText,
-        last_location_text: locationText === "" ? null : locationText,
-        last_lat: coordinates?.lat ?? null,
-        last_lng: coordinates?.lng ?? null,
-        // หน้าประวัติใช้ค่านี้ตัดสินว่าจะขึ้นป้าย "ตำแหน่งโดยประมาณ" หรือไม่
-        last_location_accuracy: coordinates === null ? null : location?.accuracy ?? null,
-        last_updated_at: result.lastUpdated,
+        ...snapshot,
       },
       // บันทึกเลขเดิมซ้ำต้องอัปเดตแถวเดิม ไม่ใช่สร้างแถวใหม่
       { onConflict: "user_id,tracking_number" },

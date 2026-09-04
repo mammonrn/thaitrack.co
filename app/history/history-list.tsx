@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 
 import type { TrackingStatus } from "@/lib/carriers/types";
@@ -8,10 +8,14 @@ import {
   LOCATION_ACCURACY_NOTICE,
   deleteSavedTracking,
   displayTitleOf,
+  refreshSavedTrackings,
+  summarizeSavedTrackings,
   type SavedTracking,
 } from "@/lib/saved-trackings";
+import { needsStatusRefresh } from "@/lib/saved-refresh";
 import { formatThaiDateTime, type UserFacingError } from "@/lib/tracking-view";
 import DeleteSavedDialog from "./delete-saved-dialog";
+import HistorySummary from "./history-summary";
 
 /** โทนสีเดียวกับการ์ดผลลัพธ์ที่หน้าแรก */
 const STATUS_TEXT_CLASS: Record<TrackingStatus, string> = {
@@ -33,6 +37,45 @@ export default function HistoryList({ items }: HistoryListProps) {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<UserFacingError | null>(null);
 
+  // แถวที่ server ส่งมาคือ snapshot ตอนกดบันทึก ซึ่งค้างได้เป็นวัน
+  // (ดู app/api/saved/refresh/route.ts) เก็บเป็น state เพื่อทับด้วยของสดทีหลัง
+  const [rows, setRows] = useState<SavedTracking[]>(items);
+
+  // มีอะไรให้รีเฟรชจริงไหม — ถ้าทุกใบถึงปลายทางแล้วก็ไม่ต้องยิงอะไรเลย
+  // ตัดสินจาก items (ค่าตั้งต้นจาก server) ไม่ใช่ rows เพื่อไม่ให้ effect
+  // วนซ้ำหลังรีเฟรชเสร็จ
+  const [refreshing, setRefreshing] = useState(() =>
+    items.some(needsStatusRefresh),
+  );
+
+  useEffect(() => {
+    if (!items.some(needsStatusRefresh)) return;
+
+    // หน้าถูกปิดไปแล้วห้าม setState ต่อ — ไม่งั้นได้ warning และเขียนทับ
+    // สิ่งที่ผู้ใช้ทำไปแล้วในหน้าใหม่
+    let alive = true;
+
+    void (async () => {
+      const updated = await refreshSavedTrackings();
+      if (!alive) return;
+
+      if (updated.length > 0) {
+        const byId = new Map(updated.map((row) => [row.id, row]));
+        // ทับทีละใบตามลำดับเดิม ไม่เรียงใหม่ — ผู้ใช้กำลังอ่านรายการอยู่
+        // การสลับที่ระหว่างอ่านคือสิ่งที่น่ารำคาญกว่าสถานะที่ช้าไปสองวินาที
+        setRows((previous) =>
+          previous.map((row) => byId.get(row.id) ?? row),
+        );
+      }
+
+      setRefreshing(false);
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [items]);
+
   const handleConfirmDelete = useCallback(async () => {
     const target = pendingDelete;
     setPendingDelete(null);
@@ -52,7 +95,7 @@ export default function HistoryList({ items }: HistoryListProps) {
     setDeletingId(null);
   }, [pendingDelete]);
 
-  const visible = items.filter((item) => !removedIds.has(item.id));
+  const visible = rows.filter((item) => !removedIds.has(item.id));
 
   if (visible.length === 0) {
     return (
@@ -64,6 +107,20 @@ export default function HistoryList({ items }: HistoryListProps) {
 
   return (
     <>
+      <HistorySummary summary={summarizeSavedTrackings(visible)} />
+
+      {refreshing && (
+        /* บอกว่ากำลังทำอะไรอยู่ ไม่ใช่ปล่อยให้ตัวเลขกระโดดเองเฉยๆ — และไม่บัง
+           รายการไว้ระหว่างรอ ผู้ใช้อ่านของเดิมต่อได้ทันทีที่หน้าขึ้น */
+        <p
+          role="status"
+          className="mt-3 flex items-center gap-2 text-xs text-faint"
+        >
+          <Spinner className="h-3.5 w-3.5 shrink-0" />
+          กำลังอัปเดตสถานะล่าสุด
+        </p>
+      )}
+
       {error !== null && (
         <div
           role="alert"
@@ -209,6 +266,30 @@ export default function HistoryList({ items }: HistoryListProps) {
         onCancel={() => setPendingDelete(null)}
       />
     </>
+  );
+}
+
+/** วงกลมหมุนระหว่างรอผลรีเฟรช — เล็กและเงียบ ไม่ใช่ตัวเอกของหน้า */
+function Spinner({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={`animate-spin ${className}`} aria-hidden="true">
+      <circle
+        cx="12"
+        cy="12"
+        r="9"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="3"
+        opacity="0.25"
+      />
+      <path
+        d="M12 3a9 9 0 0 1 9 9"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="3"
+        strokeLinecap="round"
+      />
+    </svg>
   );
 }
 

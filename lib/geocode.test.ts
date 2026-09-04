@@ -12,11 +12,9 @@ import { test } from "node:test";
 
 import {
   APPROXIMATE_MAX_METERS,
-  DEFAULT_MAX_ACCURACY_METERS,
   EXACT_MAX_METERS,
   classifyAccuracy,
   isAreaResult,
-  readMaxAccuracyMeters,
   viewportRadiusMeters,
 } from "./geocode.ts";
 
@@ -119,12 +117,23 @@ test("ที่อยู่ไทยแบบเต็มยศต้องผ�
   );
 });
 
-test("เกินเพดาน → area (ห้ามปักหมุด)", () => {
-  assert.equal(
-    classifyAccuracy({
-      accuracyMeters: DEFAULT_MAX_ACCURACY_METERS + 1,
-      areaOnly: false,
-    }),
+test("ไกลแค่ไหนก็ยังปักหมุดได้ ไม่มีเพดานระยะทางอีกแล้ว", () => {
+  // เจตนาของ K1: มีพิกัดที่ผ่านด่านคุณภาพเมื่อไร ก็โชว์เมื่อนั้น
+  // เดิมเกิน 12 กม. แล้วกลายเป็น area ซึ่งแปลว่าไม่ปักหมุดเลย
+  for (const meters of [12_001, 40_000, 250_000, 1_000_000]) {
+    assert.equal(
+      classifyAccuracy({ accuracyMeters: meters, areaOnly: false }),
+      "coarse",
+      `${meters} ม.`,
+    );
+  }
+});
+
+test("ระยะทางไม่มีทางทำให้ได้ area — ต่อให้ไกลระดับครึ่งประเทศ", () => {
+  // ด่านเดียวที่ยังคืน area ได้คือ areaOnly ซึ่งเป็นคุณภาพของ geocode
+  // ไม่ใช่ระยะทาง สองเรื่องนี้ต้องไม่ปนกันอีก
+  assert.notEqual(
+    classifyAccuracy({ accuracyMeters: Number.MAX_SAFE_INTEGER, areaOnly: false }),
     "area",
   );
 });
@@ -135,6 +144,15 @@ test("เป็นเขตปกครอง → area ต่อให้กร�
   assert.equal(classifyAccuracy({ accuracyMeters: 10, areaOnly: true }), "area");
 });
 
+test("ด่าน areaOnly ต้องรอดจากการตัดเพดาน — เคสจริงจาก production", () => {
+  // สองค่านี้คือของจริงจาก log: สาขา SOCN ได้ radius 209 ม. และอีกที่อยู่หนึ่ง
+  // ได้ 82 ม. ทั้งคู่ถูกปฏิเสธด้วย areaOnly ไม่ใช่ด้วยเพดาน 12 กม.
+  // ถ้าเทสต์นี้ตก แปลว่าการตัดเพดานเผลอไปถอดด่าน types[] ออกด้วย ซึ่งจะทำให้
+  // หมุดกลางอำเภอ/จังหวัดกลับมาปักทับบ้านคนอื่นเหมือนบั๊กใน migration 0004
+  assert.equal(classifyAccuracy({ accuracyMeters: 209, areaOnly: true }), "area");
+  assert.equal(classifyAccuracy({ accuracyMeters: 82, areaOnly: true }), "area");
+});
+
 test("ไม่รู้ความละเอียด (แถวเก่าใน cache) → coarse ซึ่งเป็นถ้อยคำที่คลุมเครือที่สุด", () => {
   // เดาว่าแม่นคือการรับรองสิ่งที่เราไม่รู้ — ยอมปักหมุดให้ แต่ต้องติดป้าย
   // และต้องเป็นป้ายที่ไม่รับประกันระยะใดๆ
@@ -143,31 +161,16 @@ test("ไม่รู้ความละเอียด (แถวเก่า
 
 /* ------------------------------ เพดาน ------------------------------ */
 
-test("ไม่ได้ตั้ง env → ใช้ค่าเริ่มต้น", () => {
-  assert.equal(readMaxAccuracyMeters(), DEFAULT_MAX_ACCURACY_METERS);
-});
-
-test("ตั้ง env แล้วมีผลกับของที่ cache ไว้แล้วทันที", (t) => {
+test("เพดานเก่าไม่มีผลอะไรอีกแล้ว ต่อให้ยังตั้ง env ค้างไว้", (t) => {
+  // ผู้ดูแลระบบที่ตั้ง GEOCODE_MAX_ACCURACY_METERS ไว้ตั้งแต่ก่อนตัดเพดาน
+  // ต้องไม่เจอพฤติกรรมแปลกๆ ค่านี้กลายเป็นตัวแปรที่ไม่มีใครอ่านแล้ว
   t.after(() => {
     delete process.env.GEOCODE_MAX_ACCURACY_METERS;
   });
 
-  const measured = { accuracyMeters: 3_000, areaOnly: false };
-  assert.equal(classifyAccuracy(measured), "coarse");
-
-  // ชั้นถูกคำนวณสดจากค่าที่วัดไว้ ไม่ได้เก็บคำตัดสินลงฐานข้อมูล
-  // การปรับเพดานจึงไม่ต้องล้าง cache และไม่ต้องยิงถาม Google ใหม่
   process.env.GEOCODE_MAX_ACCURACY_METERS = "1000";
-  assert.equal(classifyAccuracy(measured), "area");
-});
-
-test("ค่าที่ใช้ไม่ได้ใน env → กลับไปใช้ค่าเริ่มต้น ไม่กลายเป็นศูนย์", (t) => {
-  t.after(() => {
-    delete process.env.GEOCODE_MAX_ACCURACY_METERS;
-  });
-
-  for (const bad of ["", "  ", "abc", "0", "-1"]) {
-    process.env.GEOCODE_MAX_ACCURACY_METERS = bad;
-    assert.equal(readMaxAccuracyMeters(), DEFAULT_MAX_ACCURACY_METERS, bad);
-  }
+  assert.equal(
+    classifyAccuracy({ accuracyMeters: 3_000, areaOnly: false }),
+    "coarse",
+  );
 });

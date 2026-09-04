@@ -4,14 +4,12 @@ import type { Metadata } from "next";
 import {
   SAVED_TRACKING_COLUMNS,
   sortBySavedAtDesc,
-  summarizeSavedTrackings,
   toSavedTracking,
   type SavedTracking,
 } from "@/lib/saved-trackings";
 import { SupabaseConfigError } from "@/lib/supabase/env";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import HistoryList from "./history-list";
-import HistorySummary from "./history-summary";
 
 export const metadata: Metadata = {
   title: "ประวัติที่บันทึกไว้ — พัสดุไทย.com",
@@ -122,10 +120,6 @@ export default async function HistoryPage() {
                   ? "ยังไม่มีรายการที่บันทึกไว้"
                   : `${state.items.length} รายการ เรียงจากที่บันทึกล่าสุด`}
               </p>
-
-              {state.items.length > 0 && (
-                <HistorySummary summary={summarizeSavedTrackings(state.items)} />
-              )}
 
               {state.items.length === 0 ? (
                 <div className="mt-6 rounded-xl border border-dashed border-line-strong p-6 text-center">

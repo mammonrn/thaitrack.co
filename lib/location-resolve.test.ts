@@ -563,9 +563,9 @@ test("คลาดเคลื่อนราวหนึ่งกิโล → 
   assert.equal(result.accuracy, "approximate");
 });
 
-test("ที่อยู่ที่ได้พิกัดระดับอำเภอ → ไม่ปักหมุด และถูกจดไว้", async () => {
-  // เดิมเส้นทางนี้ปักหมุดทุกอย่างที่ Google คืนมาโดยไม่บอกอะไรเลย ซึ่งเป็น
-  // รูสุดท้ายของหลักการ "เมื่อไม่แน่ใจ ห้ามปักหมุด"
+test("กรอบใหญ่แต่ไม่ใช่เขตปกครอง → ปักหมุดพร้อมป้าย ไม่บล็อกเพราะระยะทางอีกแล้ว", async () => {
+  // K1: ระยะทางไม่ใช่เหตุผลที่จะไม่โชว์แผนที่ ผู้ใช้ได้เห็นว่า "อยู่แถวไหน"
+  // พร้อมป้ายบอกความคลาดเคลื่อน ดีกว่าไม่เห็นอะไรเลย
   const store = makeStore();
 
   const result = await resolveLocation("เมืองเชียงราย", "thailand-post", {
@@ -573,9 +573,10 @@ test("ที่อยู่ที่ได้พิกัดระดับอ�
     geocode: makeGeocoder(CHIANG_RAI, 25_000).geocode,
   });
 
-  assert.equal(result.coordinates, null);
-  assert.equal(result.accuracy, null);
-  assert.equal(store.recorded[0]?.kind, "address");
+  assert.deepEqual(result.coordinates, CHIANG_RAI);
+  assert.equal(result.accuracy, "coarse");
+  // ปักหมุดได้แล้วก็ไม่ใช่งานค้างของแอดมินอีกต่อไป จึงไม่ต้องจด
+  assert.deepEqual(store.recorded, []);
 });
 
 test("Google บอกเองว่าเป็นเขตปกครอง → ไม่ปักหมุด ต่อให้กรอบจะเล็ก", async () => {
@@ -590,8 +591,10 @@ test("Google บอกเองว่าเป็นเขตปกครอง 
 });
 
 test("พิกัดระดับพื้นที่ที่ cache ไว้แล้ว → ยังไม่ปักหมุด และไม่ถาม Google ซ้ำ", async () => {
+  // ใช้ areaOnly = true เพื่อให้เป็น "พื้นที่" จริงๆ ไม่ใช่แค่กรอบใหญ่ —
+  // ตั้งแต่ตัดเพดาน ขนาดกรอบอย่างเดียวไม่ทำให้ถูกปฏิเสธอีกต่อไป
   const store = makeStore();
-  const geocoder = makeGeocoder(CHIANG_RAI, 25_000);
+  const geocoder = makeGeocoder(CHIANG_RAI, 25_000, true);
 
   await resolveLocation("เมืองเชียงราย", "thailand-post", {
     store,
