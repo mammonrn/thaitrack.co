@@ -56,6 +56,13 @@ policy ครบทั้ง SELECT / INSERT / UPDATE / DELETE โดยผู�
 | `0009` | เพิ่มชั้น `coarse` (ขยาย check constraint + ย้ายแถวเดิม) |
 | `0010` | `tracking_couriers` — ความจำว่าเลขไหนเป็นของขนส่งเจ้าไหน (ไม่มี TTL) |
 | `0011` | คอลัมน์ `reason`/`upstream_code`/`took_ms` ของ `search_events` · ตาราง `install_events` · ฟังก์ชันสรุปเพิ่มเติม |
+| `0012` | คอลัมน์ `unknown_courier` ของ `search_events` — นับคำขอที่ล้มตอนเหลือผู้ให้บริการเจ้าเดียว |
+| `0013` | `install_prompt_events` — funnel ของการ์ดชวนติดตั้ง (แสดง → กดปิด → กดติดตั้ง) |
+| `0014` | คอลัมน์ `tracking_shape` ของ `search_events` — รูปแบบของเลขที่ค้นไม่เจอ |
+| `0015` | รอบบิลของแต่ละผู้ให้บริการ แทนการนับตามเดือนปฏิทินเหมือนกันหมด |
+| `0016` | สรุปสถานะระบบช่วงสั้นๆ ให้ `/api/health/tracking` |
+| `0017` | `referrer_channels` — นับช่องทางที่มาแบบรวม |
+| `0018` | `admin_member_activity()` เป็น `security definer` — แก้ `permission denied for table saved_trackings` |
 
 ⚠️ `0006` **drop ฟังก์ชัน `record_unknown_branch(text, text, text)` ตัวเดิมแล้วสร้าง
 ลายเซ็นสี่พารามิเตอร์แทน** ระหว่างที่รัน `0006` แล้วแต่ยังไม่ deploy โค้ดใหม่
