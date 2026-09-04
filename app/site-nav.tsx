@@ -146,6 +146,32 @@ export default function SiteNav() {
             <li key={label} className="flex-1 sm:flex-none">
               <Link
                 href={href}
+                /**
+                 * ⚠️ ห้ามลบบรรทัดนี้โดยไม่อ่านเหตุผลก่อน — ไม่ได้เผลอใส่
+                 *
+                 * URL ภาษาไทยของหน้ารหัสไปรษณีย์ทำงานด้วย rewrite ใน
+                 * next.config.ts (โฟลเดอร์จริงชื่อ /postcode) ผลข้างเคียงคือ
+                 * **RSC prefetch ของ route ที่ถูก rewrite ตอบ 404** — Next
+                 * ปรับ payload ของ route ที่ถูกเขียนทับไม่ได้ ทำให้ทุกครั้งที่
+                 * โหลดหน้าที่มีแถบเมนูนี้ จะมี request เสียเปล่าหนึ่งครั้ง
+                 * (การกดเข้าไปยังทำงานปกติ — Next ตกไปโหลดเต็มหน้าให้เอง)
+                 *
+                 * ทางอื่นที่ลองแล้ว **ไม่ได้ผล** (วัดด้วย chromium จริงทั้งคู่):
+                 *   · เพิ่ม rewrite ที่ใช้ string ไทยแบบ decode คู่กับตัว
+                 *     encoded เดิม → 404 เหมือนเดิมเป๊ะ เพราะ rewrite match
+                 *     อยู่แล้ว ปัญหาอยู่ที่ฝั่ง client router ไม่ใช่การ match
+                 *   · อัปเกรด Next เป็น 16.3.4 → ยัง InvalidCharacterError
+                 *     ตอน prerender โฟลเดอร์ชื่อ Unicode เหมือน 16.3.3
+                 *
+                 * ก่อนจะลบบรรทัดนี้ทิ้ง ต้องยืนยันก่อนว่า Next แก้ปัญหา
+                 * โฟลเดอร์ชื่อ Unicode แล้วจริง (ทดสอบด้วยการสร้าง
+                 * app/<ชื่อไทย>/page.tsx แล้ว build ให้ผ่าน) เพราะถ้าแก้แล้ว
+                 * เราจะเลิกใช้ rewrite ได้ และ prefetch จะกลับมาทำงานเอง
+                 *
+                 * ปิดเฉพาะลิงก์ที่มีอักษรนอก ASCII — ลิงก์อังกฤษ (/history,
+                 * /profile) ยัง prefetch ตามปกติ
+                 */
+                prefetch={/[^\x00-\x7F]/.test(href) ? false : undefined}
                 aria-current={active ? "page" : undefined}
                 // ขั้นต่ำ 56px ทั้งกว้างและสูง เกินเกณฑ์นิ้วสัมผัส 44px
                 className={`flex min-h-14 min-w-14 flex-col items-center justify-center gap-1 rounded-lg py-2 transition-colors sm:flex-row sm:gap-2 sm:py-1.5 ${
