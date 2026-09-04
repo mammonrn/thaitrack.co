@@ -28,9 +28,16 @@ const STATUS_TEXT_CLASS: Record<TrackingStatus, string> = {
 
 interface HistoryListProps {
   items: SavedTracking[];
+  /**
+   * แผนที่ถูกเปิดใช้งานอยู่ไหม — สวิตช์จากหน้าแอดมิน (ดู lib/app-settings.ts)
+   *
+   * ปิดแล้วการ์ดจะแสดงชื่อสถานที่เป็นข้อความแทน ซึ่งเป็นทางเดียวกับตอนที่
+   * ไม่รู้พิกัดอยู่แล้ว จึงไม่มีหน้าตาแบบใหม่ให้ต้องออกแบบเพิ่ม
+   */
+  mapEnabled: boolean;
 }
 
-export default function HistoryList({ items }: HistoryListProps) {
+export default function HistoryList({ items, mapEnabled }: HistoryListProps) {
   // ลบแล้วเอาออกจากรายการทันที ไม่ต้องรอโหลดหน้าใหม่
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set());
   const [pendingDelete, setPendingDelete] = useState<SavedTracking | null>(null);
@@ -135,7 +142,11 @@ export default function HistoryList({ items }: HistoryListProps) {
         {visible.map((item) => {
           // ไม่มีพิกัด = เราไม่รู้ว่าสาขานี้อยู่ไหนจริงๆ ห้ามปักหมุดเดา
           // (ดู lib/location-resolve.ts) แสดงชื่อสถานที่เป็นข้อความแทน
-          const showMap = item.lastLat !== null && item.lastLng !== null;
+          //
+          // สวิตช์ปิดก็ลงทางเดียวกัน — ไม่ต้องมีหน้าตาแบบที่สามให้ดูแล และ
+          // ผู้ใช้ยังได้ข้อมูลที่ถูกต้องครบถ้วน เพียงแต่ไม่มีรูปแผนที่
+          const showMap =
+            mapEnabled && item.lastLat !== null && item.lastLng !== null;
 
           // หมุดที่ไม่แม่นต้องบอกตรงๆ ว่าคลาดเคลื่อนได้เท่าไร ไม่งั้นมันจะสื่อ
           // ความแม่นยำที่เราไม่มี ซึ่งคือปัญหาเดิมที่ทั้งระบบพิกัดสาขาตั้งใจแก้
@@ -230,8 +241,13 @@ export default function HistoryList({ items }: HistoryListProps) {
                       <p className="text-sm font-medium leading-snug text-body">
                         {item.lastLocationText}
                       </p>
+                      {/* เหตุผลต้องตรงกับความจริง — ตอนสวิตช์ปิด เรารู้พิกัดอยู่
+                          การบอกว่า "ยังไม่มีพิกัด" คือการโกหกผู้ใช้เรื่องที่
+                          ตรวจสอบไม่ได้ ซึ่งแย่กว่าการไม่บอกอะไรเลย */}
                       <p className="mt-0.5 text-xs text-faint">
-                        ยังไม่มีพิกัดของจุดนี้ จึงยังแสดงแผนที่ไม่ได้
+                        {!mapEnabled && item.lastLat !== null
+                          ? "ปิดแผนที่ไว้ชั่วคราว"
+                          : "ยังไม่มีพิกัดของจุดนี้ จึงยังแสดงแผนที่ไม่ได้"}
                       </p>
                     </div>
                   </div>

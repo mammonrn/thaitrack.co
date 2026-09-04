@@ -7,6 +7,7 @@ import {
   toSavedTracking,
   type SavedTracking,
 } from "@/lib/saved-trackings";
+import { readCachedSettings } from "@/lib/settings-cache";
 import { SupabaseConfigError } from "@/lib/supabase/env";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import HistoryList from "./history-list";
@@ -64,7 +65,12 @@ async function loadHistory(): Promise<PageState> {
 }
 
 export default async function HistoryPage() {
-  const state = await loadHistory();
+  // อ่านผ่าน cache (1 นาที) ไม่ใช่ยิงถาม Supabase ทุกครั้งที่มีคนเปิดหน้า —
+  // สวิตช์เปลี่ยนปีละไม่กี่หน แต่หน้านี้เปิดกันทั้งวัน (ดู lib/settings-cache.ts)
+  const [state, settings] = await Promise.all([
+    loadHistory(),
+    readCachedSettings(),
+  ]);
 
   return (
     <div className="flex flex-1 flex-col">
@@ -135,7 +141,10 @@ export default async function HistoryPage() {
                   </Link>
                 </div>
               ) : (
-                <HistoryList items={state.items} />
+                <HistoryList
+                  items={state.items}
+                  mapEnabled={settings.map_enabled}
+                />
               )}
             </>
           )}

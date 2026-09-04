@@ -21,6 +21,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import ExportButton from "./export-button";
+import SettingsToggle from "./settings-toggle";
+
 import {
   PROVIDER_IDS,
   PROVIDER_LABEL,
@@ -30,7 +33,10 @@ import {
   readLeanRatio,
   readQuota,
 } from "@/lib/provider-usage";
+import { SETTING_KEYS } from "@/lib/app-settings";
+import type { ReportData } from "@/lib/admin-report";
 import { requireAdmin } from "@/lib/supabase/admin-guard";
+import { readSettings } from "@/lib/supabase/app-settings";
 import { countBranches } from "@/lib/supabase/locations";
 import { listProviderUsage } from "@/lib/supabase/provider-usage";
 import { readReferrerChannels } from "@/lib/supabase/referrer";
@@ -42,6 +48,7 @@ import {
   readMemberActivity,
   readMemberStats,
   readSearchDaily,
+  readSearchEfficiency,
   readSearchOverview,
   readTopCarriers,
   readUnfoundShapes,
@@ -230,6 +237,8 @@ export default async function AdminStatsPage() {
     unfoundShapes,
     referrers7d,
     referrers30d,
+    efficiency,
+    settings,
   ] = await Promise.all([
     readMemberStats(),
     readMemberActivity(),
@@ -247,6 +256,11 @@ export default async function AdminStatsPage() {
     readUnfoundShapes(WINDOW_DAYS, UNFOUND_SHAPE_LIMIT),
     readReferrerChannels(7),
     readReferrerChannels(WINDOW_DAYS),
+    readSearchEfficiency(WINDOW_DAYS),
+    // อ่านค่าจริงจากฐานข้อมูลตรงๆ ไม่ผ่าน cache — หน้าแอดมินต้องเห็นสถานะ
+    // ปัจจุบันเสมอ ไม่ใช่ค่าที่ค้างอยู่ในชั้น cache ของเส้นทางแสดงผล
+    // (เส้นทางนั้นใช้ readCachedSettings ดู lib/settings-cache.ts)
+    readSettings(),
   ]);
 
   // เรียงตามยอด 30 วันเพื่อให้ลำดับนิ่ง ไม่กระโดดไปมาตามความผันผวนของ 7 วัน
@@ -263,6 +277,108 @@ export default async function AdminStatsPage() {
   const carrierPeak = carriers.reduce((most, row) => Math.max(most, row.total), 0);
 
   const usageByProvider = new Map(usage.map((row) => [row.provider, row]));
+
+  // ยอดที่ยิง API จริงรวมทั้งช่วง — ใช้บอกว่า cache ช่วยประหยัดไปเท่าไร
+  const efficiencyTotals = efficiency.reduce(
+    (sum, row) => ({
+      total: sum.total + row.total,
+      fromApi: sum.fromApi + row.fromApi,
+      fromCache: sum.fromCache + row.fromCache,
+    }),
+    { total: 0, fromApi: 0, fromCache: 0 },
+  );
+  const efficiencyPeak = efficiency.reduce(
+    (most, row) => Math.max(most, row.total),
+    0,
+  );
+
+  /**
+   * ก้อนข้อมูลสำหรับปุ่ม export — ประกอบจากตัวแปรเดียวกับที่ render บนหน้า
+   *
+   * ⚠️ ตัวเลขรวมล้วนทั้งหมด ไม่มีฟิลด์ไหนที่ระบุตัวบุคคลได้ (ข้อบังคับเดียวกับ
+   * ทั้งหน้า) ถ้าจะเพิ่มฟิลด์ ต้องผ่านข้อบังคับนั้นก่อนเสมอ
+   */
+  const report: ReportData = {
+    generatedAt: new Date().toISOString(),
+    windowDays: WINDOW_DAYS,
+    members: {
+      total: members.total,
+      new7d: members.new7d,
+      new30d: members.new30d,
+    },
+    activity: {
+      active7d: activity.active7d,
+      activePrev7d: activity.activePrev7d,
+      returned: activity.returned,
+      saves7d: activity.saves7d,
+    },
+    searchAllTime: {
+      total: allTime.total,
+      found: allTime.found,
+      notFound: allTime.notFound,
+      error: allTime.error,
+    },
+    searchWindow: {
+      total: recent.total,
+      found: recent.found,
+      notFound: recent.notFound,
+      error: recent.error,
+      fromCache: recent.fromCache,
+      fromApi: recent.fromApi,
+      stale: recent.stale,
+    },
+    efficiency: efficiency.map((row) => ({
+      day: row.day,
+      total: row.total,
+      fromApi: row.fromApi,
+      fromCache: row.fromCache,
+      failed: row.failed,
+    })),
+    carriers: carriers.map((row) => ({
+      carrierCode: row.carrierCode,
+      total: row.total,
+    })),
+    errors: errors.map((row) => ({
+      reason: row.reason,
+      upstreamCode: row.upstreamCode,
+      total: row.total,
+    })),
+    latency: latency.map((row) => ({
+      source: row.source,
+      label: SOURCE_LABEL[row.source] ?? row.source,
+      p50Ms: row.p50Ms,
+      p95Ms: row.p95Ms,
+      total: row.total,
+    })),
+    unfoundShapes: unfoundShapes.map((row) => ({
+      shape: row.shape,
+      total: row.total,
+    })),
+    unknownCourierFailures: unknownCourier,
+    quotas: PROVIDER_IDS.map((provider) => ({
+      provider,
+      label: PROVIDER_LABEL[provider],
+      used: usageByProvider.get(provider)?.callCount ?? 0,
+      quota: readQuota(provider),
+      reserve: readHarvestReserve(provider),
+      period: periods[provider],
+    })),
+    branches: { known: branches.known, unknown: branches.unknown },
+    installs: {
+      total: installs.total,
+      last7d: installs.last7d,
+      last30d: installs.last30d,
+    },
+    invite: {
+      shown: invite.shown,
+      clicked: invite.clicked,
+      dismissed: invite.dismissed,
+    },
+    referrers: referrerRows,
+    settings: Object.fromEntries(
+      SETTING_KEYS.map((key) => [key, settings[key]]),
+    ),
+  };
 
   return (
     <div className="flex flex-1 flex-col">
@@ -294,7 +410,22 @@ export default async function AdminStatsPage() {
           เข้าสู่ระบบเป็น {admin.email} · ช่วงที่แสดง {WINDOW_DAYS} วันล่าสุด
         </p>
 
+        {/* ไฟล์ถูกสร้างในเบราว์เซอร์ตอนกด ไม่เก็บไว้ที่ไหน และมีแต่ตัวเลขรวม
+            เหมือนที่แสดงบนหน้านี้ทุกประการ (ดู lib/admin-report.ts) */}
+        <div className="mt-4">
+          <ExportButton data={report} />
+        </div>
+
         <div className="mt-8 flex flex-col gap-10">
+          {/* วางไว้บนสุดเพราะเป็นสิ่งเดียวบนหน้านี้ที่กดแล้วเปลี่ยนสิ่งที่ผู้ใช้
+              เห็นทันที ส่วนที่เหลือเป็นตัวเลขไว้อ่าน */}
+          <Section
+            title="สวิตช์ระบบ"
+            note="มีผลกับผู้ใช้ทุกคนทันที ไม่ต้อง deploy ใหม่ · ค่าถูก cache ไว้ 1 นาที แต่การกดปุ่มล้าง cache ให้เองทันที"
+          >
+            <SettingsToggle settings={settings} />
+          </Section>
+
           <Section title="สมาชิก">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               <Tile label="สมาชิกทั้งหมด" value={count(members.total)} />
@@ -431,6 +562,65 @@ export default async function AdminStatsPage() {
                   />
                 ))}
               </div>
+            )}
+          </Section>
+
+          <Section
+            title="ค้นหา เทียบ โควตาที่ใช้จริง"
+            note="แท่งเต็ม = ค้นหาทั้งหมด · ส่วนเข้ม = ที่ยิงถามขนส่งจริง (เสียโควตา) · ยิ่งส่วนเข้มสั้น แปลว่า cache ช่วยประหยัดได้มาก"
+          >
+            {efficiency.length === 0 ? (
+              <Empty>ยังไม่มีการค้นหาในช่วงนี้</Empty>
+            ) : (
+              <>
+                <div className="grid grid-cols-3 gap-3">
+                  <Tile
+                    label="ค้นหาทั้งหมด"
+                    value={count(efficiencyTotals.total)}
+                  />
+                  <Tile
+                    label="ยิง API จริง"
+                    value={count(efficiencyTotals.fromApi)}
+                    hint={percent(efficiencyTotals.fromApi, efficiencyTotals.total)}
+                  />
+                  <Tile
+                    label="ประหยัดด้วย cache"
+                    value={count(efficiencyTotals.fromCache)}
+                    hint={percent(efficiencyTotals.fromCache, efficiencyTotals.total)}
+                  />
+                </div>
+
+                <ul className="mt-4 flex flex-col gap-1">
+                  {efficiency.map((day) => (
+                    <li key={day.day} className="flex items-center gap-3">
+                      <span className="w-20 shrink-0 font-mono text-[11px] text-faint">
+                        {day.day.slice(5)}
+                      </span>
+                      {/* แท่งซ้อนสองชั้น: ชั้นอ่อนคือค้นหาทั้งหมด ชั้นเข้มคือ
+                          ส่วนที่ยิงจริง — อ่านสองเส้นในแท่งเดียวได้โดยไม่ต้อง
+                          ไล่สายตาข้ามกราฟสองอัน */}
+                      <span className="relative h-4 flex-1 overflow-hidden rounded bg-line">
+                        <span
+                          className="absolute inset-y-0 left-0 rounded bg-ink/25"
+                          style={{
+                            width: `${efficiencyPeak === 0 ? 0 : (day.total / efficiencyPeak) * 100}%`,
+                          }}
+                        />
+                        <span
+                          className="absolute inset-y-0 left-0 rounded bg-ink"
+                          style={{
+                            width: `${efficiencyPeak === 0 ? 0 : (day.fromApi / efficiencyPeak) * 100}%`,
+                          }}
+                        />
+                      </span>
+                      <span className="w-28 shrink-0 text-right font-mono text-[11px] text-faint">
+                        {count(day.fromApi)}/{count(day.total)} ·{" "}
+                        {percent(day.fromApi, day.total)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </>
             )}
           </Section>
 
