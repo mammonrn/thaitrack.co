@@ -196,6 +196,63 @@ export async function readSearchOverview(
   }
 }
 
+export interface DailyEfficiency {
+  /** วันที่ตามเวลาไทย รูปแบบ YYYY-MM-DD */
+  day: string;
+  /** ค้นหาทั้งหมดในวันนั้น */
+  total: number;
+  /** ยิงถามขนส่งจริง = เสียโควตา */
+  fromApi: number;
+  /** ตอบจาก cache ทั้งสองชั้น = ไม่เสียโควตาเลย */
+  fromCache: number;
+  /** ล้มก่อนได้คำตอบ */
+  failed: number;
+}
+
+/**
+ * ค้นหากี่ครั้ง เทียบกับยิง API จริงกี่ครั้ง แยกตามวัน — เรียงจากเก่าไปใหม่
+ *
+ * ตอบคำถาม "ค้นหาเยอะขึ้นแล้วโควตาใช้คุ้มไหม" โดยไม่ต้องเก็บอะไรเพิ่มเลย
+ * นับจากคอลัมน์ source ของ search_events ที่มีอยู่แล้ว (ดู migration 0020
+ * ว่าทำไมถึงนับจากตรงนี้ ไม่ใช่จาก provider_usage)
+ */
+export async function readSearchEfficiency(
+  days: number,
+): Promise<DailyEfficiency[]> {
+  const supabase = getServiceSupabaseClient();
+  if (supabase === null) return [];
+
+  try {
+    const { data, error } = await supabase.rpc("admin_search_efficiency", {
+      p_days: days,
+    });
+
+    if (error) {
+      warn("อ่านความคุ้มค่าของการค้นหารายวัน", error.message);
+      return [];
+    }
+
+    return (data ?? [])
+      .map((row: unknown) => {
+        const record = row as Record<string, unknown>;
+        if (typeof record.day !== "string") return null;
+        return {
+          day: record.day,
+          total: toCount(record.total),
+          fromApi: toCount(record.from_api),
+          fromCache: toCount(record.from_cache),
+          failed: toCount(record.failed),
+        } satisfies DailyEfficiency;
+      })
+      .filter((row: DailyEfficiency | null): row is DailyEfficiency =>
+        row !== null,
+      );
+  } catch (cause) {
+    warn("อ่านความคุ้มค่าของการค้นหารายวัน", reason(cause));
+    return [];
+  }
+}
+
 export interface DailySearchCount {
   /** วันที่ตามเวลาไทย รูปแบบ YYYY-MM-DD */
   day: string;
