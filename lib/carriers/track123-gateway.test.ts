@@ -296,9 +296,9 @@ test("ระบบสะดุดไม่หยุด → ลองใหม่
   assert.equal(lines.length, 2);
 });
 
-test("หมดเวลารอ (timeout) → ไม่ลองใหม่ เพราะผู้ใช้รอไปแล้ว 20 วินาที", async (t) => {
+test("หมดเวลารอ (timeout) → ไม่ลองใหม่ เพราะผู้ใช้รอไปแล้วเต็มเพดาน", async (t) => {
   useFakeClock(t);
-  const { lines, options } = harness();
+  const h = harness();
 
   let attempts = 0;
   await assert.rejects(
@@ -310,12 +310,40 @@ test("หมดเวลารอ (timeout) → ไม่ลองใหม่ �
           upstreamCode: TIMEOUT_UPSTREAM_CODE,
         });
       },
-      options,
+      h.options,
     ),
   );
 
-  assert.equal(attempts, 1, "timeout ต้องไม่ถูกลองใหม่ ไม่งั้นรอรวมเกิน 40 วินาที");
-  assert.equal(lines.length, 1);
+  assert.equal(
+    attempts,
+    1,
+    "timeout ต้องไม่ถูกลองใหม่ ไม่งั้นผู้ใช้รอรวมเป็นสองเท่าของเพดาน",
+  );
+  assert.equal(h.lines.length, 1);
+});
+
+test("timeout ยังนับเป็นโควตา — เราไม่รู้ว่าคำขอไปถึงปลายทางหรือยัง", async (t) => {
+  useFakeClock(t);
+  const h = harness();
+
+  await assert.rejects(
+    callTrack123(
+      { trackNo: TRACK_NO },
+      async () => {
+        throw new CarrierError("network_error", "ปลายทางตอบช้าเกินไป", {
+          upstreamCode: TIMEOUT_UPSTREAM_CODE,
+        });
+      },
+      h.options,
+    ),
+  );
+
+  // ต่างจาก 504 (upstream_error) ที่รู้แน่ว่าปลายทางพังแล้วไม่คิดเงิน —
+  // timeout เราตัดสายเอง จึงไม่รู้ว่าฝั่งเขาประมวลผลจบไปแล้วหรือยัง
+  // ⚠️ ข้อนี้สำคัญตอนลดเพดานเวลา: 504 ที่เคยมาถึงตอน 13.9 วิ จะกลายเป็น
+  // timeout แทน แล้วเปลี่ยนจาก "ไม่นับ" เป็น "นับ" — เกิดน้อยมากเพราะ 504
+  // ปกติมาถึงตั้งแต่ 6.15 วิ แต่ต้องรู้ว่ามันมีอยู่
+  assert.equal(h.counted, 1);
 });
 
 test("ชนลิมิตแล้วระบบสะดุด → ใช้เพดานคนละตัว แต่รวมกันไม่เกินเพดานรวม", async (t) => {

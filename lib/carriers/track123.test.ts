@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  REQUEST_TIMEOUT_MS,
   cleanEventText,
   toTrackingResult,
   type Track123Accepted,
@@ -175,4 +176,41 @@ test("ทุก event ที่ส่งถึงผู้ใช้ต้อง�
     result.events[1].description,
     "ถูกส่งต่อพัสดุจากสาขาเชียงราย",
   );
+});
+
+/* ---------------------------- เพดานเวลารอ ---------------------------- *
+ *
+ * ผูกค่ากับกระจายของจริงที่วัดได้ ไม่ใช่ปล่อยให้ใครมาปรับตามความรู้สึก
+ * ทั้งสองด้านมีเหตุผลคนละอย่างและพังคนละแบบ
+ */
+
+/** ช้าที่สุดที่ Track123 เคยตอบ "คำตอบที่ใช้ได้" กลับมา (not_found, 1–4 ก.ย.) */
+const SLOWEST_REAL_ANSWER_MS = 9_107;
+
+/** Track123 มี gateway timeout ของตัวเองที่ ~6.15 วิ (p50 6,147 · p90 6,173) */
+const UPSTREAM_GATEWAY_TIMEOUT_MS = 6_173;
+
+test("เพดานเวลาต้องสูงกว่าคำตอบจริงที่ช้าที่สุดที่เคยเจอ", () => {
+  // ต่ำกว่านี้ = ตัดคำตอบที่ใช้ได้ทิ้งเพราะมันแค่มาช้า ผู้ใช้เห็น error
+  // ทั้งที่ปลายทางกำลังจะตอบอยู่แล้ว ซึ่งแย่กว่าการรอเพิ่มอีกวินาทีเดียว
+  assert.ok(
+    REQUEST_TIMEOUT_MS > SLOWEST_REAL_ANSWER_MS,
+    `${REQUEST_TIMEOUT_MS}ms ต้องมากกว่า ${SLOWEST_REAL_ANSWER_MS}ms`,
+  );
+});
+
+test("เพดานเวลาต้องสูงกว่า gateway timeout ของ Track123 เอง", () => {
+  // ต่ำกว่านี้ = เราตัดสายก่อนที่เขาจะทันตอบ 504 ทำให้ upstream_error กลายเป็น
+  // network_error ซึ่ง **นับเป็นโควตา** (ดู countsAgainstQuota ใน gateway)
+  // ตัวนับจะพองกลับไปเหมือนบั๊กเดิมที่เพิ่งแก้ โดยไม่มีอะไรฟ้อง
+  assert.ok(
+    REQUEST_TIMEOUT_MS > UPSTREAM_GATEWAY_TIMEOUT_MS,
+    `${REQUEST_TIMEOUT_MS}ms ต้องมากกว่า ${UPSTREAM_GATEWAY_TIMEOUT_MS}ms`,
+  );
+});
+
+test("เพดานเวลาต้องไม่ยาวจนผู้ใช้ทิ้งหน้าไปก่อน", () => {
+  // ค่าเดิม 20 วิไม่เคยถูกแตะเลยสักครั้ง เป็นแค่ตาข่ายที่ห้อยอยู่เฉยๆ
+  // และเมื่อรวมกับขาไปรษณีย์ไทยที่ยิงก่อน ผู้ใช้อาจรอเกินครึ่งนาที
+  assert.ok(REQUEST_TIMEOUT_MS <= 10_000, `${REQUEST_TIMEOUT_MS}ms ยาวเกินไป`);
 });
