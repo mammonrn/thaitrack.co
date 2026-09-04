@@ -222,12 +222,12 @@ test("error ที่ยิงอีกกี่ครั้งก็ได้�
 });
 
 /*
- * เคสที่เป็นเหตุให้เพิ่มการลองใหม่กลุ่มนี้เข้ามา (จาก log จริง):
- * เลข TH54018X21H76P โดน upstream_error หลัง 6.1 วินาที แล้วทั้งคำขอจบทันที
- * เพราะเลขนั้นเดา courier ไม่ได้จึงไม่มีเจ้าที่สองให้ไปต่อ · ค้นซ้ำด้วยมือ
- * 13 วินาทีถัดมาสำเร็จใน 194ms — การลองใหม่ครั้งเดียวก็เอาอยู่
+ * เหลือเฉพาะ network_error ("ต่อไม่ติด") ที่ยังลองใหม่ได้
+ *
+ * upstream_error (504 ของ Track123) ถูกถอดออกจากชุดนี้แล้ว — ดูเหตุผลพร้อม
+ * ตัวเลขที่ RETRYABLE_SYSTEM_ERRORS และเทสต์ตัวถัดไปที่เฝ้าไว้
  */
-test("ระบบสะดุดชั่วคราว → ลองใหม่ครั้งเดียวแล้วผ่าน", async (t) => {
+test("ต่อไม่ติดชั่วคราว → ลองใหม่ครั้งเดียวแล้วผ่าน", async (t) => {
   useFakeClock(t);
   const { lines, options } = harness();
 
@@ -240,9 +240,7 @@ test("ระบบสะดุดชั่วคราว → ลองใหม
       firedAt.push(Date.now());
       attempts += 1;
       if (attempts === 1) {
-        throw new CarrierError("upstream_error", "ปลายทางสะดุด", {
-          upstreamCode: "B0100",
-        });
+        throw new CarrierError("network_error", "ต่อไม่ติด");
       }
       return "ผ่านรอบสอง";
     },
@@ -262,8 +260,34 @@ test("ระบบสะดุดชั่วคราว → ลองใหม
     "หน่วงสั้นๆ ก่อนลองใหม่ ไม่ใช้ backoff ยาวแบบตอนชนลิมิต",
   );
   assert.equal(lines.length, 2);
-  assert.match(lines[0] ?? "", /result=upstream_error upstream=B0100$/);
   assert.match(lines[1] ?? "", /result=ok$/);
+});
+
+test("Track123 ตอบ 504 → จบทันที ไม่ลองใหม่", async (t) => {
+  // การลองใหม่ตรงนี้มีราคาคงที่ ~6.5 วินาที (504 มาถึงที่ ~6.15 วิเสมอ)
+  // แต่กู้สำเร็จแค่ 2 จาก 35 ครั้งในข้อมูลจริง — ตัดสินใจแล้วว่าไม่คุ้ม
+  // ถ้าเทสต์นี้ตก แปลว่ามีคนเอา upstream_error กลับเข้า RETRYABLE_SYSTEM_ERRORS
+  // แล้วผู้ใช้จะกลับไปรอ 14 วินาทีก่อนเห็น error เหมือนเดิม
+  useFakeClock(t);
+  const h = harness();
+
+  let attempts = 0;
+  await assert.rejects(
+    callTrack123(
+      { trackNo: TRACK_NO },
+      async () => {
+        attempts += 1;
+        throw new CarrierError("upstream_error", "ปลายทางสะดุด", {
+          upstreamCode: "B0100",
+        });
+      },
+      h.options,
+    ),
+  );
+
+  assert.equal(attempts, 1, "ยิงครั้งเดียวจบ");
+  assert.equal(h.lines.length, 1);
+  assert.match(h.lines[0] ?? "", /result=upstream_error upstream=B0100$/);
 });
 
 test("ระบบสะดุดไม่หยุด → ลองใหม่แค่ครั้งเดียวเท่านั้น ไม่ไล่ยิงต่อ", async (t) => {
@@ -359,7 +383,7 @@ test("ชนลิมิตแล้วระบบสะดุด → ใช้
       firedAt.push(Date.now());
       attempts += 1;
       if (attempts === 1) throw rateLimited();
-      if (attempts === 2) throw new CarrierError("upstream_error", "สะดุด");
+      if (attempts === 2) throw new CarrierError("network_error", "ต่อไม่ติด");
       return "ผ่านรอบสาม";
     },
     options,
@@ -623,31 +647,25 @@ test('"ไม่พบเลขนี้" → นับ เพราะเป็
   assert.equal(h.counted, 1);
 });
 
-test("ปลายทางพังระหว่างประมวลผล → ไม่นับรอบนั้น เพราะไม่มีผลลัพธ์กลับมา", async (t) => {
+test("ปลายทางพังระหว่างประมวลผล → ไม่นับเลย และจบทันที", async (t) => {
   useFakeClock(t);
   const h = harness();
 
-  let attempts = 0;
-  const promise = callTrack123(
-    { trackNo: TRACK_NO },
-    async () => {
-      attempts += 1;
-      if (attempts === 1) throw new CarrierError("upstream_error", "ปลายทางสะดุด");
-      return "ผ่านรอบสอง";
-    },
-    h.options,
+  await assert.rejects(
+    callTrack123(
+      { trackNo: TRACK_NO },
+      async () => {
+        throw new CarrierError("upstream_error", "ปลายทางสะดุด");
+      },
+      h.options,
+    ),
   );
 
-  await flush();
-  t.mock.timers.tick(SYSTEM_RETRY_DELAY_MS);
-  await flush();
-
-  assert.equal(await promise, "ผ่านรอบสอง");
-  assert.equal(h.lines.length, 2, "ยิงจริง 2 รอบ");
-  assert.equal(h.counted, 1, "รอบที่พังไม่นับ เหลือแค่รอบที่ได้ข้อมูลจริง");
+  assert.equal(h.lines.length, 1, "ยิงครั้งเดียว ไม่ลองใหม่");
+  assert.equal(h.counted, 0, "ไม่มีผลลัพธ์กลับมา ปลายทางไม่คิดเงิน");
 });
 
-test("เน็ตมีปัญหา → ยังนับ เพราะไม่รู้ว่าคำขอไปถึงปลายทางหรือยัง", async (t) => {
+test("ต่อไม่ติดแล้วลองใหม่ → นับทั้งสองรอบ", async (t) => {
   useFakeClock(t);
   const h = harness();
 
@@ -667,7 +685,7 @@ test("เน็ตมีปัญหา → ยังนับ เพราะ�
   await flush();
 
   assert.equal(await promise, "ผ่านรอบสอง");
-  assert.equal(h.counted, 2, "นับเกินดีกว่านับขาด เมื่อไม่รู้ว่าถูกคิดเงินไหม");
+  assert.equal(h.counted, 2, "ไม่รู้ว่าคำขอไปถึงหรือยัง นับเกินดีกว่านับขาด");
 });
 
 test("วงจรถูกตัด → ไม่นับ เพราะไม่ได้ยิงออกไปเลย", async (t) => {
