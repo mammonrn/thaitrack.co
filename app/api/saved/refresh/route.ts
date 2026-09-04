@@ -171,13 +171,21 @@ export async function POST(request: Request) {
         return null;
       }
 
-      return toSavedTracking(updated);
+      // ⚠️ คืน **แถวดิบ** จากฐานข้อมูล ไม่ใช่ผลของ toSavedTracking()
+      //
+      // ฝั่งเบราว์เซอร์เป็นคนแปลงเอง (ดู refreshSavedTrackings ใน
+      // lib/saved-trackings.ts) ถ้าแปลงที่นี่ด้วยจะกลายเป็นการแปลงสองรอบ —
+      // รอบที่สองไปอ่าน tracking_number จากออบเจ็กต์ที่เป็น camelCase ไปแล้ว
+      // จึงได้ undefined ทุกฟิลด์ แล้วการ์ดในหน้าประวัติจะโชว์ UNDEFINED
+      // และลิงก์กลายเป็น /?track=undefined (บั๊กจริงที่เจอหลัง #28)
+      //
+      // ทุก endpoint ของ /api/saved ต้องคืนแถวดิบเหมือนกันหมด เพื่อให้ฝั่ง
+      // เบราว์เซอร์มีกติกาเดียว: "ได้อะไรมาก็แปลงหนึ่งรอบเสมอ"
+      return updated;
     },
   );
 
-  const updatedRows = outcomes.filter(
-    (row): row is SavedTracking => row !== null,
-  );
+  const updatedRows = outcomes.filter((row) => row !== null);
 
   console.info(
     `[api/saved/refresh] ทั้งหมด=${saved.length} ที่ขอมา=${ids === undefined ? "ทุกใบ" : ids.length}` +
