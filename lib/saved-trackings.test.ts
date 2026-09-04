@@ -17,6 +17,7 @@ import {
   LOCATION_ACCURACY_NOTICE,
   refreshSavedTrackings,
   sortBySavedAtDesc,
+  toSavedTracking,
   summarizeSavedTrackings,
   type SavedTracking,
 } from "./saved-trackings.ts";
@@ -286,5 +287,96 @@ test("ตอบกลับมาผิดรูป → อาร์เรย์
   for (const body of [null, {}, { data: "ไม่ใช่อาร์เรย์" }]) {
     const { impl } = recordingFetch({ ok: true, body });
     assert.deepEqual(await refreshSavedTrackings(["a"], impl), []);
+  }
+});
+
+/* ------------- สัญญาระหว่าง API กับเบราว์เซอร์ ------------- *
+ *
+ * บั๊ก P0 ที่เจอหลัง #28: /api/saved/refresh เคยคืนออบเจ็กต์ที่ผ่าน
+ * toSavedTracking() มาแล้ว (camelCase) แต่ฝั่งเบราว์เซอร์แปลงซ้ำอีกรอบ
+ * รอบที่สองไปอ่าน tracking_number จากออบเจ็กต์ที่ไม่มีคีย์นั้นแล้ว จึงได้
+ * undefined ทุกฟิลด์
+ *
+ * ผลที่ผู้ใช้เห็น: การ์ดโชว์ "UNDEFINED" · ลิงก์กลายเป็น /?track=undefined ·
+ * หน้าแรกขึ้นช่องกรอกที่มีคำว่า undefined พร้อม error "ยังไม่พบเลขนี้"
+ *
+ * ⚠️ ไม่มี type error ให้เห็นเลย เพราะฝั่ง client cast เป็น SavedTrackingRow
+ * ก่อนแปลง — TypeScript จึงเชื่อตามที่บอก เทสต์ชุดนี้คือด่านเดียวที่จับได้
+ */
+
+/** แถวดิบแบบที่ Postgres คืนมาจริง (snake_case) */
+function dbRow() {
+  return {
+    id: "row-1",
+    tracking_number: "TH2618781022851",
+    carrier_name: "SHOPEE XPRESS (TH)",
+    nickname: "แบต",
+    last_status: "in_transit",
+    last_status_text: "อยู่ระหว่างขนส่ง",
+    last_location_text: "SORC-A",
+    last_lat: null,
+    last_lng: null,
+    last_location_accuracy: null,
+    last_updated_at: "2026-09-04T16:09:00Z",
+    created_at: "2026-09-01T00:00:00Z",
+  };
+}
+
+test("แปลงแถวดิบหนึ่งรอบ → ได้ข้อมูลครบ", () => {
+  const row = toSavedTracking(dbRow());
+
+  assert.equal(row.trackingNumber, "TH2618781022851");
+  assert.equal(row.lastStatus, "in_transit");
+  assert.equal(row.nickname, "แบต");
+});
+
+test("แปลงซ้ำสองรอบ → พังทุกฟิลด์ (นี่คือหน้าตาของบั๊ก P0)", () => {
+  // เทสต์นี้ยืนยัน "กลไกของบั๊ก" ไว้เป็นหลักฐาน ไม่ใช่พฤติกรรมที่ต้องการ
+  // ถ้าวันหนึ่งมันไม่พังแล้ว แปลว่ามีคนทำให้ toSavedTracking รับได้ทั้งสองแบบ
+  // ซึ่งจะกลบปัญหาไว้แทนที่จะป้องกัน — ให้มาอ่านเทสต์นี้ก่อนตัดสินใจ
+  const twice = toSavedTracking(
+    toSavedTracking(dbRow()) as unknown as Parameters<typeof toSavedTracking>[0],
+  );
+
+  assert.equal(twice.trackingNumber, undefined);
+  assert.equal(twice.lastStatus, null);
+});
+
+test("endpoint รีเฟรชต้องคืนแถวดิบ ไม่ใช่แปลงมาให้แล้ว", () => {
+  // อ่านซอร์สจริง เพราะเรียก route ที่ต้องล็อกอินจากเทสต์ไม่ได้
+  const route = readFileSync(
+    join(resolvePath(import.meta.dirname, ".."), "app/api/saved/refresh/route.ts"),
+    "utf8",
+  );
+
+  const body = route
+    .split("\n")
+    .filter((line) => !/^\s*(\*|\/\*|\/\/)/.test(line))
+    .join("\n");
+
+  // ต้องไม่มี toSavedTracking ในค่าที่ส่งกลับ — มีได้เฉพาะตอนอ่านมาเทียบ
+  assert.doesNotMatch(
+    body,
+    /return toSavedTracking\(/,
+    "คืนค่าที่แปลงแล้วจะทำให้เบราว์เซอร์แปลงซ้ำจนได้ undefined",
+  );
+});
+
+test("ทุก endpoint ของ /api/saved ต้องคืนแถวดิบเหมือนกันหมด", () => {
+  // กติกาข้อเดียวที่ฝั่งเบราว์เซอร์ยึด: "ได้อะไรมาก็แปลงหนึ่งรอบเสมอ"
+  // ถ้า endpoint ไหนแตกแถว บั๊กจะกลับมาแบบเดิมเป๊ะและไม่มี type error ให้เห็น
+  const dir = join(resolvePath(import.meta.dirname, ".."), "app/api/saved");
+
+  for (const file of ["route.ts", "refresh/route.ts"]) {
+    const source = readFileSync(join(dir, file), "utf8")
+      .split("\n")
+      .filter((line) => !/^\s*(\*|\/\*|\/\/)/.test(line))
+      .join("\n");
+
+    assert.doesNotMatch(
+      source,
+      /data:\s*toSavedTracking|return toSavedTracking\(/,
+      `${file}: ส่งค่าที่แปลงแล้วกลับไป`,
+    );
   }
 });
