@@ -306,12 +306,65 @@ export function quotaPressure(
   return usageOf(provider, now) / readQuota(provider);
 }
 
+/**
+ * งบที่ "การค้นหาทั่วไป" ใช้ได้จริง — เพดานลบส่วนที่สงวนไว้ให้ branch-harvest
+ *
+ * อย่างน้อย 1 เสมอ กันหารด้วยศูนย์เมื่อมีคนตั้ง reserve เท่ากับเพดานพอดี
+ */
+function lookupBudget(provider: ProviderId): number {
+  return Math.max(1, readQuota(provider) - readHarvestReserve(provider));
+}
+
+/**
+ * ใช้ไปกี่ส่วนของ **งบการค้นหา** แล้ว (0–1+)
+ *
+ * ต่างจาก quotaPressure ที่หารด้วยเพดานเต็ม — ตัวนั้นตอบคำถาม "โควตาทั้งก้อน
+ * เหลือเท่าไร" ส่วนตัวนี้ตอบ "งบที่การค้นหาใช้ได้เหลือเท่าไร" ซึ่งเป็นคำถาม
+ * ที่ถูกต้องสำหรับการตัดสินใจเรื่องลำดับการยิง
+ */
+export function lookupQuotaPressure(
+  provider: ProviderId,
+  now: number = Date.now(),
+): number {
+  return usageOf(provider, now) / lookupBudget(provider);
+}
+
 /** ใกล้เพดานจนควรเอียงไปใช้อีกเจ้าหรือยัง */
 export function isNearQuota(
   provider: ProviderId,
   now: number = Date.now(),
 ): boolean {
   return quotaPressure(provider, now) >= readLeanRatio();
+}
+
+/**
+ * งบการค้นหาของเจ้านี้ใกล้หมดจนควรเอียงไปใช้อีกเจ้าหรือยัง
+ *
+ * ------------------------------------------------------------------
+ * ทำไมต้องมีตัวนี้แยกจาก isNearQuota — บั๊กที่มันแก้
+ *
+ * ETrackings: เพดาน 50 · สงวนให้ branch-harvest 30 · เหลือให้ค้นหา **20**
+ *
+ *   isNearQuota      ติดธงเมื่อใช้ครบ 40  (80% ของ 50)
+ *   canUseForLookup  ตัดการค้นหาที่      20
+ *
+ * การค้นหาถูกตัดที่ 20 ก่อนที่ธงจะติดที่ 40 **เสมอ** เงื่อนไขใน
+ * chooseProviderOrder ที่ตั้งใจไว้เพื่อ "สลับไปใช้ Track123 เพื่อถนอม
+ * ETrackings" จึงไม่มีทางทำงานได้เลยสักครั้ง — เป็น dead logic มาตลอด
+ * ผลคือ ETrackings ถูกใช้เป็นเจ้าแรกรวดเดียวจนงบค้นหา 20 ครั้งหมดเกลี้ยง
+ * แล้วค่อยตกไป Track123 แทนที่จะค่อยๆ เอียงตั้งแต่ยังเหลือ
+ *
+ * วัดจากงบการค้นหาแทน ธงจึงติดที่ 16 ครั้ง (80% ของ 20) ซึ่งอยู่ก่อน 20 จริง
+ * และมีช่วงให้เอียงก่อนถูกตัดขาด
+ *
+ * เจ้าที่ไม่มีส่วนสงวน (Track123, ไปรษณีย์ไทย) ค่านี้เท่ากับ isNearQuota ทุกประการ
+ * ------------------------------------------------------------------
+ */
+export function isNearLookupQuota(
+  provider: ProviderId,
+  now: number = Date.now(),
+): boolean {
+  return lookupQuotaPressure(provider, now) >= readLeanRatio();
 }
 
 /**

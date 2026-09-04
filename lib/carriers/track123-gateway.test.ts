@@ -595,7 +595,7 @@ test('"ไม่พบเลขนี้" → นับ เพราะเป็
   assert.equal(h.counted, 1);
 });
 
-test("ระบบสะดุดแล้วลองใหม่ → นับทุกรอบ เพราะไม่รู้ว่าคำขอไปถึงหรือยัง", async (t) => {
+test("ปลายทางพังระหว่างประมวลผล → ไม่นับรอบนั้น เพราะไม่มีผลลัพธ์กลับมา", async (t) => {
   useFakeClock(t);
   const h = harness();
 
@@ -605,6 +605,30 @@ test("ระบบสะดุดแล้วลองใหม่ → นับ
     async () => {
       attempts += 1;
       if (attempts === 1) throw new CarrierError("upstream_error", "ปลายทางสะดุด");
+      return "ผ่านรอบสอง";
+    },
+    h.options,
+  );
+
+  await flush();
+  t.mock.timers.tick(SYSTEM_RETRY_DELAY_MS);
+  await flush();
+
+  assert.equal(await promise, "ผ่านรอบสอง");
+  assert.equal(h.lines.length, 2, "ยิงจริง 2 รอบ");
+  assert.equal(h.counted, 1, "รอบที่พังไม่นับ เหลือแค่รอบที่ได้ข้อมูลจริง");
+});
+
+test("เน็ตมีปัญหา → ยังนับ เพราะไม่รู้ว่าคำขอไปถึงปลายทางหรือยัง", async (t) => {
+  useFakeClock(t);
+  const h = harness();
+
+  let attempts = 0;
+  const promise = callTrack123(
+    { trackNo: TRACK_NO },
+    async () => {
+      attempts += 1;
+      if (attempts === 1) throw new CarrierError("network_error", "ต่อไม่ติด");
       return "ผ่านรอบสอง";
     },
     h.options,

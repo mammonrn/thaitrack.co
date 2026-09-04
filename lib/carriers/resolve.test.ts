@@ -1191,6 +1191,36 @@ const ORDER_BASE = {
   backupOutOfLookupBudget: false,
 };
 
+test("ETrackings ใกล้หมดงบค้นหา แต่ Track123 ยังเหลือ → สลับไปถนอม ETrackings", () => {
+  // เงื่อนไขนี้เคยเป็น dead logic: ธง backupNearQuota วัดจากเพดานเต็ม (40)
+  // ส่วนการค้นหาถูกตัดขาดที่ 20 ธงจึงไม่มีทางติดก่อนถูกตัด — พอวัดจากงบ
+  // ค้นหาแทน (ดู isNearLookupQuota) เส้นทางนี้ถึงจะถูกใช้จริงเป็นครั้งแรก
+  assert.deepEqual(
+    chooseProviderOrder({
+      ...ORDER_BASE,
+      backupNearQuota: true,
+      fallbackNearQuota: false,
+    }),
+    ["fallback", "backup"],
+    "ต้องยิง Track123 ก่อน เก็บ ETrackings ที่เหลือไว้ให้ branch-harvest",
+  );
+});
+
+test("ตัวนับ Track123 ที่พองเกินจริง ต้องไม่ไปปิดการถนอม ETrackings", () => {
+  // บั๊กจริงที่เจอ: ตัวนับ track123 ขึ้น 575/300 ทั้งที่ใช้จริง 277 ทำให้
+  // fallbackNearQuota เป็น true ตลอด ซึ่งจะกลืนเงื่อนไขข้างบนทิ้ง
+  // เทสต์นี้เฝ้าไว้ว่าถ้าธงทั้งคู่ติดพร้อมกัน จะไม่สลับ (ไม่มีประโยชน์)
+  assert.deepEqual(
+    chooseProviderOrder({
+      ...ORDER_BASE,
+      backupNearQuota: true,
+      fallbackNearQuota: true,
+    }),
+    ["backup", "fallback"],
+    "ทั้งคู่ใกล้เต็ม → ใช้ตามความถนัดเหมือนเดิม",
+  );
+});
+
 test("ETrackings ตามเลขนี้ไม่ได้ → เหลือ Track123 เจ้าเดียว", () => {
   assert.deepEqual(
     chooseProviderOrder({ ...ORDER_BASE, backupUsable: false }),

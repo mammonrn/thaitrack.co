@@ -53,7 +53,7 @@ import { harvestBranchCoordinates } from "../branch-harvest";
 import { InflightMap } from "../inflight";
 import {
   canUseForLookup,
-  isNearQuota,
+  isNearLookupQuota,
   loadProviderUsage,
   usageLabel,
 } from "../provider-usage";
@@ -534,8 +534,10 @@ async function resolveFresh(
 
   const order = chooseProviderOrder({
     backupUsable,
-    fallbackNearQuota: isNearQuota("track123"),
-    backupNearQuota: isNearQuota("etrackings"),
+    // วัดจาก "งบที่การค้นหาใช้ได้" ไม่ใช่เพดานเต็ม — ไม่งั้นธงของ ETrackings
+    // จะติดที่ 40 ทั้งที่การค้นหาถูกตัดขาดไปตั้งแต่ 20 (ดู isNearLookupQuota)
+    fallbackNearQuota: isNearLookupQuota("track123"),
+    backupNearQuota: isNearLookupQuota("etrackings"),
     // นโยบายที่ตัดสินใจแล้ว: โควตา ETrackings ที่เหลือมีค่ากับการเก็บที่อยู่สาขา
     // มากกว่าการค้นหาทั่วไป เพราะพิกัดสาขาที่ได้มาอยู่ถาวรและใช้ซ้ำได้กับพัสดุ
     // ทุกใบที่ผ่านสาขานั้น ส่วนการค้นหาทั่วไป Track123 ก็ทำได้อยู่แล้ว
