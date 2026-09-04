@@ -44,10 +44,13 @@ function rateLimited(): CarrierError {
 
 interface Harness {
   lines: string[];
+  /** นับว่าตัวนับโควตาถูกเรียกกี่ครั้ง — ของจริงไปแตะ Supabase จึงต้องแทน */
+  counted: number;
   options: {
     queue: RateLimitQueue;
     backoffMs: readonly number[];
     log: (line: string) => void;
+    countUsage: () => Promise<number>;
     // ปิด breaker ในเทสต์ชุดนี้ ไม่งั้นความล้มเหลวจากเทสต์ตัวก่อนจะสะสมข้าม
     // ไปเปิดวงจรให้เทสต์ตัวถัดไป (breaker ตัวจริงเป็น singleton ของโปรเซส)
     // การทำงานร่วมกับ breaker มีเทสต์แยกอยู่ใน circuit-breaker.test.ts
@@ -57,12 +60,21 @@ interface Harness {
 
 function harness(): Harness {
   const lines: string[] = [];
+  const state = { counted: 0 };
+
   return {
     lines,
+    get counted() {
+      return state.counted;
+    },
     options: {
       queue: new RateLimitQueue(3),
       backoffMs: BACKOFF,
       log: (line) => lines.push(line),
+      countUsage: () => {
+        state.counted += 1;
+        return Promise.resolve(state.counted);
+      },
       breaker: null,
     },
   };
@@ -494,4 +506,137 @@ test("ค่าหน่วงเริ่มต้นเป็น exponential b
 
   const total = BACKOFF_DELAYS_MS.reduce((sum, ms) => sum + ms, 0);
   assert.ok(total <= 5_000, `รอรวม ${total}ms นานเกินไปสำหรับการรอหน้าเว็บ`);
+});
+
+/* ------------------------- การนับโควตา ------------------------- *
+ *
+ * เทสต์ชุดนี้เกิดขึ้นหลังเจอของจริง: ตัวนับของเราขึ้น 575/300 (191.7%) ทั้งที่
+ * dashboard ของ Track123 บอกใช้จริง 277/300 ผลคือด่าน isNearQuota เข้าใจผิด
+ * ว่า Track123 เต็มแล้ว จึงไม่ยอมสลับมาใช้มันเพื่อถนอมโควตาของ ETrackings
+ * (ดู chooseProviderOrder ใน ./resolve.ts) จน ETrackings ฝั่งค้นหาถูกใช้จนหมด
+ *
+ * ก่อนหน้านี้ไม่มีเทสต์ครอบการนับเลยสักตัว ความเพี้ยนจึงสะสมได้เงียบๆ
+ */
+
+test("ยิงผ่าน → นับหนึ่งครั้ง", async (t) => {
+  useFakeClock(t);
+  const h = harness();
+
+  await callTrack123({ trackNo: TRACK_NO }, async () => "ok", h.options);
+
+  assert.equal(h.counted, 1);
+});
+
+test("ถูกปฏิเสธด้วย A0706 → ไม่นับรอบนั้น เพราะปลายทางไม่คิดเงิน", async (t) => {
+  useFakeClock(t);
+  const h = harness();
+
+  // ชนลิมิตสองรอบแล้วผ่านรอบสาม = ยิงไป 3 ครั้ง แต่คิดเงินแค่ครั้งเดียว
+  let attempts = 0;
+  const promise = callTrack123(
+    { trackNo: TRACK_NO },
+    async () => {
+      attempts += 1;
+      if (attempts <= 2) throw rateLimited();
+      return "ผ่านรอบสาม";
+    },
+    h.options,
+  );
+
+  await flush();
+  t.mock.timers.tick(500);
+  await flush();
+  t.mock.timers.tick(1_000);
+  await flush();
+
+  assert.equal(await promise, "ผ่านรอบสาม");
+  assert.equal(h.lines.length, 3, "ยิงจริง 3 ครั้ง");
+  assert.equal(h.counted, 1, "แต่กินโควตาแค่ครั้งเดียว");
+});
+
+test("ชนลิมิตจนยอมแพ้ → ไม่นับเลยสักครั้ง", async (t) => {
+  useFakeClock(t);
+  const h = harness();
+
+  const promise = callTrack123(
+    { trackNo: TRACK_NO },
+    async () => {
+      throw rateLimited();
+    },
+    h.options,
+  );
+  const settled = promise.catch((error: unknown) => error);
+
+  for (const wait of BACKOFF) {
+    await flush();
+    t.mock.timers.tick(wait);
+  }
+  await flush();
+
+  assert.ok((await settled) instanceof CarrierError);
+  assert.equal(h.lines.length, BACKOFF.length + 1, "ยิงครบทุกรอบ");
+  assert.equal(h.counted, 0, "ทุกรอบถูกปฏิเสธก่อนประมวลผล จึงไม่กินโควตา");
+});
+
+test('"ไม่พบเลขนี้" → นับ เพราะเป็นคำตอบจริงที่ปลายทางประมวลผลแล้ว', async (t) => {
+  useFakeClock(t);
+  const h = harness();
+
+  await assert.rejects(
+    callTrack123(
+      { trackNo: TRACK_NO },
+      async () => {
+        throw new CarrierError("not_found", "ไม่พบเลขพัสดุนี้");
+      },
+      h.options,
+    ),
+  );
+
+  assert.equal(h.counted, 1);
+});
+
+test("ระบบสะดุดแล้วลองใหม่ → นับทุกรอบ เพราะไม่รู้ว่าคำขอไปถึงหรือยัง", async (t) => {
+  useFakeClock(t);
+  const h = harness();
+
+  let attempts = 0;
+  const promise = callTrack123(
+    { trackNo: TRACK_NO },
+    async () => {
+      attempts += 1;
+      if (attempts === 1) throw new CarrierError("upstream_error", "ปลายทางสะดุด");
+      return "ผ่านรอบสอง";
+    },
+    h.options,
+  );
+
+  await flush();
+  t.mock.timers.tick(SYSTEM_RETRY_DELAY_MS);
+  await flush();
+
+  assert.equal(await promise, "ผ่านรอบสอง");
+  assert.equal(h.counted, 2, "นับเกินดีกว่านับขาด เมื่อไม่รู้ว่าถูกคิดเงินไหม");
+});
+
+test("วงจรถูกตัด → ไม่นับ เพราะไม่ได้ยิงออกไปเลย", async (t) => {
+  useFakeClock(t);
+  const h = harness();
+
+  const breaker = new CircuitBreaker({
+    name: "track123-test",
+    failureThreshold: 1,
+    windowMs: 60_000,
+    cooldownMs: 60_000,
+    log: () => {},
+  });
+  breaker.recordFailure();
+
+  await assert.rejects(
+    callTrack123({ trackNo: TRACK_NO }, async () => "ไม่ควรถูกเรียก", {
+      ...h.options,
+      breaker,
+    }),
+  );
+
+  assert.equal(h.counted, 0);
 });
