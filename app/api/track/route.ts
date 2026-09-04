@@ -12,6 +12,7 @@ import {
 } from "@/lib/carriers/types";
 import { CARRIER_LANDINGS } from "@/lib/carriers/landing";
 import { canRevealProof } from "@/lib/proof-access";
+import { buildSavedSnapshot } from "@/lib/saved-snapshot";
 import { SupabaseConfigError } from "@/lib/supabase/env";
 import { recordSearchEvent } from "@/lib/supabase/search-events";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
@@ -34,46 +35,6 @@ const ERROR_HTTP_STATUS: Record<TrackingErrorCode, number> = {
 };
 
 /**
- * เวลาที่ผู้ใช้คนนี้กดบันทึกเลขนี้ไว้ — null เมื่อยังไม่ล็อกอินหรือไม่เคยบันทึก
- *
- * ใช้ session ของผู้ใช้จริง ไม่ใช่ service role — RLS ของ saved_trackings จึง
- * กรองให้เหลือแต่แถวของเจ้าตัวโดยอัตโนมัติ ต่อให้มีคนแก้ query ผิดในอนาคต
- * ก็ยังอ่านของคนอื่นไม่ได้
- *
- * ห้ามโยน error — สิทธิ์ดูรูปเป็นของเสริม พังแล้วต้องกลายเป็น "ไม่มีสิทธิ์"
- * ไม่ใช่ทำให้การค้นหาทั้งครั้งล้ม
- */
-async function readSavedAt(trackingNumber: string): Promise<string | null> {
-  try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (user === null) return null;
-
-    const { data, error } = await supabase
-      .from("saved_trackings")
-      .select("created_at")
-      .eq("tracking_number", trackingNumber)
-      .maybeSingle();
-
-    if (error !== null) {
-      console.warn(`[api/track] อ่านเวลาที่บันทึกไม่สำเร็จ: ${error.message}`);
-      return null;
-    }
-    return typeof data?.created_at === "string" ? data.created_at : null;
-  } catch (cause) {
-    if (!(cause instanceof SupabaseConfigError)) {
-      console.warn(
-        `[api/track] ตรวจสิทธิ์ดูรูปไม่สำเร็จ: ${cause instanceof Error ? cause.message : String(cause)}`,
-      );
-    }
-    return null;
-  }
-}
-
-/**
  * หา URL รูปถ่ายตอนนำจ่ายให้คนที่มีสิทธิ์ — null เมื่อไม่มีสิทธิ์หรือไม่มีรูป
  *
  * ตรวจสถานะก่อนทุกอย่างโดยตั้งใจ: พัสดุที่ยังไม่ถึงมือไม่มีรูปอยู่แล้ว การ
@@ -86,10 +47,10 @@ async function readSavedAt(trackingNumber: string): Promise<string | null> {
 async function readProofPhotos(
   trackingNumber: string,
   resolved: { result: TrackingResult; source: string },
+  savedAt: string | null,
 ): Promise<string[]> {
   if (resolved.result.status !== "delivered") return [];
 
-  const savedAt = await readSavedAt(trackingNumber);
   const allowed = canRevealProof({
     status: resolved.result.status,
     lastUpdated: resolved.result.lastUpdated,
@@ -109,6 +70,92 @@ async function readProofPhotos(
       `[api/track] ดึงรูปนำจ่ายไม่สำเร็จ: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
     return [];
+  }
+}
+
+/**
+ * อัปเดตแถวในประวัติของผู้ใช้ ถ้าเขาบันทึกเลขนี้ไว้ — ของแถม ไม่ใช่หน้าที่หลัก
+ *
+ * ------------------------------------------------------------------
+ * ปัญหาที่แก้: หน้าประวัติเก็บ snapshot ตอนกดบันทึก ผู้ใช้ที่แตะการ์ดแล้วมาค้น
+ * ที่หน้าแรกจะเห็นสถานะใหม่ แต่พอกดกลับ การ์ดยังโชว์ของเก่าเหมือนเดิม —
+ * เพราะการค้นหาไม่เคยเขียนอะไรกลับ (ตั้งแต่ #26 ถึง #30)
+ *
+ * ⚠️ **ห้ามทำให้การค้นหาล้มตามเด็ดขาด** การค้นหาคือคำสัญญาหลักของสินค้า
+ * ส่วนการเขียนกลับคือของแถม ทุกทางที่พังจึงจบที่ log แล้วเงียบไป ไม่มี throw
+ * ไม่มี error ที่ไหลขึ้นไปถึงผู้ใช้
+ *
+ * ⚠️ **ห้ามสร้างแถวใหม่** ใช้ update ไม่ใช่ upsert — ถ้าผู้ใช้ไม่เคยบันทึกเลขนี้
+ * การค้นหาต้องไม่ไปแอบเพิ่มของเข้าประวัติเขาโดยไม่ได้ขอ
+ *
+ * ⚠️ **กรองด้วย user_id ตรงๆ ไม่พึ่ง RLS อย่างเดียว** RLS กรองให้อยู่แล้ว แต่
+ * การเขียนที่พึ่งด่านเดียวคือการฝากความปลอดภัยไว้กับการตั้งค่าที่มองไม่เห็นจาก
+ * ในโค้ด ถ้าวันหนึ่ง policy ถูกแก้ผิด การกรองซ้ำตรงนี้ยังกันไว้ได้อีกชั้น
+ * ------------------------------------------------------------------
+ */
+async function syncSavedRow(
+  trackingNumber: string,
+  result: TrackingResult,
+): Promise<string | null> {
+  try {
+    const supabase = await createServerSupabaseClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    // ไม่ล็อกอิน = ไม่มีประวัติให้เขียน
+    if (user === null) return null;
+
+    // เช็คก่อนว่าเขาบันทึกเลขนี้ไว้จริงไหม — ถ้าไม่ ก็ไม่ต้องเสียเวลาไปหาพิกัด
+    // ให้เปล่าๆ (การค้นหาส่วนใหญ่เป็นเลขที่ไม่ได้บันทึกไว้)
+    const { data: existing, error: readError } = await supabase
+      .from("saved_trackings")
+      .select("created_at")
+      .eq("user_id", user.id)
+      .eq("tracking_number", trackingNumber)
+      .maybeSingle();
+
+    if (readError !== null) {
+      console.warn(`[api/track] อ่านแถวประวัติไม่สำเร็จ: ${readError.message}`);
+      return null;
+    }
+    if (existing === null) return null;
+
+    const savedAt =
+      typeof existing.created_at === "string" ? existing.created_at : null;
+
+    // ใช้ตัวประกอบ snapshot **ตัวเดียวกับ** /api/saved และ /api/saved/refresh
+    // ห้ามเขียนโค้ดแปลงข้อมูลซ้ำที่นี่เด็ดขาด — นิยามที่ต่างกันระหว่างสองที่คือ
+    // บั๊กแบบเดียวกับ #29 ที่ไม่มี type error ให้เห็นและหาไม่เจอจนกว่าจะมีคน
+    // เทียบสองหน้าจอกัน (มีเทสต์เฝ้าที่ lib/saved-snapshot.test.ts)
+    //
+    // skipProbe เพราะนี่เป็นเส้นทางที่ผู้ใช้กำลังรอผลค้นหาอยู่ การไปขอที่อยู่
+    // สาขาจากขนส่งเพิ่มจะยืดเวลารอโดยที่เขาไม่ได้ขอ
+    const snapshot = await buildSavedSnapshot(result, { skipProbe: true });
+
+    const { error: updateError } = await supabase
+      .from("saved_trackings")
+      .update(snapshot)
+      .eq("user_id", user.id)
+      .eq("tracking_number", trackingNumber);
+
+    if (updateError !== null) {
+      console.warn(`[api/track] อัปเดตประวัติไม่สำเร็จ: ${updateError.message}`);
+      // ยังคืน savedAt เพราะสิทธิ์ดูรูปไม่ได้ขึ้นกับว่าเขียนสำเร็จไหม
+      return savedAt;
+    }
+
+    console.info("[api/track] อัปเดตแถวประวัติให้ตรงกับผลค้นหาแล้ว");
+    return savedAt;
+  } catch (cause) {
+    // SupabaseConfigError = ยังไม่ได้ตั้งค่าระบบสมาชิก ซึ่งเป็นสภาพปกติของ
+    // เครื่องที่ยังไม่ได้ตั้งค่า ไม่ต้อง log ให้รก
+    if (!(cause instanceof SupabaseConfigError)) {
+      console.warn(
+        `[api/track] เขียนกลับประวัติไม่สำเร็จ: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+    return null;
   }
 }
 
@@ -201,7 +248,13 @@ export async function POST(request: Request) {
       tookMs: Date.now() - startedAt,
     });
 
-    const proofPhotoUrls = await readProofPhotos(trackNo, resolved);
+    // เขียนกลับก่อนตอบ เพื่อให้ผู้ใช้ที่กด back ไปหน้าประวัติเห็นของใหม่ทันที
+    // ถ้ายิงทิ้งแบบไม่รอ จะแข่งกับการที่เขากดกลับ แล้วบางครั้งยังเห็นของเก่า
+    // ถามสิทธิ์ผู้ใช้ครั้งเดียวแล้วใช้ต่อทั้งสองงาน — เดิม readProofPhotos
+    // ไปถาม Supabase เองอีกรอบ ซึ่งกลายเป็นสองรอบต่อการค้นหาหนึ่งครั้ง
+    const savedAt = await syncSavedRow(trackNo, resolved.result);
+
+    const proofPhotoUrls = await readProofPhotos(trackNo, resolved, savedAt);
 
     // source / stale / fetchedAt ไม่ใช่ข้อมูลลับ — UI ใช้ตัดสินว่าจะขึ้นป้าย
     // "ข้อมูล ณ เวลานี้" หรือไม่ ส่วน shared ไว้ debug เรื่องการรวมคำขอซ้ำ
