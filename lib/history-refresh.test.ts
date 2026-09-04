@@ -96,3 +96,55 @@ test("เอกสารในโค้ดต้องเตือนคนท�
   assert.match(read(REFRESH_ROUTE), /ห้ามเรียกอัตโนมัติ/);
   assert.match(read(HISTORY_LIST), /ไม่มี auto-refresh/);
 });
+
+/* ------------- ปุ่ม "บันทึกไว้" ต้องไม่ยิงถามขนส่ง ------------- *
+ *
+ * เจตนาทั้งหมดของปุ่มนั้นคือ "เก็บเลขไว้ก่อน ค่อยค้นทีหลัง" ถ้า lookup: false
+ * หลุดหายไปเมื่อไร มันจะกลายเป็นการค้นหาเงียบๆ ที่ผู้ใช้ไม่ได้ขอ และไม่มีอาการ
+ * อะไรให้เห็นเลยนอกจากโควตาที่หายไป
+ */
+
+const SAVE_ONLY_BUTTON = join(PROJECT_DIR, "app/save-only-button.tsx");
+const SAVED_ROUTE = join(PROJECT_DIR, "app/api/saved/route.ts");
+const SEARCH_FORM = join(PROJECT_DIR, "app/tracking-search.tsx");
+
+test('ปุ่ม "บันทึกไว้" ต้องส่ง lookup: false เสมอ', () => {
+  assert.match(code(read(SAVE_ONLY_BUTTON)), /lookup:\s*false/);
+});
+
+test("เส้นทางบันทึกแบบไม่ค้นหา ต้องไม่เรียก resolveTracking", () => {
+  const route = read(SAVED_ROUTE);
+
+  // ตัดเอาเฉพาะบล็อกของ skipLookup มาตรวจ — เส้นทางปกติยังต้องเรียกได้ตามเดิม
+  const start = route.indexOf("if (skipLookup) {");
+  assert.ok(start > 0, "ต้องมีเส้นทาง skipLookup");
+
+  // ตัดคอมเมนต์ก่อน ไม่งั้นจะไปโดนคอมเมนต์ที่อ้างชื่อฟังก์ชันเพื่ออธิบายเอง
+  const block = code(
+    route.slice(start, route.indexOf("// อ่านสถานะล่าสุดเอง", start)),
+  );
+  assert.doesNotMatch(block, /resolveTracking|buildSavedSnapshot/);
+});
+
+test("เส้นทางบันทึกแบบไม่ค้นหา ต้องไม่ล้างสถานะเดิมทิ้ง", () => {
+  const route = read(SAVED_ROUTE);
+  const start = route.indexOf("if (skipLookup) {");
+  const block = code(
+    route.slice(start, route.indexOf("// อ่านสถานะล่าสุดเอง", start)),
+  );
+
+  // เขียนได้แค่สามคอลัมน์นี้ ถ้ามี last_* โผล่มาแปลว่าไปทับของเดิม
+  assert.doesNotMatch(block, /last_status|last_location|last_lat|last_lng|last_updated/);
+});
+
+test('ฟอร์มหน้าแรกต้องมีทั้งปุ่มค้นหาและปุ่มบันทึก และปุ่มค้นหายังเป็น submit', () => {
+  const form = read(SEARCH_FORM);
+
+  assert.match(form, /<SaveOnlyButton/, "ต้องมีปุ่มบันทึกไว้");
+  assert.match(form, /ค้นหาพัสดุ/, "ปุ่มค้นหาต้องยังอยู่");
+  assert.match(
+    form,
+    /type="submit"/,
+    "ปุ่มค้นหาต้องยังเป็น submit — คำสัญญาหลักของสินค้าห้ามเปลี่ยน",
+  );
+});

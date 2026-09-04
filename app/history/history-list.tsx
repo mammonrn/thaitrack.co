@@ -193,7 +193,14 @@ export default function HistoryList({ items, mapEnabled }: HistoryListProps) {
                   {item.carrierName !== null && ` · ${item.carrierName}`}
                 </p>
 
-                {item.lastStatusText !== null && (
+                {/* บันทึกไว้เฉยๆ ยังไม่เคยค้น (ปุ่ม "บันทึกไว้" ที่หน้าแรก) —
+                    ต้องบอกให้ชัดว่ายังไม่รู้สถานะ ไม่ใช่ปล่อยว่างจนดูเหมือน
+                    บันทึกไม่ติด และไม่ใช่ error เพราะไม่มีอะไรผิดพลาดเลย */}
+                {item.lastStatusText === null ? (
+                  <p className="mt-3 text-base font-medium text-faint">
+                    รอค้นหา
+                  </p>
+                ) : (
                   <p
                     className={`mt-3 text-base font-medium ${
                       item.lastStatus === null

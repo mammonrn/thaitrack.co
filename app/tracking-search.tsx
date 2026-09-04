@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import ScanButton from "./scan-button";
+import SaveOnlyButton from "./save-only-button";
 import SaveTrackingButton from "./save-tracking-button";
 
 import type { TrackingResult, TrackingStatus } from "@/lib/carriers/types";
@@ -252,6 +253,9 @@ export default function TrackingSearch({
           />
           <ScanButton onDetected={(value) => void runSearchFromScan(value)} />
           </div>
+          {/* ⚠️ ปุ่มหลักต้องเด่นกว่าเสมอ — "ค้นหาพัสดุ" คือคำสัญญาหลักของสินค้า
+              ส่วน "บันทึกไว้" เป็นทางเลือกสำหรับคนที่ยังไม่อยากรู้ตอนนี้
+              จึงเป็นปุ่มพื้นขาวขอบบาง ไม่ใช่ปุ่มทึบแข่งความสนใจกัน */}
           <button
             type="submit"
             disabled={isLoading}
@@ -259,6 +263,8 @@ export default function TrackingSearch({
           >
             {isLoading ? "กำลังค้นหา…" : "ค้นหาพัสดุ"}
           </button>
+
+          <SaveOnlyButton trackingNumber={trackingNumber} />
         </form>
 
         <p className="mt-4 text-xs leading-relaxed text-faint sm:mt-5 sm:text-sm">

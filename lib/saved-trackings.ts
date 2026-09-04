@@ -243,17 +243,29 @@ function saveFailure(code: unknown): SavedOutcome {
  * ส่งไปแค่เลขพัสดุกับชื่อเล่น ไม่ส่งสถานะไปด้วย เพราะฝั่ง server จะไปอ่านสถานะ
  * ล่าสุดเองจาก cache ที่มีอยู่แล้ว ทำให้ข้อมูลที่บันทึกเชื่อถือได้เสมอ
  * ไม่ขึ้นกับสิ่งที่ client ส่งมา
+ *
+ * options.lookup = false → บันทึกอย่างเดียว **ไม่ยิงถามขนส่งเลย** ใช้กับปุ่ม
+ * "บันทึกไว้" ที่หน้าแรกซึ่งผู้ใช้ยังไม่ได้ค้นอะไร (ดูเหตุผลเต็มที่หัวเส้นทาง
+ * skipLookup ใน app/api/saved/route.ts) รายการที่ได้จะไม่มีสถานะ แล้วหน้า
+ * ประวัติจะขึ้นปุ่มให้กดค้นเมื่อผู้ใช้อยากรู้
  */
 export async function saveTracking(
   trackingNumber: string,
   nickname: string,
+  options: { lookup?: boolean } = {},
   fetchImpl: typeof fetch = fetch,
 ): Promise<SavedOutcome> {
   try {
     const response = await fetchImpl("/api/saved", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ trackingNumber, nickname }),
+      // lookup: false = เก็บเลขไว้เฉยๆ ไม่ยิงถามขนส่ง (ปุ่ม "บันทึกไว้"
+      // ที่หน้าแรก) ค่าเริ่มต้นคือค้นให้ด้วย ซึ่งเป็นพฤติกรรมเดิมทุกประการ
+      body: JSON.stringify({
+        trackingNumber,
+        nickname,
+        ...(options.lookup === false ? { lookup: false } : {}),
+      }),
     });
 
     const payload: unknown = await response.json().catch(() => null);
