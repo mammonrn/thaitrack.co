@@ -10,15 +10,19 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
+import { formatCallLog } from "./track123-gateway.ts";
 import {
   MAX_MESSAGE_LENGTH,
   safeUpstreamMessage,
 } from "./upstream-message.ts";
 
+// ⚠️ ข้อความในเทสต์ทั้งไฟล์นี้เป็นตัวอย่างสมมติ ไม่ใช่ข้อความจริงจาก Track123
+// เรายังไม่เคยเห็นข้อความจริงเลยสักครั้ง — นั่นคือเหตุผลทั้งหมดที่มีโค้ดนี้
+// อย่าเขียนตัวอย่างที่ดูเหมือนคำตอบของคำถามที่เรากำลังจะไปหา
 test("ข้อความปกติผ่านได้ครบ", () => {
   assert.equal(
-    safeUpstreamMessage("Request rate limit exceeded"),
-    "Request rate limit exceeded",
+    safeUpstreamMessage("upstream said something"),
+    "upstream said something",
   );
 });
 
@@ -30,8 +34,44 @@ test("ว่างเปล่า / undefined → ไม่เก็บอะไ
 
 test("ยุบช่องว่างซ้อนให้เหลือเดียว — log ต้องอยู่บรรทัดเดียว", () => {
   assert.equal(
-    safeUpstreamMessage("rate  limit\nexceeded\tnow"),
-    "rate limit exceeded now",
+    safeUpstreamMessage("aaa  bbb\nccc\tddd"),
+    "aaa bbb ccc ddd",
+  );
+});
+
+test("🔴 อักขระที่ทำให้บรรทัดแตก ถูกแทนด้วยช่องว่างทุกตัว", () => {
+  for (const breaker of [
+    "\n",
+    "\r\n",
+    "\r",
+    "\t",
+    "\u000B",
+    "\u000C",
+    "\u0085",
+    "\u2028",
+    "\u2029",
+    "\u001B[31m", // ลำดับสีของ terminal — ห้ามให้ปลายทางสั่งจอเรา
+  ]) {
+    const cleaned = safeUpstreamMessage(`before${breaker}after`);
+    assert.ok(
+      cleaned !== undefined && !/[\r\n\u2028\u2029]/.test(cleaned),
+      `ยังมีตัวขึ้นบรรทัดใหม่หลงเหลือจาก ${JSON.stringify(breaker)}`,
+    );
+    assert.ok(
+      cleaned !== undefined && !/[\u0000-\u001F\u007F-\u009F]/.test(cleaned),
+      `ยังมีอักขระควบคุมหลงเหลือจาก ${JSON.stringify(breaker)}`,
+    );
+    assert.ok(
+      cleaned !== undefined && cleaned.startsWith("before"),
+      "เนื้อความก่อนหน้าต้องไม่หาย",
+    );
+  }
+});
+
+test('🔴 เครื่องหมายคำพูดถูกเปลี่ยน — ไม่งั้นมันปิดฟิลด์ msg="…" กลางคัน', () => {
+  assert.equal(
+    safeUpstreamMessage('courier "spx" not supported'),
+    "courier 'spx' not supported",
   );
 });
 
@@ -128,4 +168,39 @@ test("log ต้องบอกด้วยว่ารหัสขนส่ง�
       `resolve.ts ต้องส่ง source "${source}" — ไม่งั้น log แยกบริบทไม่ออก`,
     );
   }
+});
+
+test("🔴 บรรทัด log ที่ออกมาจริงต้องเป็นบรรทัดเดียวเสมอ", () => {
+  // เทสต์ตัวอื่นตรวจตัวกรอง เทสต์ตัวนี้ตรวจของจริง: ข้อความร้ายๆ วิ่งผ่าน
+  // ตัวกรองเข้าไปในตัวประกอบบรรทัด แล้วนับบรรทัดที่ได้
+  //
+  // ⚠️ ทำไมต้องตรวจถึงชั้นนี้: grep และการนับทุกอย่างที่เราใช้วิเคราะห์มาตลอด
+  // ตั้งอยู่บนสมมติฐาน "หนึ่งการเรียก = หนึ่งบรรทัด" ถ้าสมมติฐานนี้พัง ตัวเลข
+  // จะเพี้ยนแบบเงียบๆ ไม่มี error ให้เห็น และไม่มีใครสังเกต
+  const nasty =
+    'line one\nline two\r\nline three\u2028line four " quote \u001B[31mred';
+
+  const line = formatCallLog({
+    ts: 1_757_030_400_000,
+    trackNo: "SPXTH046012345678",
+    courier: "shopee-xpress-th",
+    attempt: 1,
+    maxAttempts: 4,
+    queued: 1,
+    waitMs: 0,
+    tookMs: 120,
+    result: "rate_limited",
+    source: "guess",
+    upstream: "A0706",
+    msg: safeUpstreamMessage(nasty),
+  });
+
+  assert.equal(line.split(/\r?\n|[\u2028\u2029]/).length, 1, line);
+  assert.ok(line.startsWith("[track123] "), line);
+
+  // ฟิลด์ msg ต้องปิดท้ายบรรทัดพอดี — เครื่องหมายคำพูดข้างในต้องไม่ปิดก่อน
+  const msgAt = line.indexOf('msg="');
+  assert.ok(msgAt > 0, line);
+  assert.equal(line.slice(-1), '"', line);
+  assert.equal(line.slice(msgAt + 5, -1).includes('"'), false, line);
 });
