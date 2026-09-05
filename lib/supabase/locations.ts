@@ -544,6 +544,21 @@ export interface BranchCounts {
   unknown: number;
   /** แยกตามชนิดของสิ่งที่หาพิกัดไม่ได้ — branch / address / unknown */
   unknownByKind: Record<string, number>;
+  /**
+   * รวมจำนวนครั้งที่ยิงถามที่อยู่สาขาไปแล้ว (probe_count ของทุกแถว)
+   *
+   * ── ทำไมต้องมี ────────────────────────────────────────────────
+   * เดิมหน้าสถิติบอกได้แค่ "มีพิกัดแล้วกี่สาขา" ซึ่งเป็นตัวเลขที่ดูดีเสมอ
+   * เพราะ 0 ก็อ่านได้ว่า "ยังไม่มีสาขาไหนต้องใช้" · สิ่งที่หายไปคือ **ต้นทุน**
+   *
+   * ของจริงตอนที่เพิ่งเจอ: ยิงไป 3 ครั้ง (10% ของโควตา ETrackings ทั้งชีวิต
+   * ที่ไม่มีวันเติม) ได้พิกัดกลับมา 0 จุด — ไม่มีตัวเลขไหนบนหน้าบอกเรื่องนี้เลย
+   * เรารู้เพราะบังเอิญเปิดตารางดู
+   *
+   * หลักการ: ต้องวัด **ผลลัพธ์** ไม่ใช่แค่ว่าทำสำเร็จ · "ยิงได้" ไม่ใช่ผลลัพธ์
+   * "ได้พิกัดมาใช้จริง" ต่างหากที่ใช่
+   */
+  probeAttempts: number;
 }
 
 const UNKNOWN_KINDS: readonly string[] = ["branch", "address", "unknown"];
@@ -571,10 +586,37 @@ async function countRows(
   }
 }
 
+/** รวม probe_count ของทุกแถวใน unknown_branches */
+async function sumProbeAttempts(): Promise<number> {
+  const supabase = getServiceSupabaseClient();
+  if (supabase === null) return 0;
+
+  try {
+    const { data, error } = await supabase
+      .from(UNKNOWN_TABLE)
+      .select("probe_count");
+
+    if (error) {
+      warn("นับจำนวนครั้งที่ถามที่อยู่สาขา", error.message);
+      return 0;
+    }
+
+    return (data ?? []).reduce(
+      (total: number, row: { probe_count?: number | null }) =>
+        total + (row.probe_count ?? 0),
+      0,
+    );
+  } catch (cause) {
+    warn("นับจำนวนครั้งที่ถามที่อยู่สาขา", reason(cause));
+    return 0;
+  }
+}
+
 export async function countBranches(): Promise<BranchCounts> {
-  const [known, unknown, ...byKind] = await Promise.all([
+  const [known, unknown, probeAttempts, ...byKind] = await Promise.all([
     countRows(BRANCHES_TABLE),
     countRows(UNKNOWN_TABLE),
+    sumProbeAttempts(),
     ...UNKNOWN_KINDS.map((kind) =>
       countRows(UNKNOWN_TABLE, { column: "kind", value: kind }),
     ),
@@ -585,5 +627,5 @@ export async function countBranches(): Promise<BranchCounts> {
     unknownByKind[kind] = byKind[index] ?? 0;
   });
 
-  return { known, unknown, unknownByKind };
+  return { known, unknown, unknownByKind, probeAttempts };
 }

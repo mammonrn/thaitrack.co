@@ -11,6 +11,7 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
@@ -173,7 +174,7 @@ test("ที่อยู่ที่หาพิกัดได้แม่น �
   const store = makeStore();
   const geocoder = makeGeocoder();
 
-  const saved = await harvestBranchCoordinates(makeResult([branchEvent()]), {
+  const saved = await harvestOn(makeResult([branchEvent()]), {
     store,
     geocode: geocoder.geocode,
   });
@@ -193,7 +194,7 @@ test("ที่อยู่ไทยเต็มยศ (8.3 กม. จากข
   // ตอนนี้รับได้ แต่ต้องติดชั้นไว้ให้ UI บอกผู้ใช้ว่าคลาดเคลื่อนได้หลายกิโล
   const store = makeStore();
 
-  const saved = await harvestBranchCoordinates(makeResult([branchEvent()]), {
+  const saved = await harvestOn(makeResult([branchEvent()]), {
     store,
     geocode: makeGeocoder(8_299).geocode,
   });
@@ -205,7 +206,7 @@ test("ที่อยู่ไทยเต็มยศ (8.3 กม. จากข
 test("คลาดเคลื่อนราวหนึ่งกิโล → ติดชั้น approximate", async () => {
   const store = makeStore();
 
-  await harvestBranchCoordinates(makeResult([branchEvent()]), {
+  await harvestOn(makeResult([branchEvent()]), {
     store,
     geocode: makeGeocoder(900).geocode,
   });
@@ -224,7 +225,7 @@ test("กรอบใหญ่แต่ไม่ใช่เขตปกคร�
   // ขึ้นป้าย "คลาดเคลื่อนได้หลายกิโลเมตร" ต่อ — เก็บค่าที่วัดได้ ไม่ใช่ซ่อนมัน
   const store = makeStore();
 
-  const saved = await harvestBranchCoordinates(makeResult([branchEvent()]), {
+  const saved = await harvestOn(makeResult([branchEvent()]), {
     store,
     geocode: makeGeocoder(25_000).geocode,
   });
@@ -236,7 +237,7 @@ test("กรอบใหญ่แต่ไม่ใช่เขตปกคร�
 test("Google บอกเองว่าเป็นเขตปกครอง → ปฏิเสธ ต่อให้กรอบจะเล็ก", async () => {
   const store = makeStore();
 
-  const saved = await harvestBranchCoordinates(makeResult([branchEvent()]), {
+  const saved = await harvestOn(makeResult([branchEvent()]), {
     store,
     geocode: makeGeocoder(80, CHIANG_RAI, true).geocode,
   });
@@ -259,7 +260,7 @@ test("มีพิกัดอยู่แล้ว → ไม่ทับ แ�
   });
   const geocoder = makeGeocoder();
 
-  const saved = await harvestBranchCoordinates(makeResult([branchEvent()]), {
+  const saved = await harvestOn(makeResult([branchEvent()]), {
     store,
     geocode: geocoder.geocode,
   });
@@ -273,12 +274,12 @@ test("ที่อยู่เดิม → ใช้ผลที่เก็บ
   const store = makeStore();
   const geocoder = makeGeocoder();
 
-  await harvestBranchCoordinates(makeResult([branchEvent()]), {
+  await harvestOn(makeResult([branchEvent()]), {
     store,
     geocode: geocoder.geocode,
   });
   // สาขาเดียวกันของขนส่งอีกเจ้า — ที่อยู่เหมือนกันเป๊ะ
-  await harvestBranchCoordinates(makeResult([branchEvent()], "kerry-express"), {
+  await harvestOn(makeResult([branchEvent()], "kerry-express"), {
     store,
     geocode: geocoder.geocode,
   });
@@ -297,7 +298,7 @@ test("แถวเก่าใน cache ที่ไม่รู้ความ�
     areaOnly: null,
   });
 
-  const saved = await harvestBranchCoordinates(makeResult([branchEvent()]), {
+  const saved = await harvestOn(makeResult([branchEvent()]), {
     store,
     geocode: makeGeocoder().geocode,
   });
@@ -309,7 +310,7 @@ test("ผลลัพธ์ที่ไม่มีที่อยู่เล�
   const store = makeStore();
   const geocoder = makeGeocoder();
 
-  const saved = await harvestBranchCoordinates(
+  const saved = await harvestOn(
     makeResult([branchEvent(null)]),
     { store, geocode: geocoder.geocode },
   );
@@ -320,8 +321,28 @@ test("ผลลัพธ์ที่ไม่มีที่อยู่เล�
 
 /* ----------------------- ด่านกันเผาโควตา ----------------------- */
 
+/**
+ * เรียก harvestBranchCoordinates โดยเปิดสวิตช์ให้เสมอ
+ *
+ * เทสต์เกือบทั้งไฟล์ตรวจ "ตรรกะการเก็บพิกัด" ซึ่งต้องทำงานได้จึงจะตรวจได้
+ * ส่วนตัวสวิตช์เองมีเทสต์แยกอยู่ท้ายไฟล์ — แยกกันชัดเจนแบบนี้ทำให้เวลาสวิตช์
+ * พัง เทสต์ที่แดงจะชี้ตรงไปที่สวิตช์ ไม่ใช่แดงยกไฟล์จนหาต้นตอไม่เจอ
+ */
+function harvestOn(
+  result: TrackingResult,
+  options: Record<string, unknown> = {},
+) {
+  return harvestBranchCoordinates(result, {
+    isEnabled: () => Promise.resolve(true),
+    ...options,
+  });
+}
+
 function probeOptions(overrides: Record<string, unknown> = {}) {
   return {
+    // เปิดสวิตช์ให้เสมอ — เทสต์กลุ่มนี้ตรวจ "ด่านอื่นๆ" ไม่ใช่ตัวสวิตช์
+    // (ตัวสวิตช์มีเทสต์ของตัวเองอยู่ท้ายไฟล์)
+    isEnabled: () => Promise.resolve(true),
     fetchResult: () => Promise.resolve(makeResult([branchEvent()])),
     canProbe: () => true,
     outOfQuota: () => false,
@@ -519,6 +540,7 @@ test("ด่าน 1 — เลข TH… พร้อม courier ที่ยื
     courierHint: "shopee-xpress-th",
     store,
     options: {
+      isEnabled: () => Promise.resolve(true),
       fetchResult: (_no, hint) => {
         hints.push(hint);
         return Promise.resolve(makeResult([branchEvent()]));
@@ -550,4 +572,135 @@ test("ด่าน 1 — hint เป็นเจ้าที่ ETrackings ไ�
   });
 
   assert.equal(filled, false);
+});
+
+/* ------------------------------------------------------------------ *
+ * สวิตช์เปิด/ปิดการเก็บพิกัดสาขา
+ *
+ * ⚠️ ด่านนี้เฝ้าเงินสองก้อน: โควตา ETrackings ที่ **ไม่มีวันเติม** กับค่า
+ * geocode ของ Google · ถ้าใครแก้แล้วด่านหลุด จะไม่มีอะไรพังให้เห็นเลย
+ * มีแต่บิลที่โผล่มาทีหลัง — เทสต์ชุดนี้คือด่านเดียวที่จับได้
+ * ------------------------------------------------------------------ */
+
+test("สวิตช์ปิด → ไม่ geocode ไม่เขียนตาราง แม้ผลลัพธ์จะมีที่อยู่ครบ", async () => {
+  const store = makeStore();
+  const geocoder = makeGeocoder();
+
+  const saved = await harvestBranchCoordinates(makeResult([branchEvent()]), {
+    store,
+    geocode: geocoder.geocode,
+    isEnabled: () => Promise.resolve(false),
+  });
+
+  assert.equal(saved, 0);
+  assert.deepEqual(geocoder.calls, [], "ปิดแล้วต้องไม่เสียเงินให้ Google");
+  assert.deepEqual(store.saved, []);
+});
+
+test("สวิตช์ปิด → probe ไม่ยิง ETrackings และไม่จองสิทธิ์", async () => {
+  resetProbeBudget();
+  const store = makeStore();
+  let fetched = 0;
+
+  const filled = await probeBranchAddress({
+    trackingNumber: "SPXTH046012345678",
+    carrierCode: CARRIER,
+    branchCode: "ACRAI-B",
+    store,
+    options: probeOptions({
+      isEnabled: () => Promise.resolve(false),
+      fetchResult: () => {
+        fetched += 1;
+        return Promise.resolve(makeResult([branchEvent()]));
+      },
+    }),
+  });
+
+  assert.equal(filled, false);
+  assert.equal(fetched, 0, "ปิดแล้วต้องไม่ยิง ETrackings แม้แต่ครั้งเดียว");
+  assert.deepEqual(
+    store.claims,
+    [],
+    "ต้องไม่จองสิทธิ์ด้วย ไม่งั้นจะเผา cooldown 7 วันทิ้งไปกับการที่ไม่ได้ยิงอยู่ดี",
+  );
+});
+
+test("สวิตช์ปิด → ไม่กินงบต่อวัน (เปิดกลับมาแล้วต้องยังยิงได้ครบ)", async () => {
+  resetProbeBudget();
+  const store = makeStore();
+
+  // ยิงตอนปิด 20 ครั้ง — มากกว่าเพดานวันละ 10 เท่าตัว
+  for (let i = 0; i < 20; i += 1) {
+    await probeBranchAddress({
+      trackingNumber: "SPXTH046012345678",
+      carrierCode: CARRIER,
+      branchCode: `B${i}`,
+      store,
+      options: probeOptions({ isEnabled: () => Promise.resolve(false) }),
+    });
+  }
+
+  // เปิดกลับมา → ต้องยังมีงบเหลือเต็ม เพราะตอนปิดไม่ได้ใช้อะไรเลย
+  const filled = await probeBranchAddress({
+    trackingNumber: "SPXTH046012345678",
+    carrierCode: CARRIER,
+    branchCode: "ACRAI-B",
+    store,
+    options: probeOptions(),
+  });
+
+  assert.equal(filled, true, "ด่านสวิตช์ต้องมาก่อนด่านงบต่อวัน");
+});
+
+test("อ่านสวิตช์ไม่ได้ → ถือว่าปิด ไม่ใช่เดาว่าเปิด", async () => {
+  const store = makeStore();
+  const geocoder = makeGeocoder();
+
+  // ฐานข้อมูลล่ม / ยังไม่ได้รัน migration / เน็ตมีปัญหา
+  const saved = await harvestBranchCoordinates(makeResult([branchEvent()]), {
+    store,
+    geocode: geocoder.geocode,
+    isEnabled: () => Promise.reject(new Error("ฐานข้อมูลล่ม")),
+  });
+
+  assert.equal(saved, 0, "ไม่รู้ = ไม่จ่าย (กติกาเดียวกับ SETTING_DEFAULTS)");
+  assert.deepEqual(geocoder.calls, []);
+});
+
+test("⚠️ ด่านสวิตช์ต้องอยู่ในไฟล์นี้ ไม่ใช่ที่ผู้เรียก", () => {
+  const source = readFileSync("lib/branch-harvest.ts", "utf8");
+
+  // ถ้าวางด่านไว้ที่ผู้เรียก วันหนึ่งจะมีคนเพิ่มเส้นทางที่สามแล้วลืมใส่ด่าน
+  // ซึ่งจะเงียบสนิท — ไม่มีอะไรพัง มีแต่บิลที่โผล่มาทีหลัง
+  assert.equal(
+    source.match(/await harvestEnabled\(options\)/g)?.length,
+    2,
+    "ทั้ง harvestBranchCoordinates และ probeBranchAddress ต้องเช็คสวิตช์เอง",
+  );
+
+  // ผู้เรียกต้องไม่มีด่านของตัวเอง — กติกาต้องมีที่เดียว
+  for (const caller of ["lib/carriers/resolve.ts", "lib/location-resolve.ts"]) {
+    assert.doesNotMatch(
+      readFileSync(caller, "utf8"),
+      /branch_harvest_enabled/,
+      `${caller} ต้องไม่ตัดสินใจเรื่องสวิตช์เอง`,
+    );
+  }
+});
+
+test("⚠️ ปิดสวิตช์ต้องไม่กระทบการบันทึก unknown_branches", () => {
+  // ข้อมูลนั้นได้มาฟรีจากผลค้นหาที่ยังไงก็ต้องยิงอยู่แล้ว และเป็นตัวเดียวที่
+  // จะบอกได้ว่าวันหนึ่งควรกลับมาทำเรื่องพิกัดสาขาไหม
+  const source = readFileSync("lib/location-resolve.ts", "utf8");
+
+  assert.match(
+    source,
+    /rememberUnknownBranch|recordUnknown|noteUnknown/,
+    "location-resolve ต้องยังบันทึกสาขาที่ไม่รู้พิกัดอยู่",
+  );
+  assert.doesNotMatch(
+    readFileSync("lib/branch-harvest.ts", "utf8"),
+    /harvestEnabled[\s\S]{0,200}rememberUnknownBranch/,
+    "การบันทึก unknown_branches ต้องไม่อยู่ใต้ด่านสวิตช์",
+  );
 });

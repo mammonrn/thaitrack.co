@@ -837,6 +837,24 @@ export default async function AdminStatsPage(props: {
                   ⚠️ ตัวเลขนี้นับจากฝั่งเรา ไม่ใช่ยอดจากหน้าแดชบอร์ดของผู้ให้บริการ
                   ถ้าสองอันไม่ตรงกัน ให้เชื่อของผู้ให้บริการ
                 </p>
+                {/* ⚠️ ข้อความนี้มีไว้ให้ตัวเราในอีกสองเดือนอ่าน — ตอนนั้นจะจำไม่ได้
+                    แล้วว่าทำไม ETrackings ถึงไม่เคยถูกเรียกใช้ แล้วจะไปนั่งไล่โค้ด
+                    หาบั๊กที่ไม่มีอยู่จริง · สภาพนี้เป็นสิ่งที่ตั้งใจให้เป็น */}
+                <p className="mt-3 rounded-lg border border-line bg-white/70 p-3 text-[11px] leading-relaxed text-faint">
+                  <span className="font-medium text-ink">
+                    ทำไมถึงไม่ถูกเรียกใช้ในการค้นหาแล้ว
+                  </span>
+                  <br />
+                  โควตาส่วนที่ให้การค้นหาใช้ถูกใช้ครบแล้ว ระบบจึงตัดเจ้านี้ออกจาก
+                  ลำดับการค้นหาโดยอัตโนมัติ (canUseForLookup ใน
+                  lib/provider-usage.ts) — <span className="text-ink">ไม่ใช่บั๊ก</span>{" "}
+                  แต่เป็นสภาพที่ตั้งใจแช่ไว้ เพราะทรัพยากรที่ไม่มีวันเติมไม่ควรถูก
+                  ปลดล็อกโดยไม่มีแผนเฉพาะว่าจะใช้ทำอะไร
+                  <br />
+                  ที่เหลืออยู่ถูกกันไว้ให้การเก็บที่อยู่สาขาเท่านั้น ซึ่งตอนนี้ก็ปิด
+                  สวิตช์ไว้ด้วย — เท่ากับโควตาที่เหลือถูกแช่แข็งทั้งก้อน
+                  จนกว่าจะมีคนตัดสินใจว่าจะเอาไปใช้ทำอะไร
+                </p>
               </div>
             )}
           </Section>
@@ -979,6 +997,38 @@ export default async function AdminStatsPage(props: {
             title="พิกัดสาขา"
             note="สาขาที่ยังไม่มีพิกัดจะไม่แสดงแผนที่ให้ผู้ใช้ (แสดงเป็นชื่อสถานที่แทน)"
           >
+            {/* ⚠️ ตัวเลขคู่นี้ต้องอยู่ด้วยกันเสมอ — "ยิงไปกี่ครั้ง" คือต้นทุนที่จ่าย
+                จริง (โควตา ETrackings ที่ไม่มีวันเติม) ส่วน "ได้พิกัดกี่สาขา" คือ
+                ผลลัพธ์ · ถ้าโชว์แค่อย่างหลัง ค่า 0 จะอ่านได้ว่า "ยังไม่มีสาขาไหน
+                ต้องใช้" ซึ่งฟังดูปกติ ทั้งที่ความจริงคือจ่ายไปแล้วไม่ได้อะไรกลับมา */}
+            {branches.probeAttempts > 0 && (
+              <p
+                className={`mb-4 rounded-xl border p-4 text-xs leading-relaxed ${
+                  branches.known === 0
+                    ? "border-seal/40 bg-seal/5 text-faint"
+                    : "border-line bg-white/60 text-faint"
+                }`}
+              >
+                ยิงถามที่อยู่สาขาไปแล้ว{" "}
+                <span className="font-mono text-ink">
+                  {count(branches.probeAttempts)} ครั้ง
+                </span>{" "}
+                ได้พิกัดมาใช้จริง{" "}
+                <span
+                  className={`font-mono ${branches.known === 0 ? "text-seal" : "text-ink"}`}
+                >
+                  {count(branches.known)} สาขา
+                </span>
+                {branches.known === 0 && (
+                  <>
+                    {" "}
+                    — จ่ายโควตา ETrackings ไปแล้วโดยยังไม่ได้อะไรกลับมา
+                    ปัญหาอยู่ที่ขั้นแปลงที่อยู่เป็นพิกัด ไม่ใช่ที่การยิง
+                  </>
+                )}
+              </p>
+            )}
+
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Tile label="มีพิกัดแล้ว" value={count(branches.known)} />
               <Tile label="ยังไม่มีพิกัด" value={count(branches.unknown)} />

@@ -126,6 +126,66 @@ export interface HarvestOptions {
   store?: LocationStore;
   /** ตัวหาพิกัดที่บอกความละเอียดมาด้วย (ค่าเริ่มต้น: Google Geocoding) */
   geocode?: (text: string) => Promise<GeocodeHit | null>;
+  /**
+   * สวิตช์เปิด/ปิดการเก็บพิกัดสาขา (ค่าเริ่มต้น: อ่านจาก app_settings)
+   *
+   * ใส่เองได้ในเทสต์ เพื่อไม่ต้องแตะฐานข้อมูลจริง
+   */
+  isEnabled?: () => Promise<boolean>;
+}
+
+/**
+ * ระบบยังเก็บพิกัดสาขาอยู่ไหม — ด่านแรกสุดของทั้งสองเส้นทาง
+ *
+ * ══════════════════════════════════════════════════════════════════
+ * ⚠️ ด่านนี้ต้องอยู่ **ในไฟล์นี้** ไม่ใช่ที่ผู้เรียก
+ *
+ * มีสองเส้นทางที่เข้ามาเก็บพิกัด และทั้งคู่มีต้นทุนคนละแบบ:
+ *
+ *   harvestBranchCoordinates  แกะที่อยู่จากผลที่ได้มาแล้ว → เสียค่า geocode
+ *                             ของ Google อย่างเดียว ไม่แตะ ETrackings
+ *   probeBranchAddress        ยิง ETrackings ใหม่เพื่อขอที่อยู่ → เสียโควตาที่
+ *                             **ไม่มีวันเติม** บวกค่า geocode
+ *
+ * ถ้าวางด่านไว้ที่ผู้เรียก วันหนึ่งจะมีคนเพิ่มเส้นทางที่สามแล้วลืมใส่ด่าน
+ * ซึ่งจะเงียบสนิท — ไม่มีอะไรพัง มีแต่บิลที่โผล่มาทีหลัง
+ *
+ * ══════════════════════════════════════════════════════════════════
+ * ทำไมปิดเป็นค่าเริ่มต้น: ของจริงที่วัดได้คือ ยิง ETrackings ไป 3 ครั้ง
+ * (10% ของโควตาทั้งชีวิต) ได้พิกัดกลับมา **0 จุด** และแผนที่ที่จะเอาพิกัดไป
+ * แสดงก็ปิดอยู่ตลอดเวลา — เราจ่ายเงินเก็บของให้ฟีเจอร์ที่ไม่ได้เปิด
+ *
+ * ⚠️ ด่านนี้ไม่แตะการบันทึก unknown_branches — รายชื่อสาขาที่ยังไม่รู้พิกัด
+ * ยังถูกเก็บต่อเหมือนเดิม เพราะข้อมูลนั้นได้มาฟรีจากผลค้นหาที่ยังไงก็ต้องยิงอยู่
+ * แล้ว และเป็นตัวเดียวที่จะบอกได้ว่าวันหนึ่งควรกลับมาทำเรื่องนี้ไหม
+ */
+async function harvestEnabled(options: HarvestOptions): Promise<boolean> {
+  const read = options.isEnabled ?? defaultIsEnabled;
+  try {
+    return await read();
+  } catch (cause) {
+    // อ่านสวิตช์ไม่ได้ → ถือว่าปิด · ไม่รู้ = ไม่จ่าย (กติกาเดียวกับ SETTING_DEFAULTS)
+    console.warn(
+      `[branch-harvest] อ่านสวิตช์ไม่สำเร็จ ถือว่าปิด: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+    return false;
+  }
+}
+
+/**
+ * อ่านสวิตช์จาก app_settings
+ *
+ * ⚠️ import แบบ dynamic โดยตั้งใจ — lib/settings-cache.ts พึ่ง next/cache
+ * ซึ่ง test runner ของ Node ที่รันไฟล์ .ts ตรงๆ resolve ไม่ได้ ถ้า import ไว้
+ * ที่หัวไฟล์ เทสต์ทุกตัวที่แตะโมดูลนี้จะพังทันทีด้วย ERR_MODULE_NOT_FOUND
+ * ซึ่งเป็นความพังที่ไม่เกี่ยวอะไรกับสิ่งที่เทสต์นั้นตรวจเลย
+ *
+ * เทสต์ที่ต้องการให้การเก็บพิกัดทำงาน ส่ง isEnabled เข้ามาเองอยู่แล้ว
+ */
+async function defaultIsEnabled(): Promise<boolean> {
+  const { readCachedSettings } = await import("./settings-cache");
+  const settings = await readCachedSettings();
+  return settings.branch_harvest_enabled;
 }
 
 /**
@@ -138,6 +198,10 @@ export async function harvestBranchCoordinates(
   result: TrackingResult,
   options: HarvestOptions = {},
 ): Promise<number> {
+  // ด่านสวิตช์มาก่อนทุกอย่าง รวมถึงก่อนการแกะที่อยู่ — ปิดแล้วต้องไม่มีต้นทุน
+  // อะไรเกิดขึ้นเลย แม้แต่การอ่านฐานข้อมูล (ดู harvestEnabled)
+  if (!(await harvestEnabled(options))) return 0;
+
   const store = options.store ?? supabaseLocationStore;
   const geocode = options.geocode ?? geocodeAddress;
 
@@ -365,6 +429,10 @@ export async function probeBranchAddress(input: {
   options?: ProbeOptions;
 }): Promise<boolean> {
   const options = input.options ?? {};
+
+  // ด่านสวิตช์มาก่อนด่าน 0 — เส้นทางนี้แพงที่สุดในระบบ (โควตาที่ไม่มีวันเติม)
+  if (!(await harvestEnabled(options))) return false;
+
   const now = options.now ?? Date.now();
   const fetchResult =
     options.fetchResult ??
@@ -418,6 +486,10 @@ export async function probeBranchAddress(input: {
   const saved = await harvestBranchCoordinates(result, {
     store: input.store,
     geocode: options.geocode,
+    // ส่งสวิตช์ต่อไปด้วย — ด่านข้างบนเช็คไปแล้ว ถ้าไม่ส่งต่อ ขั้นนี้จะไปอ่าน
+    // ค่าเริ่มต้นเอง ซึ่งในเทสต์แปลว่า "ปิด" แล้วผลลัพธ์จะเป็น 0 เสมอทั้งที่
+    // ด่านทุกด่านผ่านหมด — พังแบบที่ชี้ต้นตอยาก
+    isEnabled: options.isEnabled,
   });
 
   return saved > 0;
