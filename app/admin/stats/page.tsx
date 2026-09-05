@@ -25,10 +25,11 @@ import ExportButton from "./export-button";
 import SettingsToggle from "./settings-toggle";
 
 import {
+  currentPeriodKey,
+  loadProviderUsage,
+  nextResetOf,
   PROVIDER_IDS,
   PROVIDER_LABEL,
-  currentPeriodKey,
-  nextResetOf,
   readHarvestReserve,
   readLeanRatio,
   readQuota,
@@ -46,6 +47,7 @@ import {
   WINDOW_OPTIONS,
   readWindowDays,
 } from "@/lib/admin-window";
+import { standingQuotaWarnings } from "@/lib/health-check";
 import {
   readErrorBreakdown,
   readInstallPromptStats,
@@ -230,6 +232,15 @@ export default async function AdminStatsPage(props: {
   // ลิงก์ให้กันดูตัวเลขชุดเดียวกันได้
   const windowDays = readWindowDays((await props.searchParams).days);
   const leanRatio = readLeanRatio();
+
+  // ⚠️ ต้องอ่านยอดโควตาของจริงก่อน — ตัวนับใน memory เป็นศูนย์หลัง restart ทุกครั้ง
+  // ถ้าไม่อ่าน แถบเตือนข้างล่างจะเงียบสนิทเสมอหลัง deploy ซึ่งเป็นความพังแบบที่
+  // ไม่มีอะไรฟ้อง (เจอตอนทดสอบจริง: แถบไม่ขึ้นทั้งที่งบค้นหาหมดไปแล้ว)
+  await loadProviderUsage();
+
+  // เจ้าที่ใกล้ชนเพดานและโควตาไม่มีวันรีเซ็ต — กลุ่มที่ monitor ไม่มีทางเตือนได้
+  // (ดู app/api/health/quota/route.ts) หน้านี้จึงเป็นที่เดียวที่บอกได้
+  const standingQuota = standingQuotaWarnings();
 
   const [
     members,
@@ -779,6 +790,55 @@ export default async function AdminStatsPage(props: {
                 );
               })}
             </div>
+
+            {/* ⚠️ เจ้าที่โควตาไม่มีวันรีเซ็ตและใกล้ชนเพดานแล้ว
+                ต้องเด่นตรงนี้ เพราะมันไม่มีทางไปโผล่ใน monitor ได้เลย —
+                /api/health/quota ตอบ 503 เฉพาะเจ้าที่รอบบิลรีเซ็ตได้ ส่วนเจ้า
+                แบบนี้ถ้าเอาไปใส่ด้วยจะ 503 ค้างตลอดกาลแล้วจบที่การปิดปากมันทิ้ง
+                (ดูเหตุผลเต็มที่ app/api/health/quota/route.ts)
+
+                หน้านี้จึงเป็น "ที่เดียว" ที่บอกเรื่องนี้ได้ ถ้าไม่เด่นพอ =
+                ไม่มีใครรู้ */}
+            {standingQuota.length > 0 && (
+              <div className="mt-4 rounded-xl border border-seal/40 bg-seal/5 p-4">
+                <p className="font-display text-sm font-semibold text-seal">
+                  โควตาที่ใช้หมดแล้วหมดเลย — ต้องตัดสินใจ ไม่ใช่รอให้หายเอง
+                </p>
+                <ul className="mt-2 flex flex-col gap-2">
+                  {standingQuota.map((provider) => {
+                    const used = usageByProvider.get(provider)?.callCount ?? 0;
+                    const quota = readQuota(provider);
+                    const reserve = readHarvestReserve(provider);
+                    const lookupLeft = Math.max(quota - reserve - used, 0);
+
+                    return (
+                      <li key={provider} className="text-xs leading-relaxed text-faint">
+                        <span className="font-medium text-ink">
+                          {PROVIDER_LABEL[provider]}
+                        </span>{" "}
+                        ใช้ไป {count(used)}/{count(quota)} ·{" "}
+                        {lookupLeft === 0 ? (
+                          <span className="text-seal">
+                            งบสำหรับการค้นหาหมดแล้ว — ระบบตัดเจ้านี้ออกจากลำดับ
+                            การค้นหาไปแล้ว เหลือแต่โควตาที่กันไว้ให้เก็บที่อยู่สาขา{" "}
+                            {count(Math.max(quota - used, 0))} ครั้ง
+                          </span>
+                        ) : (
+                          <>
+                            เหลืองบค้นหาอีก {count(lookupLeft)} ครั้ง
+                            (จากที่กัน {count(reserve)} ครั้งสุดท้ายไว้ให้เก็บที่อยู่สาขา)
+                          </>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+                <p className="mt-2 text-[11px] leading-relaxed text-faint">
+                  ⚠️ ตัวเลขนี้นับจากฝั่งเรา ไม่ใช่ยอดจากหน้าแดชบอร์ดของผู้ให้บริการ
+                  ถ้าสองอันไม่ตรงกัน ให้เชื่อของผู้ให้บริการ
+                </p>
+              </div>
+            )}
           </Section>
 
           <Section

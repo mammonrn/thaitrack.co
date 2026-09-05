@@ -13,8 +13,10 @@
 
 import {
   PROVIDER_IDS,
+  isNearLookupQuota,
   isNearQuota,
   readLeanRatio,
+  readPeriod,
   type ProviderId,
 } from "./provider-usage";
 
@@ -27,8 +29,6 @@ export const ERROR_RATIO_VAR = "HEALTH_MAX_ERROR_RATIO";
 /** ชื่อตัวแปร env ของสัดส่วน "ค้นไม่เจอ" ที่ถือว่าผิดปกติ */
 export const NOT_FOUND_RATIO_VAR = "HEALTH_MAX_NOT_FOUND_RATIO";
 
-/** ชื่อตัวแปร env ของเจ้าที่ไม่ต้องเตือนเรื่องโควตา (คั่นด้วยจุลภาค) */
-export const IGNORE_QUOTA_VAR = "HEALTH_IGNORE_QUOTA";
 
 export const DEFAULT_WINDOW_MINUTES = 30;
 
@@ -109,40 +109,77 @@ export function readMaxNotFoundRatio(): number {
 }
 
 /**
- * เจ้าที่สั่งไว้ว่าไม่ต้องเตือนเรื่องโควตาแล้ว
+ * แยกโควตาเป็นสองชนิดตาม "ธรรมชาติของรอบบิล" ไม่ใช่ตามชื่อเจ้า
  *
- * ------------------------------------------------------------------
- * มีไว้แก้ปัญหาเฉพาะของโควตาแบบ "ไม่รีเซ็ต" (ETrackings แผนฟรี)
+ * ══════════════════════════════════════════════════════════════════
+ * หลักที่ใช้แยก: **การแจ้งเตือนมีไว้สำหรับสิ่งที่เปลี่ยนแปลงและแก้ได้
+ * ไม่ใช่สภาพถาวรที่รอการตัดสินใจ**
  *
- * โควตาที่รีเซ็ตได้ พอข้ามรอบก็เขียวเอง การเตือนจึงเป็นสัญญาณชั่วคราวที่หายไป
- * เองเมื่อปัญหาหมดไป — ตรงกับที่ monitor ถูกออกแบบมาให้จับ
+ *   รีเซ็ตได้ (daily / monthly)  พอข้ามรอบก็เขียวเอง การเตือนจึงเป็นสัญญาณ
+ *                                ชั่วคราวที่หายไปเมื่อปัญหาหมดไป — ตรงกับที่
+ *                                monitor ถูกออกแบบมาให้จับ
  *
- * แต่โควตาที่ไม่รีเซ็ต พอข้าม 80% แล้วมันจะแดงค้างตลอดกาล เพราะไม่มีอะไรทำให้
- * ตัวเลขลดลงได้อีก ผลคือ endpoint นี้จะแดงถาวรจนใช้จับเรื่องอื่นไม่ได้เลย
- * แล้วสุดท้ายก็จะมีคนปิดการแจ้งเตือนทิ้ง ซึ่งแย่กว่าไม่มีตั้งแต่แรก
+ *   ไม่รีเซ็ต (lifetime)         พอข้ามเกณฑ์แล้วแดงค้างตลอดกาล เพราะไม่มีอะไร
+ *                                ทำให้ตัวเลขลดลงได้อีก · การเตือนซ้ำทุก 5 นาที
+ *                                ไม่ได้เพิ่มข้อมูลอะไรเลยหลังครั้งแรก มีแต่จะ
+ *                                กลบสัญญาณอื่นจนคนปิดการแจ้งเตือนทิ้ง
  *
- * วิธีที่เลือก: ยังเตือนตามปกติ (เจ้าของเว็บต้องได้รู้) แต่พอรับทราบแล้วและ
- * ตัดสินใจว่าจะไม่ซื้อเพิ่ม ให้ปิดเสียงของเจ้านั้นด้วย env ตัวนี้ — หน้าสถิติ
- * ยังขึ้นสีแดงอยู่เหมือนเดิม เสียงที่ปิดคือเสียงที่ปลุกกลางดึกเท่านั้น
- * ------------------------------------------------------------------
+ * ══════════════════════════════════════════════════════════════════
+ * ⚠️ ของเดิมคือ env ชื่อ HEALTH_IGNORE_QUOTA ที่ให้ใส่ชื่อเจ้าไปปิดปากทีละตัว
+ * ถูกถอดทิ้งแล้วโดยตั้งใจ · มันไม่ใช่ทางแก้ แต่เป็นการสะสมจุดบอด: ทุกครั้งที่
+ * เสียงดังเกินไป เราก็ใส่ชื่อเพิ่มอีกหนึ่ง จนสุดท้ายไม่เหลืออะไรให้ได้ยิน
+ * และของจริงที่เกิดขึ้น — วันที่ถอดออก ชื่อที่อยู่ในนั้นไม่ได้ปิดปากอะไรเลย
+ * แต่ยังเป็นจุดบอดที่รออยู่เฉยๆ
+ *
+ * ⚠️ ห้ามฮาร์ดโค้ดชื่อเจ้าลงในไฟล์นี้เด็ดขาด — การแยกอิงจาก readPeriod().cycle
+ * ซึ่งเป็นข้อมูลที่ระบบมีอยู่แล้ว เจ้าใหม่ที่เป็น lifetime จึงเข้ากฎนี้เอง
+ * อัตโนมัติโดยไม่ต้องมีใครมาจำว่าต้องไปเพิ่มชื่อที่ไหน (มีเทสต์เฝ้าข้อนี้)
  */
-function ignoredProviders(): ReadonlySet<string> {
-  const raw = process.env.HEALTH_IGNORE_QUOTA ?? "";
-  return new Set(
-    raw
-      .split(",")
-      .map((part) => part.trim().toLowerCase())
-      .filter((part) => part !== ""),
-  );
+function isRecoverable(provider: ProviderId): boolean {
+  return readPeriod(provider).cycle !== "lifetime";
 }
 
-/** เจ้าที่ใช้โควตาเกินเกณฑ์แล้ว — รายการว่างเมื่อทุกเจ้ายังปกติ */
-export function providersNearQuota(now: number = Date.now()): ProviderId[] {
-  const ignored = ignoredProviders();
+/**
+ * เจ้านี้มีเรื่องโควตาที่ควรรู้หรือยัง — เข้าเกณฑ์ข้อใดข้อหนึ่งก็นับ
+ *
+ *   isNearQuota        ใช้ไปเกิน 80% ของ **เพดานเต็ม**
+ *   isNearLookupQuota  ใช้ไปเกิน 80% ของ **งบที่การค้นหาใช้ได้**
+ *                      (เพดานเต็ม ลบส่วนที่กันไว้ให้เก็บที่อยู่สาขา)
+ *
+ * ⚠️ ต้องมีข้อสองด้วย ไม่งั้นจะมองไม่เห็นของจริงที่เกิดขึ้นแล้ว: ETrackings
+ * เพดาน 50 กันไว้ให้เก็บที่อยู่สาขา 30 เหลืองบค้นหา 20 · พอใช้ครบ 20 ระบบ
+ * ตัดมันออกจากลำดับการค้นหาไปแล้วจริงๆ แต่ 20/50 = 40% ซึ่งไม่ถึง 80%
+ * ด่านเดิมจึงบอกว่า "ปกติดี" ทั้งที่ความสามารถหายไปแล้วหนึ่งอย่าง
+ *
+ * ไม่ได้เจาะจงเจ้าไหน — readHarvestReserve คืน 0 ให้เจ้าที่ไม่ได้กันโควตาไว้
+ * สองเกณฑ์จึงเท่ากันเป๊ะสำหรับเจ้าเหล่านั้น ข้อสองไม่มีผลอะไรกับพวกเขาเลย
+ */
+function isQuotaConcerning(provider: ProviderId, now: number): boolean {
+  return isNearQuota(provider, now) || isNearLookupQuota(provider, now);
+}
 
-  return PROVIDER_IDS.filter(
-    (provider) => !ignored.has(provider) && isNearQuota(provider, now),
-  );
+/** เจ้าที่ใช้โควตาเกินเกณฑ์แล้ว ทุกชนิดรวมกัน — รายการว่างเมื่อทุกเจ้ายังปกติ */
+export function providersNearQuota(now: number = Date.now()): ProviderId[] {
+  return PROVIDER_IDS.filter((provider) => isQuotaConcerning(provider, now));
+}
+
+/**
+ * เจ้าที่ใกล้ชนเพดาน **และรอบบิลรีเซ็ตได้** — กลุ่มที่ควรปลุกคน
+ *
+ * หมดแล้วฟื้นเองได้เมื่อข้ามรอบ การเตือนจึงมีปลายทาง: รอ หรือซื้อเพิ่ม
+ */
+export function recoverableQuotaAlerts(now: number = Date.now()): ProviderId[] {
+  return providersNearQuota(now).filter(isRecoverable);
+}
+
+/**
+ * เจ้าที่ใกล้ชนเพดาน **และไม่มีวันรีเซ็ต** — กลุ่มที่ต้องรู้แต่ห้ามปลุก
+ *
+ * ไปแสดงบนหน้าสถิติแทน เพราะเป็นสภาพถาวรที่รอการตัดสินใจ (จะซื้อเพิ่มไหม)
+ * ไม่ใช่เหตุการณ์ที่จะหายไปเอง
+ */
+export function standingQuotaWarnings(now: number = Date.now()): ProviderId[] {
+  return providersNearQuota(now).filter((provider) => !isRecoverable(provider));
 }
 
 /**
@@ -152,12 +189,19 @@ export function providersNearQuota(now: number = Date.now()): ProviderId[] {
  * ลงมือทำอะไรสักอย่าง (ซื้อเพิ่ม / ปรับเพดาน) ส่วนอัตราค้นไม่เจอสูงอาจเป็น
  * เรื่องชั่วคราวของฝั่งขนส่งที่หายเองได้
  */
-export function judgeHealth(
-  snapshot: HealthSnapshot,
-  nearQuota: readonly ProviderId[],
-): HealthVerdict {
-  if (nearQuota.length > 0) return { ok: false, reason: "quota_warning" };
-
+/**
+ * ระบบอยู่ในสภาพที่ "ผู้ใช้ใช้ไม่ได้จริง" หรือเปล่า
+ *
+ * ⚠️ โควตาไม่อยู่ในนี้แล้ว และห้ามเอากลับเข้ามา · "โควตาใกล้หมด" กับ
+ * "เว็บใช้ไม่ได้" ไม่ใช่เรื่องเดียวกัน — ตอนโควตาเจ้าหนึ่งใกล้หมด ระบบสลับไป
+ * ใช้เจ้าอื่นให้เองอัตโนมัติ ผู้ใช้ไม่รู้สึกอะไรเลยสักนิด การเอามาออกทางสัญญาณ
+ * เดียวกับ "เว็บล่ม" เคยทำให้ monitor รายงาน DOWN ติดกัน 61 ชั่วโมงทั้งที่
+ * เว็บใช้งานได้ปกติ แล้วจบลงที่การปิดปากมันทิ้ง
+ *
+ * โควตาไปออกทาง warnings ของ endpoint นี้ (200 พร้อมธง) และทาง
+ * /api/health/quota สำหรับเจ้าที่รอบบิลรีเซ็ตได้
+ */
+export function judgeHealth(snapshot: HealthSnapshot): HealthVerdict {
   // น้อยเกินกว่าจะสรุปอะไรได้ — ดูเหตุผลที่ DEFAULT_MIN_SEARCHES
   if (snapshot.total < readMinSearches()) return { ok: true, reason: null };
 
@@ -170,6 +214,19 @@ export function judgeHealth(
   }
 
   return { ok: true, reason: null };
+}
+
+/**
+ * โควตาที่ควรปลุกคนตอนนี้มีไหม — ใช้กับ /api/health/quota เท่านั้น
+ *
+ * นับเฉพาะเจ้าที่รอบบิลรีเซ็ตได้ · เจ้าแบบ lifetime ไม่เข้าที่นี่เด็ดขาด
+ * ไม่งั้นจะกลายเป็น 503 ถาวรที่ไม่มีวันหาย ซึ่งคือปัญหาเดิมย้ายที่อยู่
+ */
+export function judgeQuota(now: number = Date.now()): HealthVerdict {
+  const alerts = recoverableQuotaAlerts(now);
+  return alerts.length === 0
+    ? { ok: true, reason: null }
+    : { ok: false, reason: "quota_warning" };
 }
 
 /** ข้อความสำหรับ log ฝั่งเซิร์ฟเวอร์ — ตรงนี้ใส่ตัวเลขได้ เพราะไม่ได้ส่งออกไปไหน */
@@ -185,5 +242,23 @@ export function healthLogLine(
     ` total=${snapshot.total} found=${snapshot.found}` +
     ` not_found=${snapshot.notFound} error=${snapshot.error}` +
     ` near_quota=${quota} lean=${readLeanRatio()}`
+  );
+}
+
+/**
+ * ข้อความ log ของ /api/health/quota
+ *
+ * ต้อง log ทั้งฝั่งที่ปลุกและฝั่งที่ไม่ปลุก — ถ้า log เฉพาะตอนปลุก เจ้าแบบ
+ * lifetime ที่หมดโควตาไปแล้วจะเงียบสนิททั้งใน monitor และใน log ซึ่งคือการ
+ * ย้ายจุดบอดไปที่ใหม่ ไม่ใช่การแก้
+ */
+export function quotaLogLine(
+  recoverable: readonly ProviderId[],
+  standing: readonly ProviderId[],
+): string {
+  return (
+    `[health-quota] alert=${recoverable.length === 0 ? "-" : recoverable.join(",")}` +
+    ` standing=${standing.length === 0 ? "-" : standing.join(",")}` +
+    ` lean=${readLeanRatio()}`
   );
 }
