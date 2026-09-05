@@ -444,6 +444,14 @@ function logCourierRetries(
  *   hit  = ยิงเจาะจงแล้วจบเลย ไม่ต้องแตะ auto-detect ที่ล้มบ่อย
  *   miss = ความจำผิด ต้องตกไป auto-detect อยู่ดี (และเราลบความจำทิ้งแล้ว)
  *
+ * ⚠️ took= สำคัญพอๆ กับ outcome — ตอนตัดสินใจทำเรื่องนี้ เรามีตัวอย่างของ
+ * "ยิงเจาะจงด้วย courier ที่ถูก" แค่ **10 call** ซึ่งเชื่อได้แค่ระดับทิศทาง
+ * ไม่ใช่ระดับตัวเลข (โดน A0706 20% · p50 1,155 ms) · เวลาที่บันทึกไว้ตรงนี้
+ * จะทำให้ n=10 กลายเป็น n=100 ภายในสัปดาห์เดียว แล้วค่อยยืนยันว่าจริงไหม
+ *
+ * จำนวนรอบที่โดน A0706 ดูจาก log [track123] ของเลขเดียวกันในวินาทีเดียวกัน
+ * (attempt=2/4 ขึ้นไปแปลว่าโดนแล้วลองใหม่)
+ *
  * นับจาก log ด้วยคำสั่งเดียว:
  *   pm2 logs --lines 20000 --nostream | grep -c "\[courier-first\] .*outcome=hit"
  *   pm2 logs --lines 20000 --nostream | grep -c "\[courier-first\] .*outcome=miss"
@@ -456,9 +464,11 @@ function logCourierFirst(
   trackingNumber: string,
   courierCode: string,
   outcome: "hit" | "miss",
+  tookMs: number,
 ): void {
   console.info(
-    `[courier-first] no=${trackingNumber} courier=${courierCode} outcome=${outcome}` +
+    `[courier-first] no=${trackingNumber} courier=${courierCode}` +
+      ` outcome=${outcome} took=${tookMs}ms` +
       (outcome === "miss" ? " — ลบความจำทิ้งแล้ว" : ""),
   );
 }
@@ -896,12 +906,13 @@ async function runFallback(
   if (canTryKnown && knownCourier !== undefined) {
     tried.push(knownCourier);
 
+    const startedAt = Date.now();
     const byKnown = await attempt(() =>
       trackWithCourier.call(fallback, normalized, knownCourier),
     );
 
     if (byKnown !== null) {
-      logCourierFirst(normalized, knownCourier, "hit");
+      logCourierFirst(normalized, knownCourier, "hit", Date.now() - startedAt);
       return byKnown;
     }
 
@@ -913,7 +924,7 @@ async function runFallback(
     // ⚠️ ลบเฉพาะตอน not_found เท่านั้น — attempt() คืน null เฉพาะกรณีนั้น
     // ส่วน error ชนิดอื่นถูกโยนต่อขึ้นไป จึงไม่มีทางมาถึงบรรทัดนี้ · การลบ
     // ความจำเพราะปลายทางล่มชั่วคราวคือการทิ้งของดีเพราะเหตุผลที่ไม่เกี่ยวกัน
-    logCourierFirst(normalized, knownCourier, "miss");
+    logCourierFirst(normalized, knownCourier, "miss", Date.now() - startedAt);
     void courierStore.forget(normalized).catch(() => {});
   }
 
