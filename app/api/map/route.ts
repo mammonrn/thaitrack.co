@@ -19,6 +19,7 @@
 import { NextResponse } from "next/server";
 
 import { checkCoordinates } from "@/lib/coordinates";
+import { mapImageAllowed } from "@/lib/map-access";
 
 /** ต้องรันบน Node.js runtime เพราะอ่าน API key จาก process.env */
 export const runtime = "nodejs";
@@ -87,6 +88,13 @@ function errorResponse(status: number) {
 }
 
 export async function GET(request: Request) {
+  // ⚠️ ด่านนี้ต้องมาก่อนทุกอย่าง รวมถึงก่อนตรวจพิกัด — endpoint นี้เปิดสาธารณะ
+  // และแต่ละครั้งที่ยิงคือเงินที่จ่าย Google จริง (ดู lib/map-access.ts)
+  //
+  // ตอบ 404 ไม่ใช่ 403 โดยตั้งใจ: 403 บอกใบ้ว่า "มี endpoint นี้อยู่ แค่เข้าไม่ได้"
+  // ซึ่งเป็นข้อมูลที่คนสแกนหาช่องโหว่ใช้ต่อได้ · 404 ไม่บอกอะไรเลย
+  if (!(await mapImageAllowed())) return errorResponse(404);
+
   const params = new URL(request.url).searchParams;
 
   // ตรวจด้วยชุดเดียวกับที่ใช้ตอนบันทึกพิกัด — ค่าที่บันทึกไม่ได้ ก็ไม่ควรวาดได้
