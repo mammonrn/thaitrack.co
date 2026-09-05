@@ -34,12 +34,33 @@ import {
  * ต่อเดือนอยู่ การไม่นับแปลว่ามันเป็นเจ้าเดียวที่เราไม่รู้เลยว่าใช้ไปเท่าไร
  * ทั้งที่เป็นเจ้าที่ถูกถามบ่อยที่สุด (ถูกถามก่อนทุกครั้งที่ prefix เดาไม่ออก)
  */
-export type ProviderId = "thailand-post" | "track123" | "etrackings";
+/**
+ * ⚠️ "ผู้ให้บริการ" ที่นี่ไม่ได้แปลว่า "ขนส่ง" — แปลว่า **อะไรก็ตามที่เราจ่าย
+ * เงินต่อครั้ง**
+ *
+ * Google สองตัวถูกเพิ่มเข้ามาทีหลังเพราะเคยไม่อยู่ในนี้ด้วยเหตุผลเดียวกับที่
+ * ไปรษณีย์ไทยเคยไม่อยู่: เราคิดว่ามัน "ไม่ใช่ผู้ให้บริการติดตามพัสดุ" ทั้งที่
+ * มันคิดเงินต่อครั้งเหมือนกันทุกประการ · ตัวนับถูกวางตามภาพในหัวเราว่าอะไรมี
+ * ต้นทุน ไม่ใช่ตามจุดที่จ่ายเงินจริง
+ *
+ * การเพิ่มสมาชิกที่นี่ไม่กระทบการเลือกขนส่ง — chooseProviderOrder รับ slot
+ * มาตรงๆ ไม่ได้วน PROVIDER_IDS
+ */
+export type ProviderId =
+  | "thailand-post"
+  | "track123"
+  | "etrackings"
+  /** Google Static Maps — ภาพแผนที่ในหน้าประวัติ (ดู app/api/map/route.ts) */
+  | "google-static-maps"
+  /** Google Geocoding — แปลงที่อยู่สาขาเป็นพิกัด (ดู lib/geocode.ts) */
+  | "google-geocoding";
 
 export const PROVIDER_IDS: readonly ProviderId[] = [
   "thailand-post",
   "track123",
   "etrackings",
+  "google-static-maps",
+  "google-geocoding",
 ];
 
 /** ชื่อไทยไว้แสดงในหน้าสถิติ */
@@ -47,6 +68,8 @@ export const PROVIDER_LABEL: Record<ProviderId, string> = {
   "thailand-post": "ไปรษณีย์ไทย",
   track123: "Track123",
   etrackings: "ETrackings",
+  "google-static-maps": "Google แผนที่",
+  "google-geocoding": "Google หาพิกัด",
 };
 
 /**
@@ -60,6 +83,8 @@ export const QUOTA_VARS: Record<ProviderId, string> = {
   "thailand-post": "THAILAND_POST_CALL_LIMIT",
   track123: "TRACK123_CALL_LIMIT",
   etrackings: "ETRACKINGS_CALL_LIMIT",
+  "google-static-maps": "GOOGLE_STATIC_MAPS_CALL_LIMIT",
+  "google-geocoding": "GOOGLE_GEOCODING_CALL_LIMIT",
 };
 
 /** ชื่อตัวแปร env ของรูปแบบรอบบิล (daily | monthly | lifetime) */
@@ -67,6 +92,8 @@ export const CYCLE_VARS: Record<ProviderId, string> = {
   "thailand-post": "THAILAND_POST_BILLING_CYCLE",
   track123: "TRACK123_BILLING_CYCLE",
   etrackings: "ETRACKINGS_BILLING_CYCLE",
+  "google-static-maps": "GOOGLE_STATIC_MAPS_BILLING_CYCLE",
+  "google-geocoding": "GOOGLE_GEOCODING_BILLING_CYCLE",
 };
 
 /** ชื่อตัวแปร env ของวันที่รอบเริ่มใหม่ (ใช้เฉพาะ monthly) */
@@ -74,6 +101,8 @@ export const RESET_DAY_VARS: Record<ProviderId, string> = {
   "thailand-post": "THAILAND_POST_BILLING_RESET_DAY",
   track123: "TRACK123_BILLING_RESET_DAY",
   etrackings: "ETRACKINGS_BILLING_RESET_DAY",
+  "google-static-maps": "GOOGLE_STATIC_MAPS_BILLING_RESET_DAY",
+  "google-geocoding": "GOOGLE_GEOCODING_BILLING_RESET_DAY",
 };
 
 /**
@@ -86,6 +115,18 @@ export const RESET_DAY_VARS: Record<ProviderId, string> = {
 export const DEFAULT_PERIOD: Record<ProviderId, BillingPeriod> = {
   // รีเซ็ตทุกเที่ยงคืนเวลาไทย
   "thailand-post": { cycle: "daily", resetDay: 1 },
+  // ⚠️ Google ทั้งสองตัวเป็น daily ไม่ใช่ monthly ทั้งที่บิลเป็นรายเดือน
+  //
+  // เพราะเพดานที่นี่ไม่ใช่การควบคุมงบ แต่เป็น **สัญญาณว่าผิดปกติ** — และการยิง
+  // ผิดปกติเกิดเป็นชั่วโมง ไม่ใช่เป็นเดือน ถ้าตั้งรายเดือน ตัวนับจะสะสมทั้งเดือน
+  // แล้วชนเพดานตั้งแต่วันที่ 2 หรือไม่ก็ไม่ชนเลยจนสายเกินไป
+  //
+  // ผลพลอยได้: daily = รอบบิลที่รีเซ็ตได้ จึงเข้ากลุ่มที่ /api/health/quota
+  // ปลุกคนได้ (ดู lib/health-check.ts) ซึ่งถูกต้อง — ชนแล้วหายเองเที่ยงคืน
+  //
+  // ตัวควบคุมงบจริงคือ budget cap ใน Google Cloud Console ซึ่งอยู่นอกโค้ดนี้
+  "google-static-maps": { cycle: "daily", resetDay: 1 },
+  "google-geocoding": { cycle: "daily", resetDay: 1 },
   // รายเดือนตามวันที่ซื้อแพ็กเกจ
   track123: { cycle: "monthly", resetDay: 29 },
   // แผนฟรี = โควตาก้อนเดียวตลอดอายุบัญชี ใช้หมดแล้วหมดเลย
@@ -111,6 +152,34 @@ export const DEFAULT_QUOTA: Record<ProviderId, number> = {
   track123: 300,
   // แผนฟรี — ก้อนเดียวตลอดอายุบัญชี
   etrackings: 50,
+
+  /* ---- Google: เพดานเป็น "สัญญาณว่าผิดปกติ" ไม่ใช่การควบคุมงบ ---- */
+
+  /**
+   * 500 ภาพ/วัน
+   *
+   * ที่มา (นับจากของจริง 5 วัน): /history ถูกเปิดแบบหน้าเต็ม ~13 ครั้ง/วัน ·
+   * บันทึกพัสดุ 31 รายการใน 7 วันจากผู้ใช้ 3 คน ≈ 10 ใบ/คน · หนึ่งการ์ดที่มี
+   * พิกัด = หนึ่งภาพ → กรณีแย่ที่สุดวันนี้ 13 × 10 ≈ 130 ภาพ/วัน
+   *
+   * ตั้ง 500 = เผื่อโต ~4 เท่า พอรับการที่ผู้ใช้สะสมรายการเพิ่ม (ตารางไม่มี
+   * การลบอัตโนมัติ) โดยยังหยุดบอทที่ยิงรัวได้ภายในไม่กี่นาที
+   *
+   * ⚠️ เป็นจุดตั้งต้น ไม่ใช่คำตอบสุดท้าย — สมมติฐาน "10 ใบ/คน" กับ "ทุกใบมี
+   * พิกัด" เป็นการเดา (นับ saved_trackings ตรงๆ ไม่ได้ เพราะ service_role
+   * ไม่มีสิทธิ์บนข้อมูลผู้ใช้ ซึ่งถูกต้องแล้ว) · ต้องกลับมาปรับหลังเปิด
+   * map_enabled จริงหนึ่งสัปดาห์ โดยดูจากตัวนับกับ hit rate ที่หน้าสถิติ
+   */
+  "google-static-maps": 500,
+
+  /**
+   * 100 ครั้ง/วัน
+   *
+   * ใช้จริง 7 ครั้งใน 5 วัน และตอนนี้ branch_harvest_enabled ปิดอยู่ จึงควรเป็น
+   * 0 · 100 คือที่หายใจเผื่อวันที่เปิดกลับมา โดยยังต่ำพอที่จะสะดุดตาถ้ามีอะไร
+   * ยิงรัวผิดปกติ (ขั้น probe มีเพดานของตัวเองอยู่แล้ววันละ 10 ครั้ง)
+   */
+  "google-geocoding": 100,
 };
 
 /** ชื่อตัวแปร env ของสัดส่วนที่ถือว่า "ใกล้เพดาน" */
@@ -158,15 +227,28 @@ interface UsageState {
   loaded: Record<ProviderId, string | null>;
 }
 
+/**
+ * สร้างตารางค่าเริ่มต้นจาก PROVIDER_IDS แทนการไล่พิมพ์ชื่อซ้ำ
+ *
+ * ⚠️ ของเดิมเขียนรายชื่อไว้สามที่ในฟังก์ชันเดียว พอเพิ่มเจ้าใหม่ TypeScript
+ * ฟ้องครบก็จริง แต่ต้องไปแก้ทีละจุด และถ้าวันหนึ่งมีใครใส่ `as` ปิดปาก
+ * ตัวนับของเจ้าใหม่จะเป็น undefined เงียบๆ — สร้างจากรายชื่อเดียวจึงไม่มีทางตก
+ */
+function fill<T>(value: T): Record<ProviderId, T> {
+  return Object.fromEntries(
+    PROVIDER_IDS.map((provider) => [provider, value]),
+  ) as Record<ProviderId, T>;
+}
+
 function emptyCounts(): Record<ProviderId, number> {
-  return { "thailand-post": 0, track123: 0, etrackings: 0 };
+  return fill(0);
 }
 
 function emptyState(): UsageState {
   return {
-    periods: { "thailand-post": "", track123: "", etrackings: "" },
+    periods: fill(""),
     counts: emptyCounts(),
-    loaded: { "thailand-post": null, track123: null, etrackings: null },
+    loaded: fill<string | null>(null),
   };
 }
 
@@ -206,6 +288,20 @@ function readEnv(provider: ProviderId): {
         process.env.TRACK123_MONTHLY_CALL_LIMIT,
       cycle: process.env.TRACK123_BILLING_CYCLE,
       resetDay: process.env.TRACK123_BILLING_RESET_DAY,
+    };
+  }
+  if (provider === "google-static-maps") {
+    return {
+      quota: process.env.GOOGLE_STATIC_MAPS_CALL_LIMIT,
+      cycle: process.env.GOOGLE_STATIC_MAPS_BILLING_CYCLE,
+      resetDay: process.env.GOOGLE_STATIC_MAPS_BILLING_RESET_DAY,
+    };
+  }
+  if (provider === "google-geocoding") {
+    return {
+      quota: process.env.GOOGLE_GEOCODING_CALL_LIMIT,
+      cycle: process.env.GOOGLE_GEOCODING_BILLING_CYCLE,
+      resetDay: process.env.GOOGLE_GEOCODING_BILLING_RESET_DAY,
     };
   }
   return {

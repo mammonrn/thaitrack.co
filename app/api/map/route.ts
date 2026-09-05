@@ -20,6 +20,17 @@ import { NextResponse } from "next/server";
 
 import { checkCoordinates } from "@/lib/coordinates";
 import { mapImageAllowed } from "@/lib/map-access";
+import {
+  lookupMapImage,
+  mapCacheKey,
+  rememberMapImage,
+  roundCoordinate,
+} from "@/lib/map-cache";
+import {
+  countProviderCall,
+  isExhausted,
+  loadProviderUsage,
+} from "@/lib/provider-usage";
 
 /** ต้องรันบน Node.js runtime เพราะอ่าน API key จาก process.env */
 export const runtime = "nodejs";
@@ -81,6 +92,20 @@ const ZOOM_EXACT = "15";
  */
 const CACHE_CONTROL = "public, max-age=2592000, stale-while-revalidate=86400";
 
+/** ผู้ให้บริการที่คิดเงินสำหรับ endpoint นี้ — นับรวมกับเจ้าอื่นในระบบเดียวกัน */
+const PROVIDER = "google-static-maps" as const;
+
+/** ส่งภาพกลับ — ใช้ร่วมกันทั้งขา cache hit และขาที่เพิ่งยิงมา */
+function imageResponse(body: Uint8Array, contentType: string) {
+  return new NextResponse(body as BodyInit, {
+    status: 200,
+    headers: {
+      "Content-Type": contentType,
+      "Cache-Control": CACHE_CONTROL,
+    },
+  });
+}
+
 function errorResponse(status: number) {
   // ไม่ตอบเป็น JSON เพราะปลายทางคือ <img> ที่อ่าน body ไม่ได้อยู่แล้ว
   // ตัว status code คือสิ่งเดียวที่มีความหมายตรงนี้
@@ -101,6 +126,26 @@ export async function GET(request: Request) {
   const coordinates = checkCoordinates(params.get("lat"), params.get("lng"));
   if (!coordinates.ok) return errorResponse(400);
 
+  // ⚠️ นอกกรอบไทย → ปฏิเสธ ไม่ใช่แค่ติดธง
+  //
+  // checkCoordinates รับทั้งโลก (-90..90, -180..180) ซึ่งแปลว่าจำนวน URL ที่
+  // เป็นไปได้แทบไม่มีที่สิ้นสุด ใครก็ขยับพิกัดทีละนิดเพื่อหลบ cache แล้วบังคับ
+  // ให้เราจ่าย Google ทุกครั้งได้ · พัสดุที่เราติดตามอยู่ในไทยทั้งหมด
+  // การจำกัดจึงไม่ตัดของจริงทิ้งเลยสักรายการ
+  if (coordinates.outsideThailand) return errorResponse(400);
+
+  // รับได้เฉพาะชื่อชั้นที่รู้จัก ไม่ใช่ตัวเลขซูมอิสระ — ชุดพารามิเตอร์จึงยังปิด
+  // และจำนวน URL ที่เป็นไปได้ต่อหนึ่งพิกัดมีแค่สาม ซึ่ง cache ต่อได้เหมือนเดิม
+  const zoom =
+    ZOOM_BY_ACCURACY[params.get("accuracy") ?? ""] ?? ZOOM_EXACT;
+
+  // ⚠️ cache มาก่อนทุกอย่างที่มีต้นทุน — ก่อนอ่านโควตา ก่อนนับ ก่อนยิง Google
+  // cache hit จึงไม่ถูกนับเป็นการใช้โควตา ซึ่งต้องเป็นแบบนั้น ไม่งั้นตัวนับจะ
+  // บอกว่าเราจ่ายเงินทั้งที่ไม่ได้จ่าย
+  const cacheKey = mapCacheKey(coordinates.lat, coordinates.lng, zoom);
+  const cached = lookupMapImage(cacheKey);
+  if (cached !== null) return imageResponse(cached.body, cached.contentType);
+
   const apiKey = process.env.GOOGLE_MAPS_API_KEY?.trim() ?? "";
   if (apiKey === "") {
     console.error("[map] ไม่ได้ตั้ง GOOGLE_MAPS_API_KEY จึงแสดงแผนที่ไม่ได้");
@@ -108,12 +153,25 @@ export async function GET(request: Request) {
     return errorResponse(503);
   }
 
-  // รับได้เฉพาะชื่อชั้นที่รู้จัก ไม่ใช่ตัวเลขซูมอิสระ — ชุดพารามิเตอร์จึงยังปิด
-  // และจำนวน URL ที่เป็นไปได้ต่อหนึ่งพิกัดมีแค่สาม ซึ่ง cache ต่อได้เหมือนเดิม
-  const zoom =
-    ZOOM_BY_ACCURACY[params.get("accuracy") ?? ""] ?? ZOOM_EXACT;
+  // ยอดใน memory เป็นศูนย์หลัง restart ต้องอ่านของจริงก่อนตัดสิน
+  // ⚠️ ไม่ยิง Supabase ทุก request — loadProviderUsage ออกก่อนทันทีถ้ารอบที่
+  // โหลดไว้ยังตรงกับรอบปัจจุบัน (ดู state.loaded ใน lib/provider-usage.ts)
+  await loadProviderUsage();
 
-  const point = `${coordinates.lat},${coordinates.lng}`;
+  // ชนเพดานรายวัน → หยุดยิง ตอบ 404 เหมือนตอนสวิตช์ปิด
+  //
+  // เพดานที่หยุดไม่ได้ก็ไม่ใช่เพดาน · แผนที่เป็นของประกอบ ไม่ใช่ฟังก์ชันหลัก
+  // หน้าเว็บยังใช้ได้ครบทุกอย่างเมื่อไม่มีภาพ (การ์ดจะแสดงชื่อสถานที่แทน)
+  if (isExhausted(PROVIDER)) {
+    console.warn(
+      `[map] ชนเพดานรายวันแล้ว หยุดยิง Google จนกว่าจะขึ้นรอบใหม่ (${PROVIDER})`,
+    );
+    return errorResponse(404);
+  }
+
+  // ปัดพิกัดก่อนส่งไป Google — พิกัดที่ต่างกันไม่ถึง 11 เมตรจะได้ URL เดียวกัน
+  // ทำให้ cache ทำงานจริงและปิดช่องหลบ cache ไปพร้อมกัน
+  const point = `${roundCoordinate(coordinates.lat)},${roundCoordinate(coordinates.lng)}`;
   const url = new URL(STATIC_MAP_ENDPOINT);
   url.searchParams.set("center", point);
   url.searchParams.set("zoom", zoom);
@@ -123,6 +181,17 @@ export async function GET(request: Request) {
   // หมุดสีเดียวกับตราประทับในธีม (--color-seal) ให้แผนที่กลมกลืนกับหน้าเว็บ
   url.searchParams.set("markers", `color:0xa8342a|${point}`);
   url.searchParams.set("key", apiKey);
+
+  // ⚠️ นับ **ก่อน** ยิง และนับทุกครั้งที่ยิง รวมถึงครั้งที่ล้ม
+  //
+  // ยิงแล้ว error = Google รับ request ไปแล้ว = จ่ายไปแล้ว · การนับเฉพาะครั้งที่
+  // สำเร็จคือการนับขาด ซึ่งเป็นบั๊กชนิดเดียวกับที่เพิ่งแก้ในไปรษณีย์ไทย
+  //
+  // await ไว้โดยตั้งใจ ไม่ยิงทิ้ง — countProviderCall อ่านยอดจากฐานข้อมูลกลับมา
+  // ใช้เป็นตัวจริง ซึ่งเป็นกลไกที่ทำให้หลาย instance นับตรงกัน การยิงทิ้งจะเสีย
+  // คุณสมบัตินั้นไปด้วย ไม่ใช่แค่เสี่ยงตกหล่น · ราคาคือหนึ่ง round-trip ต่อ
+  // cache miss ซึ่งน้อยมากเทียบกับ round-trip ไป Google ที่กำลังจะเกิดถัดไป
+  await countProviderCall(PROVIDER);
 
   let upstream: Response;
   try {
@@ -148,11 +217,12 @@ export async function GET(request: Request) {
     return errorResponse(502);
   }
 
-  return new NextResponse(upstream.body, {
-    status: 200,
-    headers: {
-      "Content-Type": contentType,
-      "Cache-Control": CACHE_CONTROL,
-    },
-  });
+  // ⚠️ อ่านเป็นก้อนก่อน เพราะต้องเก็บลง cache ด้วย — stream ใช้ได้ครั้งเดียว
+  const body = new Uint8Array(await upstream.arrayBuffer());
+
+  // ถึงตรงนี้ได้แปลว่า 200 และเป็นรูปจริง — เก็บได้อย่างปลอดภัย
+  // (error ทุกชนิดถูก return ออกไปหมดแล้วข้างบน จึงไม่มีทางเข้ามาถึงบรรทัดนี้)
+  rememberMapImage(cacheKey, { body, contentType });
+
+  return imageResponse(body, contentType);
 }

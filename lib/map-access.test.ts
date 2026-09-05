@@ -103,18 +103,30 @@ test("ปิดแล้วต้องตอบ 404 ไม่ใช่ 403", ()
   assert.doesNotMatch(ROUTE, /errorResponse\(403\)/);
 });
 
-test("⚠️ ชั้นที่ 2 ยังไม่มี — ด่านนี้ปิดรูได้เพราะสวิตช์ปิด ไม่ใช่เพราะรูถูกอุด", () => {
-  // เทสต์ตัวนี้ไม่ได้ตรวจโค้ด แต่เป็นบันทึกที่รันได้: ถ้าวันหนึ่งมีคนเปิด
-  // map_enabled กลับมาโดยยังไม่มีชั้นที่ 2 ครบ รูจะเปิดกลับทันที
+test("ชั้นที่ 2 ต้องอยู่ครบ — ด่านสวิตช์อย่างเดียวไม่ได้อุดรู", () => {
+  // เทสต์ตัวนี้แทนที่ตัวเดิมที่เคยเฝ้าว่า "ชั้นที่ 2 ยังไม่มี" · ตอนนี้มีแล้ว
+  // หน้าที่จึงกลับด้าน: เฝ้าไม่ให้ใครถอดออก
   //
-  // ชั้นที่ 2 = จำกัดพิกัดในกรอบไทย + ปัดพิกัดให้ cache ทำงาน + ตัวนับ + เพดานรายวัน
-  const hasThailandBound = /isInThailand|outsideThailand/.test(ROUTE);
-  const hasRounding = /toFixed\(4\)|roundCoordinate/.test(ROUTE);
-  const hasQuota = /countProviderCall|isExhausted/.test(ROUTE);
-
-  assert.equal(
-    [hasThailandBound, hasRounding, hasQuota].every(Boolean),
-    false,
-    "ถ้าชั้นที่ 2 ครบแล้ว ให้ลบเทสต์ตัวนี้ทิ้งและอัปเดตคอมเมนต์ใน lib/map-access.ts",
+  // ด่านสวิตช์ปิดรูได้เพราะสวิตช์ปิดอยู่ ไม่ใช่เพราะรูถูกอุด — ถ้าเปิด
+  // map_enabled โดยไม่มีสามอย่างนี้ รูจะเปิดกลับทันที
+  assert.match(
+    ROUTE,
+    /coordinates\.outsideThailand/,
+    "ต้องปฏิเสธพิกัดนอกกรอบไทย ไม่งั้นใครก็ขยับพิกัดหลบ cache ได้ไม่จำกัด",
+  );
+  assert.match(
+    ROUTE,
+    /roundCoordinate\(/,
+    "ต้องปัดพิกัดก่อนส่ง Google ไม่งั้น cache แทบไม่มีทาง hit",
+  );
+  assert.match(
+    ROUTE,
+    /isExhausted\(PROVIDER\)/,
+    "ต้องมีเพดานรายวัน — เพดานที่หยุดไม่ได้ก็ไม่ใช่เพดาน",
+  );
+  assert.match(
+    ROUTE,
+    /await countProviderCall\(PROVIDER\)/,
+    "ต้องนับทุกครั้งที่ยิงจริง",
   );
 });

@@ -48,6 +48,7 @@ import {
   readWindowDays,
 } from "@/lib/admin-window";
 import { standingQuotaWarnings } from "@/lib/health-check";
+import { MAX_IMAGES, mapCacheStats } from "@/lib/map-cache";
 import {
   readErrorBreakdown,
   readInstallPromptStats,
@@ -241,6 +242,10 @@ export default async function AdminStatsPage(props: {
   // เจ้าที่ใกล้ชนเพดานและโควตาไม่มีวันรีเซ็ต — กลุ่มที่ monitor ไม่มีทางเตือนได้
   // (ดู app/api/health/quota/route.ts) หน้านี้จึงเป็นที่เดียวที่บอกได้
   const standingQuota = standingQuotaWarnings();
+
+  // ⚠️ อ่านจากหน่วยความจำของโปรเซสนี้ ไม่ใช่ฐานข้อมูล — เป็นยอดตั้งแต่ deploy
+  // ล่าสุด และจะเป็น 0 ทั้งหมดทันทีหลัง restart ซึ่งถูกต้องตามธรรมชาติของมัน
+  const mapCache = mapCacheStats();
 
   const [
     members,
@@ -791,6 +796,45 @@ export default async function AdminStatsPage(props: {
               })}
             </div>
 
+            {/* cache ของภาพแผนที่ — วางคู่กับการ์ดโควตาโดยตั้งใจ
+                เพราะมันคือตัวเลขที่อธิบายว่าทำไมโควตา Google แผนที่ถึงต่ำ
+                (หรือทำไมถึงสูงกว่าที่ควร)
+
+                ⚠️ ตัวเลขนี้คือข้อมูลที่จะใช้ปรับเพดาน 500/วันหลังเปิด map จริง
+                หนึ่งสัปดาห์ · สมมติฐานทั้งหมดที่ใช้ตั้งเพดาน ("สาขาซ้ำกันเยอะ",
+                "ผู้ใช้ปกติจะไม่ชนเพดาน") ยังไม่มีข้อมูลรองรับเลย ถ้าไม่มีตัวนี้
+                เราจะกลับไปเดาอีกรอบ
+
+                รีเซ็ตตอน restart เหมือนตัว cache เอง — เป็นยอดสะสมตั้งแต่ deploy
+                ล่าสุด ไม่ใช่ยอดตลอดกาล */}
+            {mapCache.hits + mapCache.misses > 0 && (
+              <div className="mt-4 rounded-xl border border-line bg-white/60 p-4">
+                <p className="text-xs text-faint">
+                  cache ภาพแผนที่ (ตั้งแต่ deploy ล่าสุด)
+                </p>
+                <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <Tile
+                    label="ประหยัดได้"
+                    value={percent(
+                      mapCache.hits,
+                      mapCache.hits + mapCache.misses,
+                    )}
+                    hint={`${count(mapCache.hits)} ครั้งที่ไม่ต้องจ่าย Google`}
+                  />
+                  <Tile
+                    label="ยิง Google จริง"
+                    value={count(mapCache.misses)}
+                  />
+                  <Tile label="ภาพที่เก็บอยู่" value={count(mapCache.stored)} />
+                  <Tile
+                    label="เพดานที่เก็บได้"
+                    value={count(MAX_IMAGES)}
+                    hint="ทิ้งภาพที่ไม่ได้ใช้นานที่สุดเมื่อเต็ม"
+                  />
+                </div>
+              </div>
+            )}
+
             {/* ⚠️ เจ้าที่โควตาไม่มีวันรีเซ็ตและใกล้ชนเพดานแล้ว
                 ต้องเด่นตรงนี้ เพราะมันไม่มีทางไปโผล่ใน monitor ได้เลย —
                 /api/health/quota ตอบ 503 เฉพาะเจ้าที่รอบบิลรีเซ็ตได้ ส่วนเจ้า
@@ -1023,7 +1067,23 @@ export default async function AdminStatsPage(props: {
                   <>
                     {" "}
                     — จ่ายโควตา ETrackings ไปแล้วโดยยังไม่ได้อะไรกลับมา
-                    ปัญหาอยู่ที่ขั้นแปลงที่อยู่เป็นพิกัด ไม่ใช่ที่การยิง
+                    <br />
+                    {/* ⚠️ ถ้อยคำต้องตรงกับหลักฐาน ไม่ใช่กว้างๆ ว่า "ขั้น geocode
+                        มีปัญหา" · ของจริง: geocode_cache 7 แถว found=true ทุกแถว
+                        แปลว่า Google หาพิกัดเจอทุกครั้ง แต่ถูกด่านความแม่นยำ
+                        ปฏิเสธเพราะเป็นพิกัดระดับพื้นที่ ไม่ใช่ของอาคาร
+
+                        ข้อสังเกตที่ยังไม่ได้แก้ (harvest ปิดอยู่แล้ว):
+                        log แสดง radius=82m ก็ยังถูกปฏิเสธ ทั้งที่เกณฑ์ระยะคือ
+                        ≤150m = แม่น → แปลว่าโดนด่าน types[] ไม่ใช่ด่านระยะ
+                        ซึ่งบ่งชี้ว่าที่อยู่ที่ส่งไปเป็นชื่อตำบล/พื้นที่ ไม่ใช่
+                        ที่อยู่สาขาจริง — วนกลับไปหาบั๊ก cleanBranchAddress
+                        ที่รวมที่อยู่ต้นทางกับปลายทางเป็นก้อนเดียว */}
+                    Google หาพิกัดเจอทุกครั้ง แต่ได้มาเป็นพิกัด
+                    <span className="text-ink">ระดับพื้นที่ ไม่ใช่ของอาคาร</span>{" "}
+                    จึงถูกปฏิเสธตามเกณฑ์ความแม่นยำ — ปัญหาอยู่ที่
+                    <span className="text-ink">ที่อยู่ที่ส่งไปให้ Google</span>{" "}
+                    ไม่ใช่ที่การยิง ETrackings และไม่ใช่ที่ Google
                   </>
                 )}
               </p>
