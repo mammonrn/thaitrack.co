@@ -225,7 +225,15 @@ export type TrackingErrorCode =
   | "rate_limited"
   | "network_error"
   | "upstream_error"
-  | "config_error";
+  | "config_error"
+  /**
+   * เกินเพดานเวลารวมของคำขอ (ดู lib/request-deadline.ts)
+   *
+   * ต่างจาก network_error ตรงที่ **เราเป็นคนตัดเอง** ไม่ใช่ปลายทางเงียบ —
+   * ต้องแยกให้ออกในสถิติ ไม่งั้นจะอ่านไม่ออกว่าตัวเลขที่เห็นคือขนส่งแย่ลง
+   * หรือเพดานที่เราตั้งไว้สั้นเกินไป
+   */
+  | "timeout";
 
 /**
  * error ที่ระบุสาเหตุได้ พร้อมข้อความไทยสำหรับโชว์ผู้ใช้

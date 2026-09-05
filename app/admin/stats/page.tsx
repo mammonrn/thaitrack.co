@@ -322,6 +322,7 @@ export default async function AdminStatsPage() {
       total: recent.total,
       found: recent.found,
       notFound: recent.notFound,
+      notFoundCached: recent.notFoundCached,
       error: recent.error,
       fromCache: recent.fromCache,
       fromApi: recent.fromApi,
@@ -483,7 +484,14 @@ export default async function AdminStatsPage() {
               <Tile
                 label="ค้นไม่เจอ"
                 value={percent(recent.notFound, answered)}
-                hint={`${count(recent.notFound)} ครั้ง`}
+                hint={
+                  // แยกให้เห็นว่าในจำนวนนี้กี่ครั้งที่ตอบจากความจำโดยไม่ยิงขนส่ง
+                  // — เป็นตัวเลขเดียวที่บอกได้ว่า cache ของคำตอบ "ไม่พบ"
+                  // ช่วยได้จริงแค่ไหน (ดู lib/not-found-cache.ts)
+                  recent.notFoundCached === 0
+                    ? `${count(recent.notFound)} ครั้ง`
+                    : `${count(recent.notFound)} ครั้ง · ตอบจาก cache ${count(recent.notFoundCached)}`
+                }
               />
               <Tile
                 label="cache hit rate"

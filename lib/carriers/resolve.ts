@@ -67,7 +67,10 @@ import {
   rememberTracking,
   type CacheSource,
 } from "../tracking-cache";
+import { lookupNotFound, rememberNotFound } from "../not-found-cache";
+import { Deadline, deadlineError } from "../request-deadline";
 import { courierFromPrefix } from "./courier-prefix";
+import { normalizeTrackingNumber } from "./tracking-number";
 import { etrackings, isConfigured as isBackupConfigured } from "./etrackings";
 import { thailandPost } from "./thailand-post";
 import { track123 } from "./track123";
@@ -118,6 +121,14 @@ export interface ResolveOptions {
   backup?: CarrierAdapter | null;
   /** true = ข้าม cache แล้วยิง API สดๆ (ยังบันทึกผลลง cache ตามปกติ) */
   skipCache?: boolean;
+  /**
+   * เพดานเวลารวมของคำขอนี้ (ค่าเริ่มต้น: 10 วินาที ดู lib/request-deadline.ts)
+   *
+   * รับเข้ามาได้เพื่อให้เทสต์ตั้งเพดานสั้นๆ ได้โดยไม่ต้องรอจริงสิบวินาที และ
+   * เผื่องานเบื้องหลัง (เช่นการรีเฟรชหลายใบพร้อมกัน) ที่อาจอยากได้เพดานต่างไป
+   * จากคำขอที่มีคนนั่งรอหน้าจออยู่
+   */
+  deadline?: Deadline;
   /** ชั้น cache ถาวร (ค่าเริ่มต้น: ตาราง tracking_cache ใน Supabase) */
   persistentCache?: PersistentTrackingCache;
   /**
@@ -203,12 +214,37 @@ const DEGRADE_ON: ReadonlySet<TrackingErrorCode> = new Set([
   "upstream_error",
   "auth_failed",
   "config_error",
+  // หมดเวลาที่เราตั้งไว้ ไม่ใช่คำตอบเกี่ยวกับพัสดุ — ถ้ามีของเก่าอยู่ต้องเอามา
+  // ตอบพร้อมป้ายบอกเวลา ดีกว่าให้ผู้ใช้ได้หน้าจอเปล่าทั้งที่เรามีของอยู่ในมือ
+  "timeout",
 ]);
 
-/** ตัดช่องว่างกับขีด และทำเป็นตัวพิมพ์ใหญ่ ใช้เป็นรูปแบบมาตรฐานของทั้งระบบ */
-export function normalizeTrackingNumber(input: string): string {
-  return (input ?? "").replace(/[\s-]/g, "").toUpperCase();
+/**
+ * สร้าง error "ไม่พบเลขนี้" — จุดเดียวที่นิยามข้อความที่ผู้ใช้เห็น
+ *
+ * มีสองทางที่ไปถึงคำตอบนี้ได้ (ยิงครบทุกเจ้าแล้วไม่เจอ กับตอบซ้ำจาก cache)
+ * ทั้งสองทางต้องให้ผู้ใช้เห็นข้อความเดียวกันเป๊ะ ไม่งั้นจะกลายเป็นว่าเลขเดียวกัน
+ * ให้คำตอบต่างกันขึ้นกับว่าบังเอิญตกอยู่ในช่วง 10 นาทีของ cache หรือไม่
+ */
+function notFoundError(
+  normalized: string,
+  init?: { debugMessage: string },
+): CarrierError {
+  return new CarrierError(
+    "not_found",
+    "ไม่พบข้อมูลเลขพัสดุนี้ในระบบขนส่งที่รองรับ กรุณาตรวจสอบเลขพัสดุอีกครั้ง",
+    init ?? { debugMessage: `ไม่พบเลข ${normalized} (ตอบจาก cache)` },
+  );
 }
+
+/**
+ * ตัดช่องว่างกับขีด และทำเป็นตัวพิมพ์ใหญ่ ใช้เป็นรูปแบบมาตรฐานของทั้งระบบ
+ *
+ * ตัวจริงอยู่ที่ ./tracking-number เพราะฝั่งเบราว์เซอร์ต้องใช้ด้วย แต่ import
+ * ไฟล์นี้ไม่ได้ (ดูเหตุผลในไฟล์นั้น) · re-export ไว้ให้ผู้เรียกเดิมทั้งหมด
+ * ทำงานต่อได้เหมือนเดิมทุกประการ
+ */
+export { normalizeTrackingNumber };
 
 /** บันทึกผลที่เพิ่งยิงมาได้ลง cache ทั้งสองชั้น แล้วส่งต่อ */
 async function store(
@@ -275,6 +311,37 @@ export function isUnknownCourierFailure(error: unknown): boolean {
 }
 
 /**
+ * "ไม่พบเลขนี้" ที่ตอบจาก cache ไม่ได้ไปถามขนส่งใหม่
+ *
+ * เป็น subclass ของ CarrierError โดยมี code เป็น not_found เหมือนกันเป๊ะ ทุกที่
+ * ที่เช็ค `error.code === "not_found"` อยู่แล้วจึงทำงานเหมือนเดิมทุกประการ และ
+ * ผู้ใช้เห็นข้อความเดียวกัน — สิ่งที่ต่างมีอย่างเดียวคือธงที่ /api/track อ่านไป
+ * บันทึกสถิติ
+ *
+ * ต้องแยกให้ออก ไม่งั้นวัดไม่ได้ว่า cache นี้ช่วยได้จริงแค่ไหน: ถ้านับรวมกันหมด
+ * ตัวเลข not_found บนหน้าสถิติจะเท่าเดิมทุกประการไม่ว่า cache จะทำงานหรือไม่
+ */
+export class CachedNotFoundError extends CarrierError {
+  readonly fromCache = true as const;
+
+  constructor(source: CarrierError) {
+    super(source.code, source.userMessage, {
+      debugMessage: source.message,
+    });
+    this.name = "CachedNotFoundError";
+  }
+}
+
+/**
+ * คำตอบ "ไม่พบ" นี้มาจาก cache ไม่ใช่จากการยิงจริงหรือเปล่า
+ *
+ * ผู้เรียก (/api/track) ใช้บันทึกลงสถิติเป็น source = memory แทน error
+ */
+export function isNotFoundFromCache(error: unknown): boolean {
+  return error instanceof CachedNotFoundError;
+}
+
+/**
  * ยิงหนึ่งครั้งแล้วบอกว่า "เจอ" หรือ "ไม่พบ"
  *
  * error ที่ไม่ใช่ "ไม่พบ" ถูกโยนต่อขึ้นไปทันที เพราะภายในเจ้าเดียวกัน ถ้าขั้นแรก
@@ -323,6 +390,53 @@ async function attemptOrSkip(
   }
 }
 
+/** ผลของขั้น "ยิงซ้ำโดยระบุขนส่งเจาะจง" */
+interface CourierRetryOutcome {
+  result: TrackingResult | null;
+  /** เจ้าที่ยิงไปจริงในขั้นนี้ ตามลำดับ */
+  codes: string[];
+  /** true = หยุดกลางคันเพราะหมดเวลา ไม่ใช่เพราะลองครบแล้วไม่เจอ */
+  cut: boolean;
+}
+
+/**
+ * บันทึกผลของขั้นยิงซ้ำ — มีไว้ตอบคำถามที่ตัดสินใจไม่ได้ถ้าไม่มีตัวเลข
+ *
+ * คำถามคือ **ควรลด MAX_COURIER_RETRIES จาก 3 ลงไหม** ขั้นนี้กินโควตาได้ถึง
+ * 3 ครั้งต่อการค้นหนึ่งครั้ง แต่ถ้ามันช่วยกู้พัสดุที่ auto-detect เดาผิดได้จริง
+ * ก็คุ้ม · ตัวเลขที่ต้องรู้มีสองตัว: กี่ % ที่ขั้นนี้กู้ได้ และกู้ได้ที่ครั้งที่เท่าไร
+ * ถ้าเกือบทั้งหมดสำเร็จที่ครั้งแรก เพดาน 3 ก็ลดเหลือ 1 ได้ทันที
+ *
+ * ตั้งใจ log แทนการเก็บลงตาราง เพราะเป็นคำถามที่ถามครั้งเดียวแล้วจบ (เก็บ
+ * ~2 สัปดาห์แล้วตัดสินใจ) การเพิ่มคอลัมน์ถาวรให้คำถามชั่วคราวไม่คุ้ม
+ *
+ * นับจาก log ด้วยคำสั่งเดียว:
+ *   pm2 logs --lines 20000 --nostream | grep -c "\[retry-courier\].*outcome=hit"
+ *   pm2 logs --lines 20000 --nostream | grep -o "\[retry-courier\].*hitAt=[0-9]*" | grep -o "hitAt=[0-9]*" | sort | uniq -c
+ *
+ * ⚠️ เลขพัสดุที่ปรากฏใน log อยู่แค่ในไฟล์ log ฝั่งเซิร์ฟเวอร์เหมือน log
+ * [resolve] ที่มีอยู่เดิมทุกประการ ไม่ได้ถูกเก็บลงตารางสถิติ (ดูข้อบังคับ
+ * ความเป็นส่วนตัวใน lib/supabase/search-events.ts)
+ */
+function logCourierRetries(
+  trackingNumber: string,
+  codes: readonly string[],
+  outcome: "hit" | "miss" | "cut",
+  hitAt: number | null,
+  startedAt: number,
+): void {
+  // ไม่ได้ยิงเลยสักครั้ง = ขั้นนี้ไม่ได้ทำงาน ไม่ต้องมีบรรทัดใน log ให้รก
+  if (codes.length === 0 && outcome !== "cut") return;
+
+  console.info(
+    `[retry-courier] no=${trackingNumber} outcome=${outcome}` +
+      ` attempts=${codes.length}` +
+      (hitAt === null ? "" : ` hitAt=${hitAt} code=${codes[hitAt - 1]}`) +
+      ` tried=${codes.join(",") || "-"}` +
+      ` tookMs=${Date.now() - startedAt}`,
+  );
+}
+
 /**
  * ลองยิงซ้ำโดยระบุขนส่งเจาะจงทีละเจ้า จนกว่าจะเจอหรือครบเพดาน
  *
@@ -333,11 +447,14 @@ async function retryWithCourierCodes(
   trackingNumber: string,
   adapter: CarrierAdapter,
   alreadyTried: readonly string[],
+  deadline: Deadline,
   /** ขนส่งที่หน้า landing บอกใบ้มา — ลองก่อนรายการมาตรฐาน */
   preferred?: string,
-): Promise<{ result: TrackingResult | null; codes: string[] }> {
+): Promise<CourierRetryOutcome> {
   const trackWithCourier = adapter.trackWithCourier;
-  if (trackWithCourier === undefined) return { result: null, codes: [] };
+  if (trackWithCourier === undefined) {
+    return { result: null, codes: [], cut: false };
+  }
 
   // ใบ้จากหน้ามาก่อนเสมอ เพราะเจาะจงกว่ารายการกลางที่เรียงตาม "เจอปัญหาบ่อย"
   // แต่ยังอยู่ใต้เพดานเดียวกัน จึงไม่ทำให้การค้นหนึ่งครั้งกิน quota เพิ่ม
@@ -351,17 +468,29 @@ async function retryWithCourierCodes(
     .slice(0, MAX_COURIER_RETRIES);
 
   const codes: string[] = [];
+  const startedAt = Date.now();
 
   for (const courierCode of candidates) {
+    // หมดเวลาแล้วอย่าเริ่มยิงครั้งใหม่ — การยิงที่เริ่มตอนเหลือเวลา 200 ms คือ
+    // การจ่ายโควตาซื้อคำตอบที่ไม่มีทางได้ใช้ทัน (ดู lib/request-deadline.ts)
+    if (deadline.expired()) {
+      logCourierRetries(trackingNumber, codes, "cut", null, startedAt);
+      return { result: null, codes, cut: true };
+    }
+
     codes.push(courierCode);
 
     const result = await attempt(() =>
       trackWithCourier.call(adapter, trackingNumber, courierCode),
     );
-    if (result !== null) return { result, codes };
+    if (result !== null) {
+      logCourierRetries(trackingNumber, codes, "hit", codes.length, startedAt);
+      return { result, codes, cut: false };
+    }
   }
 
-  return { result: null, codes };
+  logCourierRetries(trackingNumber, codes, "miss", null, startedAt);
+  return { result: null, codes, cut: false };
 }
 
 /** ทางลัดยิงตรงไปหาขนส่งที่ prefix ฟันธงแล้ว */
@@ -488,6 +617,7 @@ async function resolveFresh(
   courierHint: string | undefined,
   courierStore: TrackingCourierStore,
   pageCourierHint: string | undefined,
+  deadline: Deadline,
 ): Promise<FreshResult> {
   // เจ้าที่ยิงไปแล้ว ไว้กันไม่ให้ขั้นถัดไปถามซ้ำคำถามเดิม และไว้อธิบายใน log
   const tried: string[] = [];
@@ -554,7 +684,16 @@ async function resolveFresh(
   const errors = new Map<PaidProvider, CarrierError>();
   let fallbackSaidNotFound = false;
 
+  let cutByDeadline = false;
+
   for (const slot of order) {
+    // อย่าเริ่มถามเจ้าถัดไปเมื่อเวลาหมดแล้ว — เจ้าที่สองมักเป็นตัวที่ทำให้
+    // เวลารวมพุ่ง เพราะมันเริ่มนับหนึ่งใหม่หลังเจ้าแรกใช้เวลาไปแล้วทั้งก้อน
+    if (deadline.expired()) {
+      cutByDeadline = true;
+      break;
+    }
+
     try {
       const found =
         slot === "backup"
@@ -564,6 +703,7 @@ async function resolveFresh(
               fallback,
               shortcut,
               tried,
+              deadline,
               pageCourierHint,
             );
 
@@ -582,10 +722,25 @@ async function resolveFresh(
     } catch (error) {
       const carrierError = toCarrierError(error);
       errors.set(slot, carrierError);
+      if (carrierError.code === "timeout") cutByDeadline = true;
       console.warn(
         `[resolve] ${slot} ช่วยไม่ได้ (${carrierError.code}): ${carrierError.message}`,
       );
     }
+  }
+
+  // ถูกตัดเพราะหมดเวลา และยังไม่มีเจ้าไหนฟันธงว่า "ไม่มีเลขนี้"
+  //
+  // ต้องเช็คก่อนทุกกรณีข้างล่าง เพราะทั้งสองทางข้างล่างจะสรุปเป็นคำตอบเกี่ยวกับ
+  // ตัวพัสดุ (ไม่พบ / ขนส่งพัง) ทั้งที่ความจริงคือเราเป็นคนหยุดถามเอง
+  if (cutByDeadline && !fallbackSaidNotFound) {
+    console.warn(
+      `[resolve] no=${normalized} ตัดที่เพดานเวลา ${deadline.budgetMs} ms` +
+        ` (ใช้ไป ${deadline.elapsed()} ms)` +
+        ` — ถามไปแล้ว: ${order.join(",")}` +
+        ` ระบุขนส่งเจาะจง ${tried.length} เจ้า`,
+    );
+    throw deadlineError(deadline.elapsed());
   }
 
   // Track123 บอกว่าไม่พบ = คำตอบที่แท้จริง ต่อให้อีกเจ้าจะพังไปก่อนหน้าก็ตาม
@@ -605,21 +760,17 @@ async function resolveFresh(
   }
 
   // ไม่พบจริงๆ ทุกทาง → บอกให้ชัดว่าค้นครบแล้ว
-  throw new CarrierError(
-    "not_found",
-    "ไม่พบข้อมูลเลขพัสดุนี้ในระบบขนส่งที่รองรับ กรุณาตรวจสอบเลขพัสดุอีกครั้ง",
-    {
-      debugMessage:
-        `ไม่พบเลข ${normalized} ที่ ` +
-        (shortcut === null
-          ? `${primary.carrierCode} และ ${fallback.carrierCode}`
-          : `${fallback.carrierCode} (ข้าม ${primary.carrierCode} เพราะ prefix ชี้ว่าเป็น ${shortcut.courierCode})`) +
-        ` — ลำดับที่ใช้: ${order.join(", ")}` +
-        (tried.length === 0
-          ? ""
-          : ` — ระบุขนส่งเจาะจงแล้ว ${tried.length} เจ้า: ${tried.join(", ")}`),
-    },
-  );
+  throw notFoundError(normalized, {
+    debugMessage:
+      `ไม่พบเลข ${normalized} ที่ ` +
+      (shortcut === null
+        ? `${primary.carrierCode} และ ${fallback.carrierCode}`
+        : `${fallback.carrierCode} (ข้าม ${primary.carrierCode} เพราะ prefix ชี้ว่าเป็น ${shortcut.courierCode})`) +
+      ` — ลำดับที่ใช้: ${order.join(", ")}` +
+      (tried.length === 0
+        ? ""
+        : ` — ระบุขนส่งเจาะจงแล้ว ${tried.length} เจ้า: ${tried.join(", ")}`),
+  });
 }
 
 /**
@@ -677,12 +828,20 @@ async function runFallback(
   fallback: CarrierAdapter,
   shortcut: PrefixShortcut | null,
   tried: string[],
+  deadline: Deadline,
   pageCourierHint?: string,
 ): Promise<TrackingResult | null> {
   if (shortcut !== null) {
     const byPrefix = await attempt(shortcut.track);
     if (byPrefix !== null) return byPrefix;
   }
+
+  // หมดเวลาหลังยิงตาม prefix → หยุด แต่ต้องโยน timeout ไม่ใช่คืน null
+  //
+  // ⚠️ จุดนี้สำคัญที่สุดของทั้งเรื่อง: คืน null แปลว่า "ถามครบแล้วไม่มี" ซึ่ง
+  // ผู้เรียกจะแปลงเป็น not_found แล้วเราจะเก็บคำตอบผิดนั้นลง cache 10 นาที
+  // และบอกผู้ใช้ว่าพัสดุเขาไม่มีอยู่จริง ทั้งที่เราแค่รอไม่ไหวเอง
+  if (deadline.expired()) throw deadlineError(deadline.elapsed());
 
   // ยังไม่เจอ → ให้ Track123 ตรวจจับขนส่งเอง
   // ยังต้องลองขั้นนี้แม้ prefix จะพลาด เพราะพัสดุข้ามประเทศอาจเปลี่ยนมือไปให้
@@ -697,9 +856,16 @@ async function runFallback(
     normalized,
     fallback,
     tried,
+    deadline,
     pageCourierHint,
   );
   tried.push(...retried.codes);
+
+  // ถูกตัดกลางคัน = ยังถามไม่ครบ จึงสรุปว่า "ไม่มี" ไม่ได้ (เหตุผลเดียวกับข้างบน)
+  if (retried.result === null && retried.cut) {
+    throw deadlineError(deadline.elapsed());
+  }
+
   return retried.result;
 }
 
@@ -748,6 +914,26 @@ export async function resolveTracking(
     };
   }
 
+  // เพิ่งถามเลขนี้ไปแล้วและไม่มีขนส่งเจ้าไหนรู้จัก → ตอบซ้ำจากความจำ
+  //
+  // ตรวจหลัง cache ของผลที่เจอโดยตั้งใจ: ถ้ามีผลจริงที่ยังไม่หมดอายุอยู่ ผลนั้น
+  // ต้องชนะเสมอ (เกิดได้เมื่อพัสดุขึ้นระบบระหว่างที่คำตอบ "ไม่พบ" ยังไม่หมดอายุ
+  // แล้วมีคำขออีกทางเขียนผลจริงลง cache ไว้)
+  //
+  // skipCache ข้ามด่านนี้ด้วย เพราะคำว่า "ไม่เอาของใน cache" ต้องหมายถึงของทุก
+  // ชนิดใน cache ไม่งั้นจะกลายเป็นว่าข้ามได้เฉพาะของที่เจอ
+  if (!options.skipCache) {
+    const negative = lookupNotFound(normalized);
+    if (negative !== null) {
+      console.info(
+        `[resolve] no=${normalized} not_found จาก cache` +
+          ` (อายุ ${Math.round((Date.now() - negative.recordedAt) / 1000)} วิ)` +
+          " — ไม่ยิงขนส่ง",
+      );
+      throw new CachedNotFoundError(notFoundError(normalized));
+    }
+  }
+
   // เลขเดียวกันที่กำลังรอผลอยู่ให้เกาะคำขอเดิม — cache ช่วยตรงนี้ไม่ได้ เพราะผล
   // ยังไม่ถูกบันทึกจนกว่าคำขอแรกจะเสร็จ ช่วงที่คำขอแรกกำลังบินคือช่องว่างที่
   // คนกดปุ่มรัวหรือคนละคนที่ค้นเลขเดียวกันจะหลุดออกไปยิงซ้ำได้
@@ -762,6 +948,11 @@ export async function resolveTracking(
   const courierHint =
     (await courierStore.read(normalized)) ?? cached?.entry.result.carrierCode;
 
+  // นาฬิกาเริ่มเดินตรงนี้ ไม่ใช่ตอนคำขอ HTTP เข้ามา — ส่วนที่อยู่ก่อนหน้านี้
+  // (ตรวจรูปแบบเลข, อ่าน cache) ไม่เคยเป็นสาเหตุที่ทำให้ช้า และการนับรวมจะทำให้
+  // เพดานสั้นลงโดยไม่ได้ตั้งใจในวันที่ Supabase ตอบช้า
+  const deadline = options.deadline ?? new Deadline();
+
   const run = inflightResolves.start(normalized, () =>
     resolveFresh(
       normalized,
@@ -772,11 +963,15 @@ export async function resolveTracking(
       courierHint,
       courierStore,
       options.pageCourierHint,
+      deadline,
     ),
   );
 
   try {
-    const fresh = await run.promise;
+    // race คือชั้นบังคับ: ต่อให้การยิงที่ค้างอยู่ไม่ยอมจบ ผู้ใช้ก็ได้คำตอบที่
+    // 10 วินาที · งานที่ค้างวิ่งต่อจนเสร็จแล้วเขียนลง cache ตามปกติ คนที่กด
+    // ค้นซ้ำจะได้ของทันที (ดูเหตุผลเต็มที่ lib/request-deadline.ts)
+    const fresh = await deadline.race(run.promise);
     return {
       result: fresh.result,
       source: "api",
@@ -787,6 +982,13 @@ export async function resolveTracking(
     };
   } catch (error) {
     const carrierError = toCarrierError(error);
+
+    // ขนส่งทุกเจ้าตอบตรงกันว่าไม่รู้จักเลขนี้ → จำไว้ 10 นาที คำขอถัดไปของเลข
+    // เดียวกันจะได้ไม่ต้องวิ่งครบทั้งสายอีก (ดูเหตุผลเต็มที่ lib/not-found-cache.ts)
+    //
+    // จำหลังจาก resolveFresh จบแล้วเท่านั้น จึงไม่มีทางจำคำตอบที่ยังหาไม่ครบ
+    // ส่วนคำขอที่ไปเกาะคำขอเดิม (shared) จะเขียนค่าเดียวกันทับ ซึ่งไม่เสียหาย
+    if (carrierError.code === "not_found") rememberNotFound(normalized);
 
     // ระบบมีปัญหา แต่เรามีของเก่าอยู่ → คืนของเก่าพร้อมธง stale
     // ผู้ใช้ได้คำตอบพร้อมป้ายบอกเวลา ดีกว่าหน้าจอ error ที่ทำอะไรต่อไม่ได้เลย

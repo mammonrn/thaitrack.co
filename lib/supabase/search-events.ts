@@ -67,6 +67,22 @@ export interface SearchEventInput {
   /** ใช้เวลากี่มิลลิวินาที — ไว้ดู p50/p95 แยกตามชั้นที่ตอบ */
   tookMs?: number | null;
   /**
+   * คำขอนี้ยิงถามขนส่งจริงกี่ครั้ง (รวมทุกเจ้า ทุกการลองซ้ำ)
+   *
+   * เป็นคุณสมบัติของคำขอล้วนๆ · มีเพราะ tookMs อย่างเดียวบอกไม่ได้ว่าคำขอที่ช้า
+   * นั้นช้าเพราะยิงหลายครั้ง หรือยิงครั้งเดียวแล้วปลายทางอืด — สองอย่างนี้แก้
+   * คนละทางกันสิ้นเชิง (ดู lib/request-trace.ts)
+   */
+  upstreamCalls?: number | null;
+  /**
+   * ในเวลาทั้งหมด หมดไปกับการรอคิวฝั่งเราเท่าไร (ms)
+   *
+   * ถ้าเลขนี้กินสัดส่วนใหญ่ ทางแก้คือเพิ่ม concurrency ของคิว ซึ่งไม่มีต้นทุน
+   * ถ้าเลขนี้เกือบเป็นศูนย์ แปลว่าเวลาหมดไปกับการรอปลายทาง ทางแก้คือลดจำนวน
+   * ครั้งที่ยิง ซึ่งแลกมาด้วยอัตราการค้นเจอ — เลือกผิดคือทำให้แย่ลง
+   */
+  queueMs?: number | null;
+  /**
    * true = คำขอนี้ล้มตอนที่เหลือผู้ให้บริการเจ้าเดียว เพราะเดาไม่ออกว่าเลขนี้
    * เป็นขนส่งเจ้าไหน (ดู isUnknownCourierFailure ใน lib/carriers/resolve.ts)
    *
@@ -126,6 +142,8 @@ export async function recordSearchEvent(
       reason: input.reason ?? null,
       upstream_code: input.upstreamCode ?? null,
       took_ms: input.tookMs ?? null,
+      upstream_calls: input.upstreamCalls ?? null,
+      queue_ms: input.queueMs ?? null,
       unknown_courier: input.unknownCourier ?? false,
       tracking_shape: input.trackingShape ?? null,
     });
@@ -147,6 +165,16 @@ export interface SearchOverview {
   total: number;
   found: number;
   notFound: number;
+  /**
+   * ในจำนวน notFound ข้างบน มีกี่ครั้งที่ตอบจาก cache โดยไม่ยิงขนส่งเลย
+   *
+   * มีไว้ตอบคำถามเดียว: cache ของคำตอบ "ไม่พบ" ช่วยได้จริงแค่ไหน — ถ้าไม่แยก
+   * ตัวเลขนี้ออกมา ยอด notFound รวมจะเท่าเดิมไม่ว่า cache จะทำงานหรือไม่
+   * (ดู lib/not-found-cache.ts และ migration 0021)
+   *
+   * เป็น 0 เสมอบนฐานข้อมูลที่ยังไม่ได้รัน 0021 — toCount คืน 0 ให้ key ที่ไม่มี
+   */
+  notFoundCached: number;
   error: number;
   fromCache: number;
   fromApi: number;
@@ -157,6 +185,7 @@ const EMPTY_OVERVIEW: SearchOverview = {
   total: 0,
   found: 0,
   notFound: 0,
+  notFoundCached: 0,
   error: 0,
   fromCache: 0,
   fromApi: 0,
@@ -185,6 +214,7 @@ export async function readSearchOverview(
       total: toCount(row.total),
       found: toCount(row.found),
       notFound: toCount(row.not_found),
+      notFoundCached: toCount(row.not_found_cached),
       error: toCount(row.error),
       fromCache: toCount(row.from_cache),
       fromApi: toCount(row.from_api),

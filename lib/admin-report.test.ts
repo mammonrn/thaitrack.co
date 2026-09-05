@@ -27,6 +27,7 @@ function sample(): ReportData {
       total: 331,
       found: 177,
       notFound: 112,
+      notFoundCached: 37,
       error: 42,
       fromCache: 44,
       fromApi: 133,

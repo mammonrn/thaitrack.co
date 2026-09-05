@@ -17,6 +17,7 @@
  */
 
 import { CircuitBreaker } from "../circuit-breaker";
+import { recordUpstreamCall } from "../request-trace";
 import { countProviderCall } from "../provider-usage";
 import { RateLimitQueue, delay } from "../rate-limit-queue";
 import {
@@ -390,6 +391,10 @@ export async function callTrack123<T>(
     try {
       return await queue.run(async (call) => {
         const startedAt = Date.now();
+
+        // นับตรงนี้ ไม่ใช่ตอนเข้าคิว — ถึงตรงนี้แปลว่ากำลังจะมี request ออกจาก
+        // เครื่องจริง ส่วนที่ถูกปฏิเสธไปก่อนหน้า (breaker เปิด) ไม่นับ
+        recordUpstreamCall({ queueMs: call.waitedMs });
 
         const write = (result: string, upstream?: string) => {
           log(
