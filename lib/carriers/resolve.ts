@@ -438,6 +438,32 @@ function logCourierRetries(
 }
 
 /**
+ * บันทึกผลของขั้น "ยิงเจาะจงก่อนตามที่จำไว้"
+ *
+ * ตอบสองคำถามที่ต้องรู้ว่าการสลับลำดับได้ผลจริงไหม:
+ *   hit  = ยิงเจาะจงแล้วจบเลย ไม่ต้องแตะ auto-detect ที่ล้มบ่อย
+ *   miss = ความจำผิด ต้องตกไป auto-detect อยู่ดี (และเราลบความจำทิ้งแล้ว)
+ *
+ * นับจาก log ด้วยคำสั่งเดียว:
+ *   pm2 logs --lines 20000 --nostream | grep -c "\[courier-first\] .*outcome=hit"
+ *   pm2 logs --lines 20000 --nostream | grep -c "\[courier-first\] .*outcome=miss"
+ *
+ * ใช้ log แทนคอลัมน์ในตาราง เพราะเป็นคำถามที่ถามช่วงหนึ่งแล้วจบ เหมือน
+ * [retry-courier] · ส่วนผลรวมที่วัดจริงคืออัตรา upstream_error ซึ่งดูได้จาก
+ * ปุ่มเลือกช่วงเวลาบนหน้าสถิติอยู่แล้ว
+ */
+function logCourierFirst(
+  trackingNumber: string,
+  courierCode: string,
+  outcome: "hit" | "miss",
+): void {
+  console.info(
+    `[courier-first] no=${trackingNumber} courier=${courierCode} outcome=${outcome}` +
+      (outcome === "miss" ? " — ลบความจำทิ้งแล้ว" : ""),
+  );
+}
+
+/**
  * ลองยิงซ้ำโดยระบุขนส่งเจาะจงทีละเจ้า จนกว่าจะเจอหรือครบเพดาน
  *
  * `alreadyTried` คือเจ้าที่ยิงไปแล้วในขั้นก่อนหน้า (เช่นเจ้าที่เดาจาก prefix)
@@ -704,6 +730,8 @@ async function resolveFresh(
               shortcut,
               tried,
               deadline,
+              courierHint,
+              courierStore,
               pageCourierHint,
             );
 
@@ -829,11 +857,64 @@ async function runFallback(
   shortcut: PrefixShortcut | null,
   tried: string[],
   deadline: Deadline,
+  /** ขนส่งที่ยืนยันแล้วจากครั้งก่อน (ตาราง tracking_couriers) */
+  knownCourier: string | undefined,
+  courierStore: TrackingCourierStore,
   pageCourierHint?: string,
 ): Promise<TrackingResult | null> {
   if (shortcut !== null) {
     const byPrefix = await attempt(shortcut.track);
     if (byPrefix !== null) return byPrefix;
+  }
+
+  /* ---- รู้ขนส่งอยู่แล้ว → ยิงเจาะจงก่อน ไม่ต้องผ่าน auto-detect ----
+   *
+   * ══════════════════════════════════════════════════════════════════
+   * ทำไมถึงสลับลำดับ (หลักฐานจาก log 621 บรรทัด)
+   *
+   *   ขั้น auto-detect ล้มด้วย 504 มากถึง 68 จาก 71 ครั้ง (96%) ของ
+   *   upstream_error ทั้งหมด ที่ ~6,100 ms คงที่ ซึ่งคือ gateway timeout
+   *   ฝั่ง Track123 เอง
+   *
+   *   ถ้าเรารู้ขนส่งอยู่แล้ว การยิง auto-detect ก่อนคือการเอาคำขอไปเสี่ยงกับ
+   *   ขั้นที่ล้มบ่อยที่สุดโดยไม่จำเป็น — และถ้ามันล้ม ผู้ใช้ไม่ได้คำตอบเลย
+   *   ทั้งที่เรามีทางที่ตอบได้อยู่ในมือ
+   *
+   * ปลอดภัยแค่ไหน: ไล่ log แล้วไม่มีเคสไหนเลยที่ courier จาก tracking_couriers
+   * ใช้แล้วพลาด (0 จาก 41) · เคสเดียวที่เจอมาจาก prefix ซึ่งเป็นคนละเส้นทาง
+   * และยิงก่อน auto อยู่แล้วตั้งแต่เดิม
+   *
+   * จำนวนการยิงไม่เพิ่ม: เดิม auto(1) + เจาะจง(0-3) · ใหม่ เจาะจง(1) + auto(0-1)
+   * ══════════════════════════════════════════════════════════════════
+   */
+  const trackWithCourier = fallback.trackWithCourier;
+  const canTryKnown =
+    knownCourier !== undefined &&
+    trackWithCourier !== undefined &&
+    !tried.includes(knownCourier);
+
+  if (canTryKnown && knownCourier !== undefined) {
+    tried.push(knownCourier);
+
+    const byKnown = await attempt(() =>
+      trackWithCourier.call(fallback, normalized, knownCourier),
+    );
+
+    if (byKnown !== null) {
+      logCourierFirst(normalized, knownCourier, "hit");
+      return byKnown;
+    }
+
+    // ⚠️ เจาะจงตามที่จำไว้แล้วปลายทางบอกว่าไม่มี → ความจำผิด ลบทิ้ง
+    //
+    // ไม่ลบ = ผิดซ้ำทุกครั้งตลอดไป และกินโควตาเพิ่มหนึ่งครั้งต่อการค้นหาหนึ่งครั้ง
+    // ลบแล้วครั้งหน้าเริ่มจากศูนย์ ซึ่งแย่ที่สุดก็เท่ากับตอนไม่มีความจำเลย
+    //
+    // ⚠️ ลบเฉพาะตอน not_found เท่านั้น — attempt() คืน null เฉพาะกรณีนั้น
+    // ส่วน error ชนิดอื่นถูกโยนต่อขึ้นไป จึงไม่มีทางมาถึงบรรทัดนี้ · การลบ
+    // ความจำเพราะปลายทางล่มชั่วคราวคือการทิ้งของดีเพราะเหตุผลที่ไม่เกี่ยวกัน
+    logCourierFirst(normalized, knownCourier, "miss");
+    void courierStore.forget(normalized).catch(() => {});
   }
 
   // หมดเวลาหลังยิงตาม prefix → หยุด แต่ต้องโยน timeout ไม่ใช่คืน null

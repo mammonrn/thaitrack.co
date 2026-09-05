@@ -563,6 +563,35 @@ export default async function AdminStatsPage(props: {
               />
             </div>
 
+            {/* ปุ่ม "ลองอีกครั้ง" — ต้องอ่านสามตัวคู่กันเสมอ
+                clicked ต่ำเทียบ shown = ปุ่มไม่ชวนให้กด (ถ้อยคำ/ตำแหน่งมีปัญหา)
+                recovered ต่ำเทียบ clicked = ให้ความหวังลมๆ แล้งๆ ต้องหาทางอื่น
+
+                ⚠️ นี่คือตัวเลขเดียวที่จะบอกได้ว่าควรเก็บปุ่มไว้ ปรับ หรือถอดทิ้ง */}
+            {recent.retry.shown > 0 && (
+              <div className="mt-4 rounded-xl border border-line bg-white/60 p-4">
+                <p className="text-xs text-faint">
+                  ปุ่ม “ลองอีกครั้ง” (ขึ้นเมื่อขนส่งตอบไม่ทัน)
+                </p>
+                <div className="mt-2 grid grid-cols-3 gap-3">
+                  <Tile label="แสดง" value={count(recent.retry.shown)} />
+                  <Tile
+                    label="กด"
+                    value={percent(recent.retry.clicked, recent.retry.shown)}
+                    hint={`${count(recent.retry.clicked)} ครั้ง`}
+                  />
+                  <Tile
+                    label="กดแล้วได้คำตอบ"
+                    value={percent(
+                      recent.retry.recovered,
+                      recent.retry.clicked,
+                    )}
+                    hint={`${count(recent.retry.recovered)} ครั้ง`}
+                  />
+                </div>
+              </div>
+            )}
+
             {recent.error > 0 || recent.stale > 0 ? (
               <p className="mt-3 text-xs text-faint">
                 ระบบขัดข้อง {count(recent.error)} ครั้ง · แสดงข้อมูลเก่าแทน{" "}

@@ -1386,6 +1386,10 @@ function makeCourierStore(seed: Record<string, string> = {}) {
     writes,
     read: (trackingNumber: string) =>
       Promise.resolve(rows.get(trackingNumber) ?? null),
+    forget: (trackingNumber: string) => {
+      rows.delete(trackingNumber);
+      return Promise.resolve();
+    },
     remember: (trackingNumber: string, courierCode: string, by: string) => {
       writes.push(`${trackingNumber}=${courierCode}@${by}`);
       rows.set(trackingNumber, courierCode);
@@ -1472,4 +1476,121 @@ test("ตารางถาวรว่าง → ตกไปใช้ courier 
   });
 
   assert.deepEqual(backup.calls, ["shopee-xpress-th"]);
+});
+
+/* ------------------------------------------------------------------ *
+ * ยิงเจาะจงก่อนเมื่อรู้ขนส่งอยู่แล้ว (courier-first)
+ *
+ * ⚠️ สิ่งที่เฝ้า: **จำนวนการยิงต้องไม่เพิ่ม** และ **ห้ามแตะ auto-detect
+ * เมื่อเจาะจงเจอแล้ว** — ขั้น auto-detect คือขั้นที่ล้มด้วย 504 ถึง 96%
+ * ของ upstream_error ทั้งหมด การเลี่ยงมันได้คือทั้งหมดของการเปลี่ยนนี้
+ * ------------------------------------------------------------------ */
+
+test("รู้ขนส่งอยู่แล้ว → ยิงเจาะจงก่อน ไม่แตะ auto-detect เลย", async () => {
+  const fallback = makeTrack123({ succeedsForCourier: "shopee-xpress-th" });
+  const trackingNumber = uniqueTrackingNumber();
+  const store = makeCourierStore({ [trackingNumber]: "shopee-xpress-th" });
+
+  const { result } = await resolveTracking(trackingNumber, {
+    primary: primaryAlwaysNotFound,
+    fallback,
+    backup: null,
+    persistentCache: noCache,
+    courierStore: store,
+  });
+
+  assert.equal(result.carrierName, "Shopee Xpress");
+  assert.deepEqual(
+    fallback.calls,
+    ["shopee-xpress-th"],
+    "ต้องยิงครั้งเดียวและต้องไม่มี auto-detect — นั่นคือขั้นที่ล้มบ่อยที่สุด",
+  );
+  assert.ok(store.rows.has(trackingNumber), "เจอแล้วต้องไม่ลบความจำ");
+});
+
+test("ไม่รู้ขนส่ง → ทำงานเหมือนเดิมทุกประการ (auto-detect ก่อน)", async () => {
+  const fallback = makeTrack123({ autoDetectSucceeds: true });
+  const store = makeCourierStore();
+
+  await resolveTracking(uniqueTrackingNumber(), {
+    primary: primaryAlwaysNotFound,
+    fallback,
+    backup: null,
+    persistentCache: noCache,
+    courierStore: store,
+  });
+
+  assert.deepEqual(fallback.calls, ["auto-detect"]);
+});
+
+test("🔴 ความจำผิด → ตกไป auto-detect ได้ และลบความจำทิ้ง", async () => {
+  const trackingNumber = uniqueTrackingNumber();
+  // จำว่าเป็น kerry แต่ auto-detect ต่างหากที่เจอ
+  const fallback = makeTrack123({ autoDetectSucceeds: true });
+  const store = makeCourierStore({ [trackingNumber]: "kerry-th" });
+
+  const { result } = await resolveTracking(trackingNumber, {
+    primary: primaryAlwaysNotFound,
+    fallback,
+    backup: null,
+    persistentCache: noCache,
+    courierStore: store,
+  });
+
+  assert.equal(result.carrierName, "Flash Express", "ต้องยังหาเจอผ่าน auto");
+  assert.deepEqual(
+    fallback.calls,
+    ["kerry-th", "auto-detect"],
+    "ยิงสองครั้ง — เท่ากับจำนวนเดิมตอน auto พลาดแล้วค่อยเจาะจง",
+  );
+  // ความจำที่ผิดต้องหายไป — แต่แถวอาจกลับมาด้วย **ค่าใหม่ที่ถูกต้อง**
+  // เพราะ finish() จำขนส่งของผลที่เพิ่งเจอเสมอ ซึ่งเป็นสิ่งที่ต้องการ:
+  // ลืมของผิด แล้วเรียนรู้ของถูกในคำขอเดียวกัน
+  assert.notEqual(
+    store.rows.get(trackingNumber),
+    "kerry-th",
+    "ไม่ลบ = ผิดซ้ำทุกครั้งตลอดไป และกินโควตาเพิ่มหนึ่งครั้งต่อการค้นหา",
+  );
+});
+
+test("⚠️ ปลายทางล่ม (ไม่ใช่ not_found) → ห้ามลบความจำทิ้ง", async () => {
+  // ลบความจำเพราะปลายทางล่มชั่วคราว = ทิ้งของดีด้วยเหตุผลที่ไม่เกี่ยวกัน
+  const trackingNumber = uniqueTrackingNumber();
+  const store = makeCourierStore({ [trackingNumber]: "shopee-xpress-th" });
+  const fallback = makeTrack123({
+    retryError: new CarrierError("upstream_error", "ปลายทางล่ม"),
+  });
+
+  await assert.rejects(() =>
+    resolveTracking(trackingNumber, {
+      primary: primaryAlwaysNotFound,
+      fallback,
+      backup: null,
+      persistentCache: noCache,
+      courierStore: store,
+    }),
+  );
+
+  assert.ok(store.rows.has(trackingNumber), "error ชนิดอื่นต้องไม่ทำให้ลืม");
+});
+
+test("ขนส่งที่จำไว้ตรงกับที่ prefix ฟันธง → ไม่ยิงซ้ำสองรอบ", async () => {
+  const trackingNumber = `SPXTH${(counter += 1)}000000`;
+  const fallback = makeTrack123({ succeedsForCourier: "shopee-xpress-th" });
+  const store = makeCourierStore({ [trackingNumber]: "shopee-xpress-th" });
+
+  // เลข SPXTH… ที่ prefix ฟันธงเป็น shopee-xpress-th อยู่แล้ว
+  await resolveTracking(trackingNumber, {
+    primary: primaryAlwaysNotFound,
+    fallback,
+    backup: null,
+    persistentCache: noCache,
+    courierStore: store,
+  }).catch(() => {});
+
+  const spxCalls = fallback.calls.filter((c) => c === "shopee-xpress-th");
+  assert.ok(
+    spxCalls.length <= 1,
+    `ต้องไม่ยิงขนส่งเดียวกันซ้ำ แต่ยิงไป ${spxCalls.length} ครั้ง`,
+  );
 });

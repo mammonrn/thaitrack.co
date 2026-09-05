@@ -57,9 +57,22 @@ export const ERROR_MESSAGE: Record<TrackingErrorCode, UserFacingError> = {
     detail:
       "ตรวจสัญญาณอินเทอร์เน็ตหรือ Wi-Fi ของคุณ แล้วกดค้นหาอีกครั้ง",
   },
+  // ⚠️ ห้ามใส่ตัวเลขหรือคำสัญญาลงในข้อความนี้
+  //
+  // ของเดิมเขียนว่า "ลองใหม่อีกครั้งในอีก 2–3 นาที" ซึ่งเป็นตัวเลขที่ไม่มีที่มา
+  // และนานเกินจริง (จาก log: ลองใหม่ใน 7 วินาทีก็สำเร็จ) คนอ่านแล้วรู้สึกว่า
+  // "นานขนาดนั้นก็ไม่รอแล้ว"
+  //
+  // และห้ามอ้างสถิติ เช่น "คนที่ลองใหม่ได้คำตอบเกือบทุกราย" — ข้อความบนเว็บ
+  // ไม่มีกลไกอัปเดตตามความจริง วันที่ปลายทางแย่ลง มันจะกลายเป็นคำโกหกที่ค้าง
+  // อยู่โดยไม่มีใครรู้ · ข้อความต้องจริงเสมอ ไม่ใช่จริงตอนเขียน
+  //
+  // "ไม่ใช่ปัญหาที่เลขพัสดุของคุณ" ปิดความสงสัยแรกของผู้ใช้ (พิมพ์ผิดหรือเปล่า)
+  // โดยไม่โทษใคร · ส่วน "เมื่อไหร่ควรกด" ให้ปุ่มบอกเอง ไม่ใช่ข้อความ
   upstream_error: {
-    title: "ระบบของขนส่งไม่ตอบตอนนี้",
-    detail: "ฝั่งขนส่งกำลังขัดข้องชั่วคราว ลองใหม่อีกครั้งในอีก 2–3 นาที",
+    title: "ระบบขนส่งตอบไม่ทัน",
+    detail:
+      "ปลายทางกำลังหนาแน่น ไม่ใช่ปัญหาที่เลขพัสดุของคุณ กดลองอีกครั้งได้เลย",
   },
   // ⚠️ ห้ามเขียนว่า "ลองใหม่ทันที" — เพดานถูกตัดเพราะปลายทางกำลังช้าจริง
   // การชวนให้กดรัวจะยิ่งทำให้คิวหนาขึ้นสำหรับทุกคน
@@ -162,6 +175,16 @@ export type TrackingOutcome =
        * คือคนที่การติดตั้งช่วยได้จริงที่สุด)
        */
       notFound: boolean;
+      /**
+       * true = ลองใหม่แล้วมีโอกาสได้คำตอบต่าง (ปลายทางตอบไม่ทันชั่วคราว)
+       *
+       * ⚠️ **ห้ามรวม not_found เด็ดขาด** — เลขที่ขนส่งบอกว่าไม่มี ลองใหม่กี่ครั้ง
+       * ก็ไม่มี การขึ้นปุ่มตรงนั้นคือการหลอกให้ผู้ใช้เสียเวลาและเผาโควตาฟรี
+       *
+       * ⚠️ ห้ามรวม rate_limited / network_error ด้วย — สองอันนั้นมีการลองใหม่
+       * อัตโนมัติในระบบอยู่แล้ว ถ้าถึงมือผู้ใช้แปลว่าลองแล้วไม่ผ่านจริงๆ
+       */
+      retryable: boolean;
     };
 
 /** ตรวจรูปร่างข้อมูลก่อนเชื่อ — ไม่ cast ทื่อๆ เผื่อ API ตอบอะไรแปลกๆ กลับมา */
@@ -405,10 +428,22 @@ export async function requestTracking(
    * เฉพาะตอนที่การตรวจจับอัตโนมัติตอบว่าไม่พบแล้วเท่านั้น
    */
   courierHint?: string,
+  /**
+   * true = คำขอนี้มาจากการกดปุ่ม "ลองอีกครั้ง"
+   *
+   * ⚠️ ไหลไปที่สถิติอย่างเดียว ไม่เปลี่ยนพฤติกรรมการค้นหาแม้แต่นิดเดียว —
+   * ปุ่มลองอีกครั้งต้องใช้เส้นทางเดียวกับการค้นครั้งแรกทุกประการ
+   */
+  retried = false,
 ): Promise<TrackingOutcome> {
   const value = trackingNumber.trim();
   if (value === "") {
-    return { ok: false, error: EMPTY_INPUT_ERROR, notFound: false };
+    return {
+      ok: false,
+      error: EMPTY_INPUT_ERROR,
+      notFound: false,
+      retryable: false,
+    };
   }
 
   try {
@@ -418,6 +453,7 @@ export async function requestTracking(
       body: JSON.stringify({
         trackingNumber: value,
         ...(courierHint === undefined ? {} : { courierHint }),
+        ...(retried ? { retried: true } : {}),
       }),
     });
 
@@ -432,13 +468,22 @@ export async function requestTracking(
       };
     }
 
+    const code = readErrorCode(payload);
     return {
       ok: false,
       error: toUserError(payload),
-      notFound: readErrorCode(payload) === "not_found",
+      notFound: code === "not_found",
+      // ปุ่ม "ลองอีกครั้ง" ขึ้นเฉพาะกรณีนี้เท่านั้น (ดู UserFacingOutcome)
+      retryable: code === "upstream_error",
     };
   } catch {
     // fetch ล้มเหลวเอง เช่น เน็ตหลุด หรือเซิร์ฟเวอร์ไม่ตอบ
-    return { ok: false, error: ERROR_MESSAGE.network_error, notFound: false };
+    // เน็ตของผู้ใช้เอง ไม่ใช่ปลายทางตอบไม่ทัน — กดปุ่มก็ล้มเหมือนเดิม
+    return {
+      ok: false,
+      error: ERROR_MESSAGE.network_error,
+      notFound: false,
+      retryable: false,
+    };
   }
 }
