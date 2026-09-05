@@ -42,7 +42,7 @@ export async function GET() {
 
   const snapshot = await readHealthSnapshot(readWindowMinutes());
   const nearQuota = providersNearQuota();
-  const verdict = judgeHealth(snapshot, nearQuota);
+  const verdict = judgeHealth(snapshot);
 
   // log ทุกครั้งที่ผิดปกติเท่านั้น — ถ้า log ทุกครั้งที่ monitor ยิง (ทุก 5 นาที
   // ตลอด 24 ชม.) บรรทัดที่สำคัญจริงจะจมหายไปในบรรทัดที่บอกว่าทุกอย่างปกติดี
@@ -50,10 +50,23 @@ export async function GET() {
     console.warn(healthLogLine(verdict, snapshot, nearQuota));
   }
 
+  // ⚠️ โควตาไม่คุม HTTP status ของ endpoint นี้แล้ว — มันไปอยู่ใน warnings
+  //
+  // "โควตาใกล้หมด" ไม่ได้แปลว่าผู้ใช้ใช้เว็บไม่ได้ ระบบสลับไปใช้เจ้าอื่นให้เอง
+  // การเอามาออกทางสัญญาณเดียวกับ "เว็บล่ม" เคยทำให้ monitor รายงาน DOWN ติดกัน
+  // 61 ชั่วโมงทั้งที่เว็บปกติดี แล้วจบลงที่การปิดปากมันทิ้ง (ดู lib/health-check.ts)
+  //
+  // เจ้าที่รอบบิลรีเซ็ตได้ยังมีที่ปลุกคนอยู่ คือ /api/health/quota
+  const warnings = nearQuota.map((provider) => `quota:${provider}`);
+
   return NextResponse.json(
-    verdict.ok
-      ? { status: "ok" as const }
-      : { status: "degraded" as const, reason: verdict.reason },
+    {
+      status: verdict.ok ? ("ok" as const) : ("degraded" as const),
+      ...(verdict.ok ? {} : { reason: verdict.reason }),
+      // มีคีย์นี้เสมอแม้เป็นรายการว่าง — คนที่เขียนสคริปต์อ่านผลจะได้ไม่ต้องเดา
+      // ว่า "ไม่มีคีย์" แปลว่าไม่มีปัญหา หรือแปลว่าเวอร์ชันเก่าที่ยังไม่มีฟีเจอร์
+      warnings,
+    },
     {
       status: verdict.ok ? 200 : 503,
       headers: { "Cache-Control": "no-store" },
