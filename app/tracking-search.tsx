@@ -13,7 +13,7 @@
  * ------------------------------------------------------------------
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import ScanButton from "./scan-button";
 import SaveOnlyButton from "./save-only-button";
@@ -84,6 +84,22 @@ export default function TrackingSearch({
    * (ตั้งใจให้ช่องนี้ว่างได้ตลอด คนที่มาค้นอย่างเดียวไม่ต้องแตะมัน)
    */
   const [nickname, setNickname] = useState("");
+
+  /**
+   * กล่องผลการค้นหา — ใช้เลื่อนจอไปหาเมื่อผู้ใช้มาจากลิงก์ ?track=
+   *
+   * คนที่กดการ์ดจากหน้าประวัติไม่ได้ตั้งใจมาที่ฟอร์ม เขามาดูผล ถ้าปล่อยให้จอ
+   * ค้างอยู่บนสุด เขาจะเห็นแต่ช่องกรอกที่มีเลขอยู่แล้ว แล้วต้องเลื่อนหาเอง
+   */
+  const resultRef = useRef<HTMLElement | null>(null);
+
+  /**
+   * true = การค้นหารอบนี้มาจากลิงก์ ไม่ใช่ผู้ใช้พิมพ์เอง
+   *
+   * ⚠️ แยกสองกรณีนี้โดยตั้งใจ — ตอนผู้ใช้พิมพ์ค้นเอง เขาอยู่ที่ฟอร์มและกำลังมอง
+   * มันอยู่ การเลื่อนจอให้เองจะรู้สึกเหมือนหน้ากระตุกหนีมือ
+   */
+  const cameFromLink = useRef(false);
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<TrackingResult | null>(null);
   const [error, setError] = useState<UserFacingError | null>(null);
@@ -200,6 +216,7 @@ export default function TrackingSearch({
       const outcome = await requestTracking(requested, fetch, courierHint);
       if (!isActive) return;
 
+      cameFromLink.current = true;
       setTrackingNumber(requested);
       applyOutcome(outcome);
     }
@@ -214,6 +231,41 @@ export default function TrackingSearch({
     // หลังใช้ ถ้ารันซ้ำจะไม่มีอะไรให้ทำอยู่แล้ว แต่ก็ไม่ควรผูกให้รันซ้ำได้)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * เลื่อนผลการค้นหาขึ้นมาอยู่บนสุดของจอ — เฉพาะตอนมาจากลิงก์ ?track=
+   *
+   * ⚠️ รันหลังผลขึ้นแล้วจริง ไม่ใช่ระหว่างโหลด — ผูกกับ [result, error] ซึ่ง
+   * เปลี่ยนค่าหลัง render ที่มีเนื้อหาแล้ว ถ้าเลื่อนตอนยังโหลดอยู่ กล่องยังสูง
+   * ไม่เท่าเดิม จอจะไปหยุดผิดที่แล้วกระตุกอีกรอบตอนเนื้อหาโผล่
+   *
+   * เลื่อนทั้งกรณีเจอและไม่เจอ — ผู้ใช้ต้องเห็นผลลัพธ์เสมอ ไม่ว่าผลจะเป็นอะไร
+   * การพามาแล้วปล่อยให้หาเองเมื่อค้นไม่เจอ คือการทิ้งเขาไว้ตอนที่สับสนที่สุด
+   *
+   * เคารพ prefers-reduced-motion — บางคนเวียนหัวกับการเลื่อนแบบนุ่ม ระบบต้อง
+   * กระโดดไปเลย ไม่ใช่ค่อยๆ ไถ
+   */
+  useEffect(() => {
+    if (!cameFromLink.current) return;
+    if (isLoading) return;
+    if (result === null && error === null) return;
+
+    const target = resultRef.current;
+    if (target === null) return;
+
+    // ใช้ครั้งเดียวต่อการมาจากลิงก์หนึ่งครั้ง ไม่งั้นการค้นครั้งถัดไปที่ผู้ใช้
+    // พิมพ์เองจะโดนเลื่อนตามไปด้วย
+    cameFromLink.current = false;
+
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+
+    target.scrollIntoView({
+      behavior: reduceMotion ? "auto" : "smooth",
+      block: "start",
+    });
+  }, [result, error, isLoading]);
 
   // timeline โชว์จากล่าสุดไปเก่าสุด (API ส่งมาเรียงจากเก่าไปใหม่)
   // แล้วรวมเหตุการณ์ที่เกิดที่เดียวกันติดกันเข้าเป็นกลุ่ม
@@ -233,19 +285,14 @@ export default function TrackingSearch({
         <h1 className="font-display text-[28px] font-bold leading-tight tracking-tight text-ink sm:text-[42px]">
           {title}
         </h1>
-        <p className="mx-auto mt-2.5 max-w-md text-sm leading-relaxed text-faint sm:mt-3 sm:text-base">
-          {intro}
-        </p>
-
-        <form
-          onSubmit={handleSubmit}
-          className="mt-6 flex flex-col gap-2.5 sm:mt-8"
-        >
-          <div className="flex flex-col gap-2.5 sm:flex-row">
+        {/* สามบรรทัด: เลขพัสดุ · ชื่อ · ปุ่มคู่
+            เรียงจาก "สิ่งที่ต้องกรอกแน่ๆ" ลงมาหา "สิ่งที่จะทำกับมัน" */}
+        <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-2.5 sm:mt-8">
           <label htmlFor="tracking-number" className="sr-only">
             เลขพัสดุ
           </label>
-          <div className="relative flex-1">
+          {/* relative เพื่อวางปุ่มกล้องซ้อนมุมขวาของช่องกรอก */}
+          <div className="relative">
           <input
             id="tracking-number"
             type="text"
@@ -261,22 +308,9 @@ export default function TrackingSearch({
           />
           <ScanButton onDetected={(value) => void runSearchFromScan(value)} />
           </div>
-          {/* ⚠️ ปุ่มหลักต้องเด่นกว่าเสมอ — "ค้นหาพัสดุ" คือคำสัญญาหลักของสินค้า
-              ส่วน "บันทึกไว้" เป็นทางเลือกสำหรับคนที่ยังไม่อยากรู้ตอนนี้
-              จึงเป็นปุ่มพื้นขาวขอบบาง ไม่ใช่ปุ่มทึบแข่งความสนใจกัน */}
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="h-14 shrink-0 rounded-xl bg-ink px-8 font-display text-base font-semibold text-white transition-colors hover:bg-ink-strong disabled:cursor-not-allowed disabled:bg-ink-busy sm:h-15 sm:text-lg"
-          >
-            {isLoading ? "กำลังค้นหา…" : "ค้นหาพัสดุ"}
-          </button>
-
-          </div>
-
-          {/* ช่องตั้งชื่อ — อยู่ใต้แถวหลักเพราะเป็นของเสริมสำหรับคนที่จะบันทึก
-              ไม่ใช่สิ่งที่คนมาค้นหาต้องกรอก · เว้นว่างได้ตลอด แล้วประวัติจะใช้
-              เลขพัสดุเป็นชื่อแทน (ดู displayTitleOf ใน lib/saved-trackings.ts) */}
+          {/* ช่องตั้งชื่อ — ของเสริมสำหรับคนที่จะบันทึก ไม่ใช่สิ่งที่คนมาค้นหา
+              ต้องกรอก · เว้นว่างได้ตลอด แล้วประวัติจะใช้เลขพัสดุเป็นชื่อแทน
+              (ดู displayTitleOf ใน lib/saved-trackings.ts) */}
           <label htmlFor="tracking-nickname" className="sr-only">
             ตั้งชื่อหรือข้อความเตือนความจำ
           </label>
@@ -291,11 +325,28 @@ export default function TrackingSearch({
             className="h-12 w-full rounded-xl border border-line-strong bg-white px-4 text-center font-body text-sm text-body outline-none transition-colors placeholder:text-faint/70 hover:border-ink/30 focus:border-ink sm:text-left"
           />
 
-          <SaveOnlyButton
-            trackingNumber={trackingNumber}
-            nickname={nickname}
-            onSaved={() => setNickname("")}
-          />
+          {/* ปุ่มคู่บรรทัดเดียวกัน กว้างครึ่งต่อครึ่ง
+              ⚠️ "ค้นหาพัสดุ" ต้องเด่นกว่าเสมอ (พื้นทึบ) ส่วน "บันทึกไว้" เป็น
+              ขอบโปร่ง — คนส่วนใหญ่มาเพื่อค้น ไม่ใช่บันทึก ถ้าสองปุ่มเด่นเท่ากัน
+              ผู้ใช้ต้องหยุดคิดว่าจะกดอันไหน ทั้งที่คำตอบชัดอยู่แล้ว
+
+              flex-wrap + basis กว้างพอ: จอแคบมาก (320px) ปุ่มจะตกลงมาซ้อนกัน
+              เต็มความกว้างแทนที่จะบีบจนตัวหนังสือขึ้นบรรทัดใหม่หรือล้นออกนอกปุ่ม */}
+          <div className="flex flex-wrap gap-2.5">
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="h-14 min-w-[9rem] flex-1 basis-40 rounded-xl bg-ink px-4 font-display text-base font-semibold text-white transition-colors hover:bg-ink-strong disabled:cursor-not-allowed disabled:bg-ink-busy sm:h-15 sm:text-lg"
+            >
+              {isLoading ? "กำลังค้นหา…" : "ค้นหาพัสดุ"}
+            </button>
+
+            <SaveOnlyButton
+              trackingNumber={trackingNumber}
+              nickname={nickname}
+              onSaved={() => setNickname("")}
+            />
+          </div>
         </form>
 
         <p className="mt-4 text-xs leading-relaxed text-faint sm:mt-5 sm:text-sm">
@@ -307,7 +358,9 @@ export default function TrackingSearch({
     {/* ผลการค้นหา */}
     {/* จอใหญ่ให้การ์ดผลลัพธ์กว้างกว่า hero เล็กน้อย ไม่ให้ดูลอยกลางจอโล่งๆ */}
     <section
-      className="mx-auto w-full max-w-xl px-4 pb-12 sm:max-w-2xl sm:px-6 sm:pb-16"
+      ref={resultRef}
+      // scroll-mt เผื่อระยะไว้ด้านบนเล็กน้อย ไม่ให้ขอบการ์ดชนขอบจอพอดีจนดูอึดอัด
+      className="mx-auto w-full max-w-xl scroll-mt-4 px-4 pb-12 sm:max-w-2xl sm:px-6 sm:pb-16"
       aria-live="polite"
       aria-busy={isLoading}
     >
