@@ -4,7 +4,8 @@
  * รับสองเรื่องที่เป็น funnel เดียวกัน:
  *
  *   { platform }          ติดตั้งสำเร็จจริง (เบราว์เซอร์ยิง appinstalled)
- *   { action, platform }  สิ่งที่เกิดกับการ์ดชวนติดตั้ง (shown/dismissed/clicked)
+ *   { action, platform, context }  สิ่งที่เกิดกับการ์ดชวนติดตั้ง (shown/dismissed/clicked)
+ *                                  context = ผู้ใช้เพิ่งค้นเจอ หรือค้นไม่เจอ
  *
  * อยู่ endpoint เดียวกันเพราะเป็นเรื่องเดียวกันและมีกติกาความเป็นส่วนตัวชุดเดียวกัน
  * แต่ลงคนละตารางโดยตั้งใจ — install_events ต้องคงความหมายเดิมไว้เป๊ะๆ ว่าคือ
@@ -37,15 +38,24 @@ export const runtime = "nodejs";
 /** ชุดปิด — ตรงกับ constraint ของตาราง ค่าอื่นถูกทิ้ง ไม่ใช่เก็บดิบ */
 const ACTIONS: ReadonlySet<string> = new Set(["shown", "dismissed", "clicked"]);
 
+/**
+ * บริบทของการค้นที่ทำให้การ์ดขึ้น — ชุดปิดเหมือนกัน
+ *
+ * ค่าที่ไม่รู้จักกลายเป็น "found" ซึ่งเป็นค่าเดิมก่อนมีฟิลด์นี้ · เบราว์เซอร์
+ * รุ่นที่ยัง cache โค้ดเก่าไว้จึงยังส่งข้อมูลที่นับรวมได้ ไม่ใช่ถูกทิ้ง
+ */
+const CONTEXTS: ReadonlySet<string> = new Set(["found", "not_found"]);
+
 export async function POST(request: Request) {
   let platform = "unknown";
   let action: InstallPromptAction | null = null;
+  let context = "found";
 
   try {
     const body: unknown = await request.json();
     const fields =
       typeof body === "object" && body !== null
-        ? (body as { platform?: unknown; action?: unknown })
+        ? (body as { platform?: unknown; action?: unknown; context?: unknown })
         : {};
 
     if (typeof fields.platform === "string" && PLATFORMS.has(fields.platform)) {
@@ -54,12 +64,15 @@ export async function POST(request: Request) {
     if (typeof fields.action === "string" && ACTIONS.has(fields.action)) {
       action = fields.action as InstallPromptAction;
     }
+    if (typeof fields.context === "string" && CONTEXTS.has(fields.context)) {
+      context = fields.context;
+    }
   } catch {
     // ไม่มี body หรือ body พัง → ยังนับเป็นการติดตั้งหนึ่งครั้ง แค่ไม่รู้ platform
   }
 
   if (action === null) await recordInstallEvent(platform);
-  else await recordInstallPromptEvent(action, platform);
+  else await recordInstallPromptEvent(action, platform, context);
 
   // ไม่ต้องบอกอะไรกลับไป ฝั่งเบราว์เซอร์ไม่ได้ใช้คำตอบนี้ทำอะไรต่อ
   return new NextResponse(null, { status: 204 });

@@ -2,6 +2,10 @@
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 
+import {
+  CAPTURED_PROMPT_KEY,
+  PROMPT_CAPTURED_EVENT,
+} from "./install-prompt-capture";
 import { detectPlatform } from "./platform";
 
 /**
@@ -122,18 +126,38 @@ export function useInstallState(): InstallControl {
       setPromptEvent(event as BeforeInstallPromptEvent);
     }
 
+    /** หยิบ event ที่สคริปต์ใน <head> ดักไว้ให้ตั้งแต่ก่อน React ตื่น */
+    function takeCaptured() {
+      const captured = (window as unknown as Record<string, unknown>)[
+        CAPTURED_PROMPT_KEY
+      ];
+      if (captured != null) {
+        setPromptEvent(captured as BeforeInstallPromptEvent);
+      }
+    }
+
     function clearAfterInstall() {
       setPromptEvent(null);
       setIsGuideOpen(false);
       void reportInstall();
     }
 
+    // ⚠️ ต้องอ่านของที่ดักไว้ก่อนเป็นอย่างแรก · effect นี้ทำงานช้ากว่าที่ Chrome
+    // ยิง event ได้ถึง 340–480 ms ซึ่งพอสำหรับการเข้าเว็บครั้งที่สองเป็นต้นไป
+    // (service worker ลงแล้ว) ที่ event มาถึงก่อน React hydrate เสร็จ
+    // ดูรายละเอียดและวิธีวัดที่ lib/install-prompt-capture.ts
+    takeCaptured();
+
+    // ยังฟัง event ตรงๆ ต่อไปด้วย เผื่อ Chrome ยิงหลังจากนี้ (เข้าเว็บครั้งแรก)
+    // และเพื่อให้ hook นี้ทำงานได้เองแม้ในหน้าที่ไม่มีสคริปต์ดัก เช่นในเทสต์
+    window.addEventListener(PROMPT_CAPTURED_EVENT, takeCaptured);
     window.addEventListener("beforeinstallprompt", capture);
     window.addEventListener("appinstalled", clearAfterInstall);
 
     const timer = window.setTimeout(() => setHasSettled(true), SETTLE_MS);
 
     return () => {
+      window.removeEventListener(PROMPT_CAPTURED_EVENT, takeCaptured);
       window.removeEventListener("beforeinstallprompt", capture);
       window.removeEventListener("appinstalled", clearAfterInstall);
       window.clearTimeout(timer);

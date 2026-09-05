@@ -30,10 +30,15 @@ export const ERROR_MESSAGE: Record<TrackingErrorCode, UserFacingError> = {
     detail:
       "เลขพัสดุมักยาว 8–20 ตัว เป็นตัวเลขผสมตัวอักษรอังกฤษ เช่น EE000000000TH ลองตรวจดูอีกครั้งว่าพิมพ์ครบทุกตัวหรือยัง",
   },
+  // ⚠️ ประโยคแรกต้องอธิบาย "ทำไมถึงยังไม่เจอ" ก่อนเสมอ ไม่ใช่สั่งให้ผู้ใช้ทำอะไร
+  // คนที่มาถึงหน้านี้ส่วนใหญ่พิมพ์เลขถูกแล้ว แค่ของเพิ่งออกจากมือผู้ส่ง การขึ้น
+  // ข้อความแนวตรวจสอบเลขก่อนเป็นการโยนความสงสัยกลับไปให้เขาโดยไม่มีมูล
   not_found: {
     title: "ยังไม่พบเลขนี้ในระบบขนส่ง",
     detail:
-      "ถ้าเพิ่งส่งวันนี้ ขนส่งมักใช้เวลา 1–2 ชั่วโมงกว่าเลขจะขึ้นระบบ ลองใหม่อีกครั้งภายหลัง หรือตรวจว่าพิมพ์เลขถูกต้องครบทุกตัว",
+      "หลังผู้ส่งฝากของ ขนส่งมักใช้เวลา 1–2 ชั่วโมงกว่าเลขพัสดุจะขึ้นระบบ " +
+      "ถ้าเพิ่งได้เลขมาวันนี้ ลองกลับมาค้นอีกครั้งในอีกสักพัก " +
+      "ระบบค้นให้แล้วทั้งไปรษณีย์ไทยและขนส่งเอกชนที่รองรับ",
   },
   auth_failed: {
     title: "ระบบเชื่อมต่อขนส่งมีปัญหา",
@@ -144,7 +149,20 @@ export type TrackingOutcome =
        */
       proofPhotoUrls: string[];
     }
-  | { ok: false; error: UserFacingError };
+  | {
+      ok: false;
+      error: UserFacingError;
+      /**
+       * true = ขนส่งตอบว่าไม่รู้จักเลขนี้ (ไม่ใช่ระบบขัดข้อง)
+       *
+       * แยกออกมาเป็นฟิลด์ของตัวเองแทนการให้ผู้เรียกไปเทียบ object กับ
+       * ERROR_MESSAGE.not_found เพราะการเทียบแบบนั้นพังเงียบทันทีที่มีคน
+       * เปลี่ยนถ้อยคำแล้วสร้าง object ใหม่ · ฝั่ง UI ใช้ค่านี้ตัดสินว่าจะ
+       * ชวนติดตั้งแอปตรงจังหวะนี้ไหม (คนที่ต้องกลับมาเช็คใหม่ใน 1–2 ชม.
+       * คือคนที่การติดตั้งช่วยได้จริงที่สุด)
+       */
+      notFound: boolean;
+    };
 
 /** ตรวจรูปร่างข้อมูลก่อนเชื่อ — ไม่ cast ทื่อๆ เผื่อ API ตอบอะไรแปลกๆ กลับมา */
 export function isSuccessPayload(
@@ -213,14 +231,21 @@ export function readStaleSince(payload: unknown): string | null {
   return typeof fetchedAt === "string" ? fetchedAt : "";
 }
 
-/** เลือกข้อความ error จาก code ที่รู้จัก ไม่ยกข้อความดิบจากระบบภายนอกมาแสดง */
-export function toUserError(payload: unknown): UserFacingError {
+/** code ดิบที่เซิร์ฟเวอร์ส่งมา — null เมื่อ payload ไม่ใช่รูปที่รู้จัก */
+export function readErrorCode(payload: unknown): string | null {
   const code =
     typeof payload === "object" && payload !== null
       ? (payload as { error?: { code?: unknown } }).error?.code
       : undefined;
 
-  if (typeof code === "string" && code in ERROR_MESSAGE) {
+  return typeof code === "string" ? code : null;
+}
+
+/** เลือกข้อความ error จาก code ที่รู้จัก ไม่ยกข้อความดิบจากระบบภายนอกมาแสดง */
+export function toUserError(payload: unknown): UserFacingError {
+  const code = readErrorCode(payload);
+
+  if (code !== null && code in ERROR_MESSAGE) {
     return ERROR_MESSAGE[code as TrackingErrorCode];
   }
   return FALLBACK_ERROR;
@@ -383,7 +408,7 @@ export async function requestTracking(
 ): Promise<TrackingOutcome> {
   const value = trackingNumber.trim();
   if (value === "") {
-    return { ok: false, error: EMPTY_INPUT_ERROR };
+    return { ok: false, error: EMPTY_INPUT_ERROR, notFound: false };
   }
 
   try {
@@ -407,9 +432,13 @@ export async function requestTracking(
       };
     }
 
-    return { ok: false, error: toUserError(payload) };
+    return {
+      ok: false,
+      error: toUserError(payload),
+      notFound: readErrorCode(payload) === "not_found",
+    };
   } catch {
     // fetch ล้มเหลวเอง เช่น เน็ตหลุด หรือเซิร์ฟเวอร์ไม่ตอบ
-    return { ok: false, error: ERROR_MESSAGE.network_error };
+    return { ok: false, error: ERROR_MESSAGE.network_error, notFound: false };
   }
 }

@@ -71,6 +71,17 @@ export const NARROW_QUERY = "(max-width: 639.98px)";
 const SEARCHED_KEY = "thaitrack.install-invite.searched";
 
 /**
+ * บริบทของการค้นครั้งที่ปลุกการ์ดขึ้นมา
+ *
+ * เก็บแยกจาก SEARCHED_KEY เพราะสองอย่างนี้ตอบคนละคำถาม: อันนั้นตอบว่า "ควรขึ้น
+ * ไหม" อันนี้ตอบว่า "ตอนขึ้นน่ะ ผู้ใช้เพิ่งเจออะไรมา" ซึ่งจำเป็นตอนนับสถิติ
+ * เพราะสองจังหวะนี้ไม่เหมือนกันเลย: คนที่ค้นเจอกำลังพอใจ ส่วนคนที่ค้นไม่เจอ
+ * กำลังต้องกลับมาเช็คใหม่ใน 1–2 ชั่วโมง ซึ่งเป็นเหตุผลที่ตรงกับการติดตั้งมากกว่า
+ * ถ้านับรวมกันเราจะไม่มีวันรู้ว่าอันไหนได้ผลกว่ากัน
+ */
+const CONTEXT_KEY = "thaitrack.install-invite.context";
+
+/**
  * มี v1 ต่อท้ายโดยตั้งใจ
  *
  * "ปิดแล้วไม่กลับมาอีก" แปลว่าเราไม่มีทางชวนคนกลุ่มนี้ได้อีกเลย ถ้าวันหนึ่ง
@@ -103,20 +114,42 @@ function write(storage: "session" | "local", key: string, value: string): void {
   }
 }
 
-/** เคยค้นหาสำเร็จในเซสชันนี้หรือยัง */
+/** เคยค้นหาในเซสชันนี้จนได้คำตอบจากขนส่งแล้วหรือยัง */
 export function hasSearchedThisSession(): boolean {
   return read("session", SEARCHED_KEY) === "1";
 }
 
 /**
- * บันทึกว่าเพิ่งค้นหาสำเร็จ แล้วบอกปุ่มลอยทันที
+ * ผู้ใช้เพิ่งเจออะไรมาก่อนการ์ดจะขึ้น
+ *
+ *   found      ค้นเจอพัสดุ
+ *   not_found  ขนส่งตอบว่ายังไม่รู้จักเลขนี้ — คนกลุ่มนี้ต้องกลับมาเช็คใหม่
+ */
+export type SearchContext = "found" | "not_found";
+
+/** อ่านบริบทที่บันทึกไว้ — ถือเป็น found เมื่อไม่มีค่า (เซสชันเก่าก่อนมีฟิลด์นี้) */
+export function readSearchContext(): SearchContext {
+  return read("session", CONTEXT_KEY) === "not_found" ? "not_found" : "found";
+}
+
+/**
+ * บันทึกว่าเพิ่งได้คำตอบจากขนส่ง แล้วบอกปุ่มลอยทันที
  *
  * ต้องยิง event เองเพราะ storage event ของเบราว์เซอร์ไม่ยิงให้แท็บที่เป็นคนเขียน
  * และปุ่มลอยอยู่คนละ component กับหน้าค้นหา (มันอยู่ใน layout เพื่อให้ติดตาม
  * ไปทุกหน้าหลังค้นเสร็จ)
+ *
+ * ⚠️ รับ not_found ด้วยโดยตั้งใจ · เดิมชวนเฉพาะตอนค้นเจอ ด้วยเหตุผลว่า "ต้องให้
+ * เขาได้ประโยชน์ก่อนค่อยขอ" ซึ่งยังจริงอยู่ แต่ตกหล่นไปหนึ่งกลุ่ม: คนที่ค้นไม่เจอ
+ * เพราะเลขยังไม่ขึ้นระบบ **ต้องกลับมาค้นเลขเดิมอีกครั้งใน 1–2 ชั่วโมงแน่นอน**
+ * ซึ่งเป็นสถานการณ์ที่การเปิดจากหน้าจอหลักช่วยได้ตรงตัวที่สุด
+ *
+ * ไม่รวม error ชนิดอื่น — ตอนระบบขัดข้องคือตอนที่เราทำงานให้เขาไม่ได้
+ * การชวนติดตั้งตรงนั้นคือการขอในจังหวะที่แย่ที่สุดเท่าที่จะเป็นไปได้
  */
-export function markSearchSuccess(): void {
+export function markSearchDone(context: SearchContext): void {
   write("session", SEARCHED_KEY, "1");
+  write("session", CONTEXT_KEY, context);
   window.dispatchEvent(new Event(SEARCH_SUCCESS_EVENT));
 }
 
@@ -232,11 +265,14 @@ export function markShownCounted(): void {
  * keepalive เพราะ "clicked" ตามมาด้วยหน้าต่างติดตั้งของเบราว์เซอร์ทันที
  * ซึ่งอาจทำให้ request ปกติถูกตัดกลางทาง
  */
-export function reportInvite(action: InviteAction): Promise<void> {
+export function reportInvite(
+  action: InviteAction,
+  context: SearchContext = readSearchContext(),
+): Promise<void> {
   return fetch("/api/installed", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, platform: detectPlatform() }),
+    body: JSON.stringify({ action, context, platform: detectPlatform() }),
     keepalive: true,
   })
     .then(() => undefined)
