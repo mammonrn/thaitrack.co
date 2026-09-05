@@ -461,6 +461,9 @@ test("สาขาที่ยังไม่รู้พิกัด → ไป
     geocode: geocoder.geocode,
     trackingNumber: "SPXTH046012345678",
     probe: {
+      // เปิดสวิตช์เก็บพิกัดสาขาให้เทสต์ชุดนี้ — มันตรวจตรรกะการเติมพิกัด
+      // ไม่ใช่ตัวสวิตช์ (สวิตช์มีเทสต์ของตัวเองใน lib/branch-harvest.test.ts)
+      isEnabled: () => Promise.resolve(true),
       fetchResult: () => Promise.resolve(resultWithAddress()),
       canProbe: () => true,
       outOfQuota: () => false,
@@ -488,6 +491,9 @@ test("จองสิทธิ์ไม่ได้ (เพิ่งถามไ
     geocode: makeGeocoder().geocode,
     trackingNumber: "SPXTH046012345678",
     probe: {
+      // เปิดสวิตช์เก็บพิกัดสาขาให้เทสต์ชุดนี้ — มันตรวจตรรกะการเติมพิกัด
+      // ไม่ใช่ตัวสวิตช์ (สวิตช์มีเทสต์ของตัวเองใน lib/branch-harvest.test.ts)
+      isEnabled: () => Promise.resolve(true),
       fetchResult: () => {
         fetched += 1;
         return Promise.resolve(resultWithAddress());
@@ -513,6 +519,9 @@ test("โควตาหมดเกลี้ยง → ไม่ไปขอท
     geocode: makeGeocoder().geocode,
     trackingNumber: "SPXTH046012345678",
     probe: {
+      // เปิดสวิตช์เก็บพิกัดสาขาให้เทสต์ชุดนี้ — มันตรวจตรรกะการเติมพิกัด
+      // ไม่ใช่ตัวสวิตช์ (สวิตช์มีเทสต์ของตัวเองใน lib/branch-harvest.test.ts)
+      isEnabled: () => Promise.resolve(true),
       fetchResult: () => {
         fetched += 1;
         return Promise.resolve(resultWithAddress());
@@ -652,6 +661,7 @@ test("ส่ง courier ที่ยืนยันแล้วต่อไป�
     trackingNumber: "TH264511339099F",
     courierHint: "shopee-xpress-th",
     probe: {
+      isEnabled: () => Promise.resolve(true),
       canProbe: (_no, hint) => {
         seen.push(hint);
         return true;

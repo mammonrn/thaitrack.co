@@ -21,7 +21,7 @@
  */
 
 /** สวิตช์ทั้งหมดที่ระบบรู้จัก — ชุดปิด */
-export const SETTING_KEYS = ["map_enabled"] as const;
+export const SETTING_KEYS = ["map_enabled", "branch_harvest_enabled"] as const;
 
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
@@ -34,6 +34,17 @@ export type SettingKey = (typeof SETTING_KEYS)[number];
  */
 export const SETTING_DEFAULTS: Record<SettingKey, boolean> = {
   map_enabled: false,
+  /**
+   * การเก็บที่อยู่/พิกัดสาขาอัตโนมัติ — ปิดไว้
+   *
+   * ⚠️ ค่าเริ่มต้นต้องเป็น false ด้วยเหตุผลเดียวกับ map_enabled: ไม่รู้ = ไม่จ่าย
+   * ตัวนี้จ่ายสองทางพร้อมกัน — โควตา ETrackings ที่ **ไม่มีวันเติม** และ
+   * ค่า geocode ของ Google
+   *
+   * ของจริงที่วัดได้ก่อนปิด: ยิง ETrackings ไป 3 ครั้ง (10% ของโควตาทั้งชีวิต)
+   * ได้พิกัดกลับมา 0 จุด และแผนที่ที่จะเอาพิกัดไปแสดงก็ปิดอยู่ตลอดเวลา
+   */
+  branch_harvest_enabled: false,
 };
 
 /** คำอธิบายสั้นๆ ที่แสดงข้างสวิตช์บนหน้าแอดมิน */
@@ -43,6 +54,13 @@ export const SETTING_LABEL: Record<SettingKey, { title: string; detail: string }
     detail:
       "ปิดแล้วจะแสดงชื่อสถานที่เป็นข้อความแทนแผนที่ เหมือนตอนที่ไม่รู้พิกัด" +
       " — ใช้ตอนโควตา Google หมดหรือแผนที่แสดงผลผิด",
+  },
+  branch_harvest_enabled: {
+    title: "เก็บที่อยู่สาขาอัตโนมัติ",
+    detail:
+      "ปิดแล้วระบบจะไม่ยิง ETrackings และไม่เรียก geocode ของ Google" +
+      " เพื่อหาพิกัดสาขาอีก — การค้นหาและหน้าประวัติทำงานเหมือนเดิมทุกอย่าง" +
+      " ส่วนรายชื่อสาขาที่ยังไม่รู้พิกัดยังถูกบันทึกต่อ (ข้อมูลนั้นฟรี)",
   },
 };
 
