@@ -12,6 +12,8 @@
  * หรือไม่ ต้องวัดได้ ไม่ใช่เดาจากชนิดของคำตอบ (ดู GeocodePrecision)
  */
 
+import { countProviderCall } from "./provider-usage";
+
 export interface Coordinates {
   lat: number;
   lng: number;

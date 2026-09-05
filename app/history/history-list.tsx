@@ -62,6 +62,27 @@ export default function HistoryList({ items, mapEnabled }: HistoryListProps) {
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [refreshError, setRefreshError] = useState(false);
 
+  /**
+   * การ์ดที่ภาพแผนที่โหลดไม่ขึ้น
+   *
+   * ⚠️ ไม่มีตัวนี้มาก่อน — <img> ที่ได้ 404 (ชนเพดานรายวัน หรือสวิตช์ถูกปิด
+   * ระหว่างที่หน้ายังเปิดค้างอยู่) จะแสดงเป็นไอคอนรูปแตกในกล่องสูง 176px
+   * ซึ่งผู้ใช้อ่านว่า "เว็บพัง" ไม่ใช่ "ฟีเจอร์นี้ปิดอยู่"
+   *
+   * โค้ดเดิมเคยคิดถึงเคสนี้แล้ว (มีคอมเมนต์เรื่อง bg-paper รองไว้เผื่อรูปโหลด
+   * ไม่ขึ้น) แต่แก้แค่สีพื้นหลัง ไม่ได้แก้ตัวไอคอนแตก
+   */
+  const [mapFailedIds, setMapFailedIds] = useState<Set<string>>(new Set());
+
+  const markMapFailed = useCallback((id: string) => {
+    setMapFailedIds((current) => {
+      if (current.has(id)) return current;
+      const next = new Set(current);
+      next.add(id);
+      return next;
+    });
+  }, []);
+
   /** ยิงรีเฟรชตามที่ผู้ใช้กด — ids ว่าง = ทุกใบที่ยังไม่ถึงปลายทาง */
   const runRefresh = useCallback(async (ids: string[]) => {
     if (ids.length === 0) return;
@@ -253,7 +274,7 @@ export default function HistoryList({ items, mapEnabled }: HistoryListProps) {
 
                   bg-paper รองไว้ข้างหลัง เผื่อรูปโหลดไม่ขึ้น (โควตาหมด หรือเน็ต
                   ของผู้ใช้บล็อก) จะได้ไม่เห็นกล่องเทาของเบราว์เซอร์ */}
-              {showMap ? (
+              {showMap && !mapFailedIds.has(item.id) ? (
                 <div className="border-t border-line bg-paper">
                   {/* eslint-disable-next-line @next/next/no-img-element --
                       next/image ไม่ช่วยอะไรตรงนี้ ภาพมาจาก API route ของเราเอง
@@ -272,6 +293,10 @@ export default function HistoryList({ items, mapEnabled }: HistoryListProps) {
                     loading="lazy"
                     width={640}
                     height={288}
+                    /* โหลดไม่ขึ้นด้วยเหตุใดก็ตาม → ซ่อนภาพแล้วตกไปใช้กล่อง
+                       ข้อความข้างล่างแทน · ไม่บอกผู้ใช้ว่าชนเพดานหรือสวิตช์ปิด
+                       เพราะเป็นเรื่องภายในที่เขาทำอะไรกับมันไม่ได้ */
+                    onError={() => markMapFailed(item.id)}
                     className="block h-44 w-full object-cover sm:h-52"
                   />
 
@@ -297,9 +322,14 @@ export default function HistoryList({ items, mapEnabled }: HistoryListProps) {
                       </p>
                       {/* เหตุผลต้องตรงกับความจริง — ตอนสวิตช์ปิด เรารู้พิกัดอยู่
                           การบอกว่า "ยังไม่มีพิกัด" คือการโกหกผู้ใช้เรื่องที่
-                          ตรวจสอบไม่ได้ ซึ่งแย่กว่าการไม่บอกอะไรเลย */}
+                          ตรวจสอบไม่ได้ ซึ่งแย่กว่าการไม่บอกอะไรเลย
+
+                          กรณีภาพโหลดไม่ขึ้นก็เหมือนกัน: เรารู้พิกัด แค่วาดไม่ได้
+                          ตอนนี้ จึงต้องใช้คนละประโยค */}
                       <p className="mt-0.5 text-xs text-faint">
-                        ยังไม่มีพิกัดของจุดนี้ จึงยังแสดงแผนที่ไม่ได้
+                        {mapFailedIds.has(item.id)
+                          ? "แสดงแผนที่ไม่ได้ตอนนี้"
+                          : "ยังไม่มีพิกัดของจุดนี้ จึงยังแสดงแผนที่ไม่ได้"}
                       </p>
                     </div>
                   </div>
