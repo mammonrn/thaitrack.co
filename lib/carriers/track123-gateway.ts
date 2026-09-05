@@ -18,9 +18,11 @@
 
 import { CircuitBreaker } from "../circuit-breaker";
 import { recordUpstreamCall } from "../request-trace";
+import { safeUpstreamMessage } from "./upstream-message";
 import { countProviderCall } from "../provider-usage";
 import { RateLimitQueue, delay } from "../rate-limit-queue";
 import {
+  type CourierSource,
   CarrierError,
   TIMEOUT_UPSTREAM_CODE,
   type TrackingErrorCode,
@@ -188,6 +190,8 @@ export interface Track123CallMeta {
   trackNo: string;
   /** courierCode ที่ระบุไป — undefined = ปล่อยให้ Track123 ตรวจจับเอง */
   courierCode?: string;
+  /** รหัสขนส่งนั้นมาจากไหน (cache / prefix / guess) — ไหลไปที่ log อย่างเดียว */
+  courierSource?: CourierSource;
 }
 
 export interface Track123CallOptions {
@@ -229,6 +233,14 @@ export interface Track123CallLog {
   result: string;
   /** code ดิบที่ Track123 ตอบมา เช่น "A0706" — undefined ถ้าไม่มี */
   upstream?: string;
+  /** รหัสขนส่งมาจากไหน — undefined เมื่อปล่อยให้ตรวจจับเอง */
+  source?: CourierSource;
+  /**
+   * ข้อความดิบจากปลายทาง ผ่านการกรองแล้ว — undefined เมื่อไม่มีหรือกรองจนหมด
+   *
+   * ⚠️ เขียนเฉพาะตอนผลไม่ใช่ ok/not_found (ดูเหตุผลที่จุดเรียก)
+   */
+  msg?: string;
 }
 
 /**
@@ -252,7 +264,11 @@ export function formatCallLog(fields: Track123CallLog): string {
     `took=${fields.tookMs}ms`,
     `result=${fields.result}`,
   ];
+  if (fields.source !== undefined) parts.push(`src=${fields.source}`);
   if (fields.upstream !== undefined) parts.push(`upstream=${fields.upstream}`);
+  // ข้อความอยู่ท้ายสุดเสมอ เพราะยาวและมีช่องว่างข้างใน — วางกลางบรรทัดจะทำให้
+  // การ grep แบบ key=value ของฟิลด์ที่เหลือพัง
+  if (fields.msg !== undefined) parts.push(`msg="${fields.msg}"`);
 
   return `[track123] ${parts.join(" ")}`;
 }
@@ -396,7 +412,7 @@ export async function callTrack123<T>(
         // เครื่องจริง ส่วนที่ถูกปฏิเสธไปก่อนหน้า (breaker เปิด) ไม่นับ
         recordUpstreamCall({ queueMs: call.waitedMs });
 
-        const write = (result: string, upstream?: string) => {
+        const write = (result: string, upstream?: string, msg?: string) => {
           log(
             formatCallLog({
               ts: startedAt,
@@ -409,6 +425,8 @@ export async function callTrack123<T>(
               tookMs: Date.now() - startedAt,
               result,
               upstream,
+              source: meta.courierSource,
+              msg,
             }),
           );
         };
@@ -421,9 +439,21 @@ export async function callTrack123<T>(
           billable = true;
           return value;
         } catch (error) {
+          // ⚠️ เขียนข้อความจากปลายทางเฉพาะตอนผลไม่ปกติ
+          //
+          // ok กับ not_found คือคำตอบที่เราเข้าใจอยู่แล้ว การเก็บข้อความของ
+          // ปลายทางเพิ่มไม่ได้บอกอะไร มีแต่ทำให้ log บวมจนบรรทัดที่สำคัญจริง
+          // จมหายไป · ส่วน rate_limited / upstream_error คือกลุ่มที่เราเดา
+          // ความหมายผิดมาแล้วสามรอบ
+          //
+          // ผ่านการกรองความลับและตัดความยาวก่อนเสมอ (ดู safeUpstreamMessage)
+          const carrierError =
+            error instanceof CarrierError ? error : undefined;
+
           write(
             resultLabel(error),
-            error instanceof CarrierError ? error.upstreamCode : undefined,
+            carrierError?.upstreamCode,
+            safeUpstreamMessage(carrierError?.upstreamMessage),
           );
 
           billable = countsAgainstQuota(error);

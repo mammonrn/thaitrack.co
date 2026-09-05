@@ -16,6 +16,7 @@
 
 import { callTrack123 } from "./track123-gateway";
 import {
+  type CourierSource,
   CarrierError,
   TIMEOUT_UPSTREAM_CODE,
   TRACKING_STATUS_TEXT,
@@ -200,12 +201,19 @@ function toCarrierError(
   // ติด code ดิบไปกับ error ทุกตัวที่มี เพื่อให้ log ของ gateway ชี้สาเหตุได้ตรงๆ
   // ว่าเป็น A0706 (ยิงถี่) หรือ B0210 (quota หมด) ซึ่งแก้คนละทางกัน
   const upstreamCode = code === "" ? undefined : code;
+  // ข้อความดิบของปลายทาง — แยกเก็บจาก debugMessage ที่เราเขียนเอง
+  // ผ่านการกรองตอนเขียน log อีกชั้น (ดู lib/carriers/upstream-message.ts)
+  const upstreamMessage = payload?.msg?.trim() || undefined;
 
   if (httpStatus === 401 || httpStatus === 403 || AUTH_CODES.has(code)) {
     return new CarrierError(
       "auth_failed",
       "ระบบเชื่อมต่อ Track123 ไม่ผ่านการยืนยันตัวตน กรุณาแจ้งผู้ดูแลระบบ",
-      { debugMessage: `เรียก Track123 ไม่ผ่านสิทธิ์ (${detail})`, upstreamCode },
+      {
+        debugMessage: `เรียก Track123 ไม่ผ่านสิทธิ์ (${detail})`,
+        upstreamCode,
+        upstreamMessage,
+      },
     );
   }
 
@@ -216,6 +224,7 @@ function toCarrierError(
       {
         debugMessage: `Track123 จำกัดอัตราการเรียกหรือ quota หมด (${detail})`,
         upstreamCode,
+        upstreamMessage,
       },
     );
   }
@@ -224,14 +233,22 @@ function toCarrierError(
     return new CarrierError(
       "invalid_tracking_number",
       "รูปแบบเลขพัสดุไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง",
-      { debugMessage: `Track123 ปฏิเสธพารามิเตอร์ (${detail})`, upstreamCode },
+      {
+        debugMessage: `Track123 ปฏิเสธพารามิเตอร์ (${detail})`,
+        upstreamCode,
+        upstreamMessage,
+      },
     );
   }
 
   return new CarrierError(
     "upstream_error",
     "ระบบ Track123 ขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้ง",
-    { debugMessage: `เรียก Track123 ไม่สำเร็จ (${detail})`, upstreamCode },
+    {
+      debugMessage: `เรียก Track123 ไม่สำเร็จ (${detail})`,
+      upstreamCode,
+      upstreamMessage,
+    },
   );
 }
 
@@ -486,10 +503,11 @@ function toTrackNo(trackingNumber: string): string {
 async function query(
   trackNo: string,
   courierCode?: string,
+  courierSource?: CourierSource,
 ): Promise<TrackingResult> {
   // ทุกอย่างในนี้ถูกห่อด้วย callTrack123 เพื่อให้ผ่านคิวและถูก log เสมอ
   // รวมถึงรอบที่ถูกลองใหม่หลังชนลิมิตด้วย (gateway เข้าคิวใหม่ให้ทุกรอบ)
-  return callTrack123({ trackNo, courierCode }, async () => {
+  return callTrack123({ trackNo, courierCode, courierSource }, async () => {
     const response = await postJson("/track/query-realtime", {
       trackNo,
       ...(courierCode === undefined ? {} : { courierCode }),
@@ -539,8 +557,10 @@ export async function track(trackingNumber: string): Promise<TrackingResult> {
 export async function trackWithCourier(
   trackingNumber: string,
   courierCode: string,
+  /** รหัสนี้มาจากไหน — ไหลไปที่ log อย่างเดียว ไม่เปลี่ยนพฤติกรรม */
+  courierSource?: CourierSource,
 ): Promise<TrackingResult> {
-  return query(toTrackNo(trackingNumber), courierCode);
+  return query(toTrackNo(trackingNumber), courierCode, courierSource);
 }
 
 /**
