@@ -517,7 +517,7 @@ async function retryWithCourierCodes(
     codes.push(courierCode);
 
     const result = await attempt(() =>
-      trackWithCourier.call(adapter, trackingNumber, courierCode),
+      trackWithCourier.call(adapter, trackingNumber, courierCode, "guess"),
     );
     if (result !== null) {
       logCourierRetries(trackingNumber, codes, "hit", codes.length, startedAt);
@@ -556,7 +556,8 @@ function prefixShortcut(
 
   return {
     courierCode,
-    track: () => trackWithCourier.call(fallback, trackingNumber, courierCode),
+    track: () =>
+      trackWithCourier.call(fallback, trackingNumber, courierCode, "prefix"),
   };
 }
 
@@ -908,7 +909,7 @@ async function runFallback(
 
     const startedAt = Date.now();
     const byKnown = await attempt(() =>
-      trackWithCourier.call(fallback, normalized, knownCourier),
+      trackWithCourier.call(fallback, normalized, knownCourier, "cache"),
     );
 
     if (byKnown !== null) {

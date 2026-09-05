@@ -189,6 +189,17 @@ export interface CarrierAdapter {
   trackWithCourier?(
     trackingNumber: string,
     courierCode: string,
+    /**
+     * รหัสขนส่งนี้มาจากไหน — ไหลไปที่ log อย่างเดียว ไม่เปลี่ยนพฤติกรรม
+     *
+     *   cache   จำไว้จากครั้งก่อนที่ค้นสำเร็จ (tracking_couriers)
+     *   prefix  ตารางเลขนำหน้าฟันธง
+     *   guess   ไล่ลองจากรายชื่อที่รู้ว่ามีปัญหา (retryCourierCodes)
+     *
+     * มีเพราะ log เดิมเขียนแค่ courier=shopee-xpress-th ซึ่งแยกไม่ออกว่ามาจาก
+     * ทางไหน — และเราเพิ่งเสียเวลาไปกับการอนุมานเรื่องนี้จากลำดับใน log
+     */
+    source?: CourierSource,
   ): Promise<TrackingResult>;
 
   /**
@@ -218,6 +229,9 @@ export interface CarrierAdapter {
  * ประเภทข้อผิดพลาดที่ adapter โยนออกมาได้
  * ตั้งใจให้เป็นชุดปิด เพื่อให้ API route map เป็น HTTP status ได้ครบทุกกรณี
  */
+/** รหัสขนส่งที่ระบุไปนั้นมาจากไหน — ใช้ใน log เพื่อแยกบริบท */
+export type CourierSource = "cache" | "prefix" | "guess";
+
 export type TrackingErrorCode =
   | "invalid_tracking_number"
   | "not_found"
@@ -262,16 +276,34 @@ export class CarrierError extends Error {
    * จาก debugMessage — ห้ามส่งค่านี้กลับไปหา client
    */
   readonly upstreamCode?: string;
+  /**
+   * ข้อความดิบที่ปลายทางส่งมา — คนละอย่างกับ debugMessage ที่เราเขียนเอง
+   *
+   * ⚠️ **เป็นข้อมูลที่เราไม่ได้ควบคุม** ห้ามเอาไปตัดสินใจในโค้ด (รูปแบบเปลี่ยน
+   * เมื่อไรก็ได้) และห้ามส่งกลับไปหา client หรือเขียนลงฐานข้อมูล — ใช้เขียนลง
+   * log ฝั่งเซิร์ฟเวอร์เพื่ออ่านด้วยตาเท่านั้น และต้องผ่าน safeUpstreamMessage()
+   * ก่อนเสมอ (ดู lib/carriers/upstream-message.ts)
+   *
+   * มีเพราะ code อย่างเดียวตอบไม่พอ: A0706 ของ Track123 โผล่มาในสองบริบทที่
+   * พฤติกรรมต่างกันสิ้นเชิง และเราเดาผิดมาแล้วสามรอบว่ามันแปลว่าอะไร
+   */
+  readonly upstreamMessage?: string;
 
   constructor(
     code: TrackingErrorCode,
     userMessage: string,
-    options?: { cause?: unknown; debugMessage?: string; upstreamCode?: string },
+    options?: {
+      cause?: unknown;
+      debugMessage?: string;
+      upstreamCode?: string;
+      upstreamMessage?: string;
+    },
   ) {
     super(options?.debugMessage ?? userMessage, { cause: options?.cause });
     this.name = "CarrierError";
     this.code = code;
     this.userMessage = userMessage;
     this.upstreamCode = options?.upstreamCode;
+    this.upstreamMessage = options?.upstreamMessage;
   }
 }
