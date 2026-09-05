@@ -566,6 +566,52 @@ export interface LatencyRow {
 }
 
 /** ความเร็วแยกตามชั้นที่ตอบ */
+/**
+ * จำนวนแถวในช่วงนั้นที่ไม่มีค่าเวลา จึงไม่ถูกนับในตารางความเร็ว
+ *
+ * ── ทำไมต้องมี ────────────────────────────────────────────────────
+ * admin_latency กรอง `took_ms is not null` ส่วน admin_error_breakdown ไม่กรอง
+ * ผลคือสองตารางบนหน้าเดียวกันนับจำนวนไม่เท่ากันโดยไม่มีคำอธิบาย (ของจริงที่เจอ:
+ * 172 กับ 170) แล้วคนอ่านต้องมานั่งเดาว่าตัวไหนผิด
+ *
+ * ตั้งใจ **ไม่** ยัด 0 ให้แถวที่ไม่มีค่าเวลา เพราะจะทำให้ p50 เพี้ยนทันที —
+ * ทางที่ถูกคือบอกตรงๆ ว่ามีกี่แถวที่นับไม่ได้
+ *
+ * แถวพวกนี้มาจากยุคแรกสุดที่ /api/track ยังไม่ส่ง tookMs (31 ส.ค. 2026)
+ * โค้ดปัจจุบันส่งทุกเส้นทางแล้ว จำนวนนี้จึงควรคงที่และค่อยๆ หลุดหน้าต่างไปเอง
+ *
+ * นับตรงจากตารางแทนการทำฟังก์ชัน SQL ใหม่ เพราะเป็น count ธรรมดาที่ไม่ต้องใช้
+ * สิทธิ์อะไรเกินกว่าที่ service_role มีอยู่แล้ว (ดู grant ใน 0007)
+ */
+export async function readLatencyGaps(days: number): Promise<number> {
+  const supabase = getServiceSupabaseClient();
+  if (supabase === null) return 0;
+
+  try {
+    let query = supabase
+      .from(EVENTS_TABLE)
+      .select("id", { count: "exact", head: true })
+      .is("took_ms", null);
+
+    if (days > 0) {
+      const since = new Date(Date.now() - days * 24 * 60 * 60_000).toISOString();
+      query = query.gte("occurred_at", since);
+    }
+
+    const { count, error } = await query;
+
+    if (error) {
+      warn("นับแถวที่ไม่มีค่าเวลา", error.message);
+      return 0;
+    }
+
+    return count ?? 0;
+  } catch (cause) {
+    warn("นับแถวที่ไม่มีค่าเวลา", reason(cause));
+    return 0;
+  }
+}
+
 export async function readLatency(days: number): Promise<LatencyRow[]> {
   const supabase = getServiceSupabaseClient();
   if (supabase === null) return [];

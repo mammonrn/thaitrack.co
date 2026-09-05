@@ -41,10 +41,17 @@ import { countBranches } from "@/lib/supabase/locations";
 import { listProviderUsage } from "@/lib/supabase/provider-usage";
 import { readReferrerChannels } from "@/lib/supabase/referrer";
 import {
+  REFERRER_LONG_DAYS,
+  REFERRER_SHORT_DAYS,
+  WINDOW_OPTIONS,
+  readWindowDays,
+} from "@/lib/admin-window";
+import {
   readErrorBreakdown,
   readInstallPromptStats,
   readInstallStats,
   readLatency,
+  readLatencyGaps,
   readMemberActivity,
   readMemberStats,
   readSearchDaily,
@@ -59,8 +66,6 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** ช่วงที่หน้านี้มองย้อนหลัง */
-const WINDOW_DAYS = 30;
 const TOP_CARRIER_LIMIT = 8;
 const UNFOUND_SHAPE_LIMIT = 12;
 
@@ -204,7 +209,9 @@ function Section({
   );
 }
 
-export default async function AdminStatsPage() {
+export default async function AdminStatsPage(props: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const admin = await requireAdmin();
   if (!admin.ok) {
     console.warn(`[admin] ปฏิเสธการเปิดหน้าสถิติ: ${admin.reason}`);
@@ -218,6 +225,10 @@ export default async function AdminStatsPage() {
   const periods = Object.fromEntries(
     PROVIDER_IDS.map((provider) => [provider, currentPeriodKey(provider)]),
   );
+
+  // ช่วงเวลาที่ผู้ใช้เลือก — ติดไปกับ URL เพื่อให้ refresh แล้วไม่หาย และส่ง
+  // ลิงก์ให้กันดูตัวเลขชุดเดียวกันได้
+  const windowDays = readWindowDays((await props.searchParams).days);
   const leanRatio = readLeanRatio();
 
   const [
@@ -231,6 +242,7 @@ export default async function AdminStatsPage() {
     usage,
     errors,
     latency,
+    latencyGaps,
     installs,
     unknownCourier,
     invite,
@@ -243,20 +255,21 @@ export default async function AdminStatsPage() {
     readMemberStats(),
     readMemberActivity(),
     readSearchOverview(0),
-    readSearchOverview(WINDOW_DAYS),
-    readSearchDaily(WINDOW_DAYS),
-    readTopCarriers(WINDOW_DAYS, TOP_CARRIER_LIMIT),
+    readSearchOverview(windowDays),
+    readSearchDaily(windowDays),
+    readTopCarriers(windowDays, TOP_CARRIER_LIMIT),
     countBranches(),
     listProviderUsage(periods),
-    readErrorBreakdown(WINDOW_DAYS),
-    readLatency(WINDOW_DAYS),
+    readErrorBreakdown(windowDays),
+    readLatency(windowDays),
+    readLatencyGaps(windowDays),
     readInstallStats(),
-    readUnknownCourierFailures(WINDOW_DAYS),
-    readInstallPromptStats(WINDOW_DAYS),
-    readUnfoundShapes(WINDOW_DAYS, UNFOUND_SHAPE_LIMIT),
-    readReferrerChannels(7),
-    readReferrerChannels(WINDOW_DAYS),
-    readSearchEfficiency(WINDOW_DAYS),
+    readUnknownCourierFailures(windowDays),
+    readInstallPromptStats(windowDays),
+    readUnfoundShapes(windowDays, UNFOUND_SHAPE_LIMIT),
+    readReferrerChannels(REFERRER_SHORT_DAYS),
+    readReferrerChannels(REFERRER_LONG_DAYS),
+    readSearchEfficiency(windowDays),
     // อ่านค่าจริงจากฐานข้อมูลตรงๆ ไม่ผ่าน cache — หน้าแอดมินต้องเห็นสถานะ
     // ปัจจุบันเสมอ ไม่ใช่ค่าที่ค้างอยู่ในชั้น cache ของเส้นทางแสดงผล
     // (เส้นทางนั้นใช้ readCachedSettings ดู lib/settings-cache.ts)
@@ -300,7 +313,7 @@ export default async function AdminStatsPage() {
    */
   const report: ReportData = {
     generatedAt: new Date().toISOString(),
-    windowDays: WINDOW_DAYS,
+    windowDays,
     members: {
       total: members.total,
       new7d: members.new7d,
@@ -408,8 +421,42 @@ export default async function AdminStatsPage() {
           และไม่มีการเก็บเลขพัสดุไว้เลย
         </p>
         <p className="mt-1 font-mono text-[11px] text-faint">
-          เข้าสู่ระบบเป็น {admin.email} · ช่วงที่แสดง {WINDOW_DAYS} วันล่าสุด
+          เข้าสู่ระบบเป็น {admin.email} · ช่วงที่แสดง {windowDays} วันล่าสุด
         </p>
+
+        {/* ปุ่มเลือกช่วงเวลา
+            ⚠️ เป็นลิงก์ ไม่ใช่ปุ่ม client ที่ setState — ค่าที่เลือกต้องอยู่ใน
+            URL เพื่อให้ refresh แล้วไม่หาย และส่งลิงก์ให้คนอื่นดูตัวเลขชุด
+            เดียวกันได้ · แลกมาด้วยการโหลดหน้าใหม่ ซึ่งยอมรับได้บนหน้าแอดมิน
+
+            มีเพราะรายงาน 30 วันกลบผลของสิ่งที่เพิ่ง deploy ไปเมื่อวาน —
+            ข้อมูลเก่าในหน้าต่างเดียวกันดึงค่าเฉลี่ยไว้จนมองไม่เห็นความเปลี่ยนแปลง */}
+        <nav
+          aria-label="ช่วงเวลาที่แสดง"
+          className="mt-3 flex flex-wrap items-center gap-2"
+        >
+          {WINDOW_OPTIONS.map((option) => {
+            const active = option === windowDays;
+            return (
+              <Link
+                key={option}
+                href={`/admin/stats?days=${option}`}
+                aria-current={active ? "page" : undefined}
+                className={
+                  "min-h-9 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors " +
+                  (active
+                    ? "border-ink bg-ink text-paper"
+                    : "border-line bg-white text-faint hover:border-ink hover:text-ink")
+                }
+              >
+                {option} วัน
+              </Link>
+            );
+          })}
+          <span className="text-[11px] text-faint">
+            ยอดสะสมตลอดกาล โควตา และตารางช่องทางเข้าเว็บ ไม่ขึ้นกับปุ่มนี้
+          </span>
+        </nav>
 
         {/* ไฟล์ถูกสร้างในเบราว์เซอร์ตอนกด ไม่เก็บไว้ที่ไหน และมีแต่ตัวเลขรวม
             เหมือนที่แสดงบนหน้านี้ทุกประการ (ดู lib/admin-report.ts) */}
@@ -465,7 +512,7 @@ export default async function AdminStatsPage() {
                     ? "—"
                     : (recent.total / members.total).toFixed(1)
                 }
-                hint={`${WINDOW_DAYS} วัน · รวมคนที่ไม่ได้ล็อกอินด้วย`}
+                hint={`${windowDays} วัน · รวมคนที่ไม่ได้ล็อกอินด้วย`}
               />
             </div>
           </Section>
@@ -475,7 +522,7 @@ export default async function AdminStatsPage() {
             note={`ยอดสะสมทั้งหมด ${count(allTime.total)} ครั้ง`}
           >
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <Tile label={`ค้นหา ${WINDOW_DAYS} วัน`} value={count(recent.total)} />
+              <Tile label={`ค้นหา ${windowDays} วัน`} value={count(recent.total)} />
               <Tile
                 label="ค้นเจอ"
                 value={percent(recent.found, answered)}
@@ -570,6 +617,28 @@ export default async function AdminStatsPage() {
                   />
                 ))}
               </div>
+            )}
+
+            {/* ⚠️ ตารางนี้นับได้น้อยกว่าตารางอื่นบนหน้าเดียวกัน เพราะ admin_latency
+                กรอง took_ms is not null ออก ส่วนตารางอื่นไม่กรอง · ของจริงที่เจอ:
+                "สาเหตุที่ตอบไม่ได้" นับได้ 172 แต่ชั้น error ตรงนี้นับได้ 170
+                แล้วไม่มีอะไรบนหน้าอธิบายเลย คนอ่านต้องเดาเองว่าตัวไหนผิด
+
+                ตั้งใจไม่ยัด 0 ให้แถวที่ไม่มีค่าเวลา เพราะจะทำให้ p50 เพี้ยนทันที —
+                บอกจำนวนที่นับไม่ได้ตรงๆ ดีกว่า
+
+                ⚠️ ตัวเลขนี้นับ **ทุกชั้น** ไม่ใช่เฉพาะชั้น error จึงห้ามเขียนว่า
+                "ต่างกันเท่านี้พอดี" กับตารางใดตารางหนึ่ง (เคยเขียนแบบนั้นแล้วผิด:
+                ยอดรวมคือ 19 แต่ส่วนที่อธิบาย 172-vs-170 มีแค่ 2)
+
+                N มาจากการนับจริง ไม่ใช่ค่าคงที่ เพราะแถวพวกนี้จะทยอยหลุดหน้าต่าง
+                เวลาไปเอง — เลือก 1 วันตอนนี้ก็ไม่เหลือแล้ว */}
+            {latencyGaps > 0 && (
+              <p className="mt-3 text-xs leading-relaxed text-faint">
+                ไม่รวม {count(latencyGaps)} ครั้งที่ไม่มีค่าเวลาบันทึกไว้
+                (แถวยุคแรกก่อนระบบเก็บเวลาครบทุกเส้นทาง) ช่อง “จำนวน”
+                ในตารางนี้จึงน้อยกว่าตารางอื่นบนหน้านี้เล็กน้อย
+              </p>
             )}
           </Section>
 
