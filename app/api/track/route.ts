@@ -221,6 +221,15 @@ export async function POST(request: Request) {
       ? rawHint
       : undefined;
 
+  // คำขอนี้มาจากการกดปุ่ม "ลองอีกครั้ง" หรือเปล่า
+  //
+  // ⚠️ ธงนี้ไม่เปลี่ยนพฤติกรรมการค้นหาแม้แต่นิดเดียว — มันไหลไปที่สถิติอย่างเดียว
+  // ปุ่มลองอีกครั้งใช้เส้นทางเดียวกับการค้นครั้งแรกทุกประการ (ห้ามมีเส้นทางที่สอง)
+  const retried =
+    typeof body === "object" &&
+    body !== null &&
+    (body as { retried?: unknown }).retried === true;
+
   const startedAt = Date.now();
   const trackNo = normalizeTrackingNumber(trackingNumber);
 
@@ -258,6 +267,7 @@ export async function POST(request: Request) {
       provider: resolved.provider,
       stale: resolved.stale,
       tookMs: Date.now() - startedAt,
+      retried,
       upstreamCalls: trace.upstreamCalls,
       queueMs: trace.queueMs,
     });
@@ -323,6 +333,7 @@ export async function POST(request: Request) {
       tookMs: Date.now() - startedAt,
       // ล้มตอนที่เหลือผู้ให้บริการเจ้าเดียวหรือเปล่า — ตัวเลขที่ต้องใช้ตัดสินใจ
       // ว่าจะทำกลไกเดาขนส่งตอนจนตรอกไหม (ดู lib/carriers/resolve.ts)
+      retried,
       upstreamCalls: trace.upstreamCalls,
       queueMs: trace.queueMs,
       unknownCourier: isUnknownCourierFailure(error),

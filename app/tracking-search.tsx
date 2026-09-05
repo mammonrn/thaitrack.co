@@ -24,6 +24,7 @@ import { markSearchDone } from "@/lib/install-invite";
 import { NICKNAME_MAX_LENGTH, type SavedTracking } from "@/lib/saved-trackings";
 import { translateStatusText } from "@/lib/status-th";
 import { groupEventsByLocation } from "@/lib/timeline-groups";
+import { retryDelaySeconds } from "@/lib/retry-delay";
 import {
   EMPTY_INPUT_ERROR,
   QUEUED_MESSAGE,
@@ -103,6 +104,18 @@ export default function TrackingSearch({
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<TrackingResult | null>(null);
   const [error, setError] = useState<UserFacingError | null>(null);
+  /**
+   * ปุ่ม "ลองอีกครั้ง" ควรขึ้นไหม
+   *
+   * ⚠️ ขึ้นเฉพาะ upstream_error เท่านั้น — เลขที่ขนส่งบอกว่าไม่มี ลองใหม่กี่ครั้ง
+   * ก็ไม่มี การขึ้นปุ่มตรงนั้นคือการหลอกให้ผู้ใช้เสียเวลาและเผาโควตาฟรี
+   * (ดู retryable ใน lib/tracking-view.ts)
+   */
+  const [retryable, setRetryable] = useState(false);
+  /** เหลืออีกกี่วินาทีถึงจะกดปุ่มได้ — 0 = กดได้แล้ว */
+  const [retryIn, setRetryIn] = useState(0);
+  /** กดไปแล้วกี่ครั้ง — ใช้คำนวณเวลารอที่เพิ่มขึ้นเรื่อยๆ */
+  const retryCount = useRef(0);
   // มีค่าเมื่อผลที่แสดงอยู่เป็นข้อมูลเก่าจาก cache เพราะระบบขนส่งไม่ตอบ
   const [staleSince, setStaleSince] = useState<string | null>(null);
   /**
@@ -127,6 +140,17 @@ export default function TrackingSearch({
     setSavedNickname(saved?.nickname?.trim() ?? "");
   }, []);
 
+  // นับถอยหลังของปุ่ม "ลองอีกครั้ง" — ตัวเลขที่ผู้ใช้เห็นว่าเหลืออีกกี่วินาที
+  //
+  // มีเพื่อให้การรอเป็นสิ่งที่มองเห็นได้ ไม่ใช่ปุ่มที่กดไม่ได้เฉยๆ โดยไม่บอก
+  // เหตุผล ซึ่งอ่านแล้วเหมือนเว็บค้าง
+  useEffect(() => {
+    if (retryIn <= 0) return;
+
+    const timer = setTimeout(() => setRetryIn((left) => left - 1), 1_000);
+    return () => clearTimeout(timer);
+  }, [retryIn]);
+
   // ตั้งนาฬิกาไว้เฉยๆ แล้วปล่อยให้ callback เป็นคนเปลี่ยน state
   // การรีเซ็ตกลับเป็น false ทำตอนเริ่มค้นหารอบใหม่แทน ไม่ทำในนี้ เพราะ setState
   // ตรงๆ ใน effect ทำให้เกิด cascading render
@@ -142,11 +166,20 @@ export default function TrackingSearch({
       setResult(outcome.result);
       setStaleSince(outcome.staleSince);
       setProofPhotoUrls(outcome.proofPhotoUrls);
+      setRetryable(false);
+      retryCount.current = 0;
       // จุดเดียวที่ถือว่า "ผู้ใช้ได้ประโยชน์จากเว็บแล้ว" — การ์ดชวนติดตั้งแอป
       // รอสัญญาณนี้ก่อนถึงจะโผล่ (ดู lib/install-invite.ts)
       markSearchDone("found");
     } else {
       setError(outcome.error);
+      setRetryable(outcome.retryable);
+
+      // เวลารอเพิ่มขึ้นทุกครั้งที่กดแล้วยังล้ม — backoff ที่ผู้ใช้เห็น ไม่ใช่
+      // ที่ซ่อนไว้ · ถ้าไม่เพิ่ม คนจะกดรัวจนล้มซ้ำแล้วเลิกไปเลย
+      if (outcome.retryable) {
+        setRetryIn(retryDelaySeconds(retryCount.current));
+      }
 
       // ค้นไม่เจอเพราะเลขยังไม่ขึ้นระบบ = คนที่ต้องกลับมาค้นเลขเดิมอีกครั้ง
       // ใน 1–2 ชั่วโมงแน่นอน จึงชวนติดตั้งตรงนี้ด้วยการ์ดใบเดิม
@@ -155,6 +188,26 @@ export default function TrackingSearch({
       // คือตอนที่เราทำงานให้เขาไม่ได้ การขออะไรตรงนั้นคือจังหวะที่แย่ที่สุด
       if (outcome.notFound) markSearchDone("not_found");
     }
+  }
+
+  /**
+   * กดปุ่ม "ลองอีกครั้ง"
+   *
+   * ⚠️ ใช้ requestTracking ตัวเดียวกับการค้นครั้งแรกทุกประการ ต่างแค่ธง retried
+   * ที่ไหลไปสถิติ — ห้ามสร้างเส้นทางค้นหาที่สอง (บทเรียนเดิม: ตรรกะที่ต้องมี
+   * ที่เดียว ถ้าปล่อยให้ก๊อปไปวางที่สอง สองที่จะค่อยๆ เพี้ยนออกจากกัน)
+   */
+  async function handleRetry() {
+    if (isLoading || retryIn > 0) return;
+
+    retryCount.current += 1;
+    setIsLoading(true);
+    setIsQueued(false);
+    setError(null);
+    setRetryable(false);
+
+    applyOutcome(await requestTracking(trackingNumber, fetch, courierHint, true));
+    setIsLoading(false);
   }
 
   /**
@@ -388,6 +441,27 @@ export default function TrackingSearch({
           <p className="mt-1.5 text-sm leading-relaxed text-faint">
             {error.detail}
           </p>
+
+          {/* ⚠️ ปุ่มนี้ขึ้นเฉพาะตอนปลายทางตอบไม่ทันเท่านั้น
+              ห้ามขึ้นตอน "ไม่พบเลขนี้" — ลองใหม่กี่ครั้งก็ไม่เจอ การให้ปุ่มตรงนั้น
+              คือการหลอกให้ผู้ใช้เสียเวลาและเผาโควตาฟรี (ดู retryable) */}
+          {retryable && (
+            <button
+              type="button"
+              onClick={handleRetry}
+              disabled={retryIn > 0}
+              className={
+                "mt-4 inline-flex min-h-11 items-center justify-center rounded-lg px-5 text-sm font-medium transition-colors " +
+                (retryIn > 0
+                  ? "cursor-not-allowed border border-line bg-paper text-faint"
+                  : "bg-ink text-paper hover:bg-ink/90")
+              }
+            >
+              {/* ตัวเลขนับถอยหลังทำให้การรอเป็นสิ่งที่มองเห็นได้ — ปุ่มที่กดไม่ได้
+                  เฉยๆ โดยไม่บอกเหตุผล อ่านแล้วเหมือนเว็บค้าง */}
+              {retryIn > 0 ? `ลองอีกครั้ง (${retryIn})` : "ลองอีกครั้ง"}
+            </button>
+          )}
         </div>
       )}
 

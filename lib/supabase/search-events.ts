@@ -75,6 +75,14 @@ export interface SearchEventInput {
    */
   upstreamCalls?: number | null;
   /**
+   * true = คำขอนี้มาจากการกดปุ่ม "ลองอีกครั้ง" หลังเจอ upstream_error
+   *
+   * เป็นคุณสมบัติของคำขอล้วนๆ · มีไว้ตอบว่าปุ่มนั้นช่วยได้จริงไหม —
+   * ถ้าคนกดแล้วสำเร็จเป็นส่วนใหญ่ แปลว่าเก็บไว้ · ถ้ากดแล้วล้มซ้ำเกือบทุกครั้ง
+   * แปลว่าเรากำลังให้ความหวังลมๆ แล้งๆ และต้องหาทางอื่น
+   */
+  retried?: boolean;
+  /**
    * ในเวลาทั้งหมด หมดไปกับการรอคิวฝั่งเราเท่าไร (ms)
    *
    * ถ้าเลขนี้กินสัดส่วนใหญ่ ทางแก้คือเพิ่ม concurrency ของคิว ซึ่งไม่มีต้นทุน
@@ -142,6 +150,7 @@ export async function recordSearchEvent(
       reason: input.reason ?? null,
       upstream_code: input.upstreamCode ?? null,
       took_ms: input.tookMs ?? null,
+      retried: input.retried ?? false,
       upstream_calls: input.upstreamCalls ?? null,
       queue_ms: input.queueMs ?? null,
       unknown_courier: input.unknownCourier ?? false,
@@ -175,6 +184,15 @@ export interface SearchOverview {
    * เป็น 0 เสมอบนฐานข้อมูลที่ยังไม่ได้รัน 0021 — toCount คืน 0 ให้ key ที่ไม่มี
    */
   notFoundCached: number;
+  /**
+   * ปุ่ม "ลองอีกครั้ง" — แสดง / กด / กดแล้วได้คำตอบ
+   *
+   * ต้องอ่านสามตัวคู่กันเสมอ: clicked ต่ำเทียบ shown = ปุ่มไม่ชวนให้กด ·
+   * recovered ต่ำเทียบ clicked = เรากำลังให้ความหวังลมๆ แล้งๆ
+   *
+   * เป็น 0 ทั้งหมดบนฐานข้อมูลที่ยังไม่ได้รัน 0024/0025
+   */
+  retry: { shown: number; clicked: number; recovered: number };
   error: number;
   fromCache: number;
   fromApi: number;
@@ -186,6 +204,7 @@ const EMPTY_OVERVIEW: SearchOverview = {
   found: 0,
   notFound: 0,
   notFoundCached: 0,
+  retry: { shown: 0, clicked: 0, recovered: 0 },
   error: 0,
   fromCache: 0,
   fromApi: 0,
@@ -215,6 +234,11 @@ export async function readSearchOverview(
       found: toCount(row.found),
       notFound: toCount(row.not_found),
       notFoundCached: toCount(row.not_found_cached),
+      retry: {
+        shown: toCount(row.retry_shown),
+        clicked: toCount(row.retry_clicked),
+        recovered: toCount(row.retry_recovered),
+      },
       error: toCount(row.error),
       fromCache: toCount(row.from_cache),
       fromApi: toCount(row.from_api),

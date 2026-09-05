@@ -38,6 +38,16 @@ export interface TrackingCourierStore {
     courierCode: string,
     confirmedBy: string,
   ): Promise<void>;
+  /**
+   * ลืมว่าเลขนี้เป็นของขนส่งเจ้าไหน — เงียบเสมอ ล้มเหลวได้โดยไม่กระทบอะไร
+   *
+   * ⚠️ ใช้เมื่อยิงเจาะจงตามที่จำไว้แล้วปลายทางบอกว่า "ไม่มีเลขนี้" — ความจำ
+   * ผิดหนึ่งครั้งไม่เป็นไร แต่ถ้าไม่ลบทิ้ง มันจะผิดซ้ำทุกครั้งตลอดไปและกิน
+   * โควตาเพิ่มหนึ่งครั้งต่อการค้นหาหนึ่งครั้งไปเรื่อยๆ
+   *
+   * ลบทิ้งแล้วครั้งหน้าเริ่มจากศูนย์ ซึ่งแย่ที่สุดก็เท่ากับตอนไม่มีความจำเลย
+   */
+  forget(trackingNumber: string): Promise<void>;
 }
 
 function warn(action: string, detail: string): void {
@@ -101,6 +111,22 @@ export const supabaseTrackingCourierStore: TrackingCourierStore = {
       if (error) warn("จำขนส่งของเลขพัสดุ", error.message);
     } catch (cause) {
       warn("จำขนส่งของเลขพัสดุ", reason(cause));
+    }
+  },
+
+  async forget(trackingNumber) {
+    const supabase = getServiceSupabaseClient();
+    if (supabase === null) return;
+
+    try {
+      const { error } = await supabase
+        .from(COURIERS_TABLE)
+        .delete()
+        .eq("tracking_number", trackingNumber);
+
+      if (error) warn("ลืมขนส่งของเลขพัสดุ", error.message);
+    } catch (cause) {
+      warn("ลืมขนส่งของเลขพัสดุ", reason(cause));
     }
   },
 };

@@ -33,6 +33,7 @@ const noCache: PersistentTrackingCache = {
 const noCourierStore = {
   read: () => Promise.resolve(null),
   remember: () => Promise.resolve(),
+  forget: () => Promise.resolve(),
 };
 
 let counter = 0;
