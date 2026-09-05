@@ -20,7 +20,7 @@ import SaveOnlyButton from "./save-only-button";
 import SaveTrackingButton from "./save-tracking-button";
 
 import type { TrackingResult, TrackingStatus } from "@/lib/carriers/types";
-import { markSearchSuccess } from "@/lib/install-invite";
+import { markSearchDone } from "@/lib/install-invite";
 import { NICKNAME_MAX_LENGTH, type SavedTracking } from "@/lib/saved-trackings";
 import { translateStatusText } from "@/lib/status-th";
 import { groupEventsByLocation } from "@/lib/timeline-groups";
@@ -144,9 +144,16 @@ export default function TrackingSearch({
       setProofPhotoUrls(outcome.proofPhotoUrls);
       // จุดเดียวที่ถือว่า "ผู้ใช้ได้ประโยชน์จากเว็บแล้ว" — การ์ดชวนติดตั้งแอป
       // รอสัญญาณนี้ก่อนถึงจะโผล่ (ดู lib/install-invite.ts)
-      markSearchSuccess();
+      markSearchDone("found");
     } else {
       setError(outcome.error);
+
+      // ค้นไม่เจอเพราะเลขยังไม่ขึ้นระบบ = คนที่ต้องกลับมาค้นเลขเดิมอีกครั้ง
+      // ใน 1–2 ชั่วโมงแน่นอน จึงชวนติดตั้งตรงนี้ด้วยการ์ดใบเดิม
+      //
+      // ⚠️ เฉพาะ not_found เท่านั้น ไม่รวม error ชนิดอื่น — ตอนระบบขัดข้อง
+      // คือตอนที่เราทำงานให้เขาไม่ได้ การขออะไรตรงนั้นคือจังหวะที่แย่ที่สุด
+      if (outcome.notFound) markSearchDone("not_found");
     }
   }
 

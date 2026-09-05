@@ -12,6 +12,8 @@ import {
   SEARCH_SUCCESS_EVENT,
   hasCountedShown,
   hasSearchedThisSession,
+  readSearchContext,
+  type SearchContext,
   markShownCounted,
   rememberDismissal,
   reportInvite,
@@ -139,13 +141,24 @@ export default function InstallInvite() {
   // นับ "แสดง" ครั้งเดียวต่อเซสชัน — ถ้านับทุกครั้งที่ component ขึ้นใหม่
   // (เปลี่ยนหน้า, กด refresh) conversion rate จะต่ำกว่าความจริงโดยไม่มีเหตุผล
   const counted = useRef(false);
+
+  /**
+   * บริบทของการค้นที่ทำให้การ์ดใบนี้ขึ้นมา — ล็อกไว้ตอนแสดง
+   *
+   * ต้องล็อก ไม่ใช่อ่านสดตอนกด เพราะถ้าผู้ใช้ค้นใหม่ระหว่างที่การ์ดยังค้างอยู่
+   * ค่าใน sessionStorage จะเปลี่ยน แล้ว shown กับ clicked ของการ์ดใบเดียวกัน
+   * จะไปคนละช่อง ทำให้ funnel ไม่ปิด — เห็น clicked มากกว่า shown ได้
+   */
+  const contextRef = useRef<SearchContext>("found");
+
   useEffect(() => {
     if (!visible || counted.current) return;
     counted.current = true;
+    contextRef.current = readSearchContext();
 
     if (hasCountedShown()) return;
     markShownCounted();
-    void reportInvite("shown");
+    void reportInvite("shown", contextRef.current);
   }, [visible]);
 
   // เผื่อที่ให้เนื้อหาท้ายหน้าเลื่อนพ้นการ์ดนี้ — padding ล่างของ body อ่าน
@@ -163,7 +176,7 @@ export default function InstallInvite() {
 
   const close = useCallback(() => {
     setClosing(true);
-    void reportInvite("dismissed");
+    void reportInvite("dismissed", contextRef.current);
 
     // จำว่าปิดแล้วหลังแอนิเมชันจบ ไม่ใช่ก่อน — ถ้าจำทันที เงื่อนไขจะหลุดแล้ว
     // การ์ดจะหายวับไปเลย ไม่ทันได้เลื่อนลง
@@ -174,7 +187,7 @@ export default function InstallInvite() {
   }, []);
 
   const accept = useCallback(() => {
-    void reportInvite("clicked");
+    void reportInvite("clicked", contextRef.current);
 
     // กดแล้วต้องหายไม่ว่าปลายทางจะจบยังไง — ผู้ใช้แสดงเจตนาแล้ว การให้คำชวน
     // ค้างอยู่หลังจากนั้นคือการตื๊อ · แต่ไม่บันทึกว่า "ปิดถาวร" เพราะเขาไม่ได้ปฏิเสธ

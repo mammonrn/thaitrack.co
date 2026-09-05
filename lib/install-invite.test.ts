@@ -9,15 +9,20 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
   INVITE_DELAY_MS,
   INVITE_DETAIL,
   INVITE_TITLE,
+  hasSearchedThisSession,
+  markSearchDone,
+  readSearchContext,
   shouldShowInvite,
   type InviteConditions,
 } from "./install-invite.ts";
+import { ERROR_MESSAGE } from "./tracking-view.ts";
 import type { InstallState } from "./use-install-state.ts";
 
 /** เงื่อนไขที่ครบทุกข้อ — เทสต์แต่ละตัวค่อยพังทีละข้อจากตรงนี้ */
@@ -98,4 +103,121 @@ test("ถ้อยคำต้องบอกว่าได้อะไร ไ�
   // เป็นคำที่เขียนง่ายและตรวจสอบไม่ได้ ซึ่งเป็นนิยามของคำโฆษณาที่เราไม่เอา
   assert.doesNotMatch(INVITE_DETAIL, /เร็ว/);
   assert.match(INVITE_DETAIL, /หน้าจอหลัก/);
+});
+
+/* ------------------------------------------------------------------ *
+ * จังหวะ "ค้นไม่เจอ" — เพิ่มเข้ามาทีหลัง ใช้การ์ดใบเดิม
+ *
+ * เหตุผล: คนที่เลขยังไม่ขึ้นระบบขนส่งต้องกลับมาค้นเลขเดิมอีกครั้งใน 1–2 ชั่วโมง
+ * แน่นอน ซึ่งตรงกับสิ่งที่การติดตั้งช่วยได้พอดี · แต่ต้องนับแยกจากจังหวะเดิม
+ * ไม่งั้นเวลาอัตราการกดขยับ เราจะแยกไม่ออกว่าเป็นเพราะอะไร
+ * ------------------------------------------------------------------ */
+
+/** storage ปลอมในหน่วยความจำ — เทสต์รันบน Node ที่ไม่มี window */
+function withFakeStorage(run: () => void): void {
+  const make = () => {
+    const map = new Map<string, string>();
+    return {
+      getItem: (k: string) => map.get(k) ?? null,
+      setItem: (k: string, v: string) => void map.set(k, v),
+    };
+  };
+  const globals = globalThis as unknown as Record<string, unknown>;
+  const before = {
+    session: globals.sessionStorage,
+    local: globals.localStorage,
+    win: globals.window,
+  };
+
+  globals.sessionStorage = make();
+  globals.localStorage = make();
+  globals.window = { dispatchEvent: () => true };
+
+  try {
+    run();
+  } finally {
+    globals.sessionStorage = before.session;
+    globals.localStorage = before.local;
+    globals.window = before.win;
+  }
+}
+
+test("ยังไม่ได้ค้นอะไร → บริบทเป็น found (ค่าเดิมก่อนมีฟิลด์นี้)", () => {
+  withFakeStorage(() => {
+    assert.equal(readSearchContext(), "found");
+  });
+});
+
+test("ค้นเจอ → พร้อมขึ้น และบริบทเป็น found", () => {
+  withFakeStorage(() => {
+    markSearchDone("found");
+    assert.equal(hasSearchedThisSession(), true);
+    assert.equal(readSearchContext(), "found");
+  });
+});
+
+test("ค้นไม่เจอ → การ์ดต้องขึ้นได้เหมือนกัน และบริบทเป็น not_found", () => {
+  withFakeStorage(() => {
+    markSearchDone("not_found");
+
+    assert.equal(
+      hasSearchedThisSession(),
+      true,
+      "ค้นไม่เจอต้องปลุกการ์ดได้ด้วย — คนกลุ่มนี้ต้องกลับมาค้นซ้ำแน่นอน",
+    );
+    assert.equal(readSearchContext(), "not_found");
+  });
+});
+
+test("ค้นไม่เจอแล้วค้นเจอทีหลัง → บริบทเปลี่ยนตามครั้งล่าสุด", () => {
+  withFakeStorage(() => {
+    markSearchDone("not_found");
+    markSearchDone("found");
+    assert.equal(readSearchContext(), "found");
+  });
+});
+
+test("หน้าค้นหาต้องเรียก markSearchDone เฉพาะ found กับ not_found เท่านั้น", () => {
+  const source = readFileSync("app/tracking-search.tsx", "utf8");
+  const calls = [...source.matchAll(/markSearchDone\("(\w+)"\)/g)].map(
+    (m) => m[1],
+  );
+
+  assert.deepEqual(
+    calls.sort(),
+    ["found", "not_found"],
+    "ห้ามชวนติดตั้งตอนระบบขัดข้อง — เป็นจังหวะที่เราทำงานให้เขาไม่ได้ " +
+      "การขออะไรตรงนั้นคือจังหวะที่แย่ที่สุดเท่าที่จะเป็นไปได้",
+  );
+  assert.match(
+    source,
+    /if \(outcome\.notFound\) markSearchDone\("not_found"\)/,
+    "ต้องผูกกับธง notFound ที่เซิร์ฟเวอร์บอกมา ไม่ใช่เดาจากข้อความ",
+  );
+});
+
+test("การ์ดตอนค้นไม่เจอต้องไม่มีปุ่มเข้าสู่ระบบหรือปุ่มบันทึก", () => {
+  // ข้อบังคับจากเจ้าของระบบ: ตรงจังหวะนี้ห้ามเสนอล็อกอินหรือ "บันทึกไว้"
+  // และห้ามมี popup — การ์ดชวนติดตั้งใบเดิมเท่านั้น
+  const source = readFileSync("app/install-invite.tsx", "utf8");
+
+  assert.doesNotMatch(source, /เข้าสู่ระบบ|บันทึกไว้|sign-?in|login/i);
+  assert.equal(
+    INVITE_TITLE,
+    "ติดตั้งเป็นแอป",
+    "ต้องเป็นการ์ดใบเดิม ไม่ใช่ของใหม่ที่เขียนคำใหม่",
+  );
+});
+
+test("ข้อความบนการ์ดค้นไม่เจอต้องอธิบายเรื่อง 1–2 ชั่วโมง และไม่โทษผู้ใช้", () => {
+  const detail = ERROR_MESSAGE.not_found.detail;
+
+  assert.match(detail, /1–2 ชั่วโมง/, "ต้องบอกเวลาที่ขนส่งใช้ก่อนเลขขึ้นระบบ");
+  assert.match(detail, /อีกครั้ง|อีกสักพัก/, "ต้องบอกว่ากลับมาค้นใหม่ได้");
+  assert.doesNotMatch(
+    detail,
+    /ตรวจ(สอบ)?ว่าพิมพ์|พิมพ์เลข.*ถูก/,
+    "ห้ามขึ้นต้นด้วยการให้ผู้ใช้ไปตรวจว่าตัวเองพิมพ์ผิดไหม — " +
+      "ส่วนใหญ่พิมพ์ถูกแล้ว แค่ของเพิ่งออกจากมือผู้ส่ง",
+  );
 });

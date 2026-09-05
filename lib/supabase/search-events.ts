@@ -646,12 +646,29 @@ export interface InstallPromptStats {
   shown: number;
   dismissed: number;
   clicked: number;
+  /**
+   * แยกตามจังหวะที่การ์ดขึ้น — ค้นเจอ กับ ค้นไม่เจอ
+   *
+   * ต้องแยก ไม่งั้นเวลาอัตราการกดขยับ เราจะแยกไม่ออกว่าเป็นเพราะจังหวะใหม่
+   * (ค้นไม่เจอ) ได้ผลดี/แย่ หรือเพราะจำนวนคนที่เห็นเพิ่มขึ้นเฉยๆ
+   * (ดู supabase/migrations/0023_install_prompt_context.sql)
+   *
+   * เป็น 0 ทั้งหมดบนฐานข้อมูลที่ยังไม่ได้รัน 0023
+   */
+  byContext: {
+    found: { shown: number; clicked: number; dismissed: number };
+    notFound: { shown: number; clicked: number; dismissed: number };
+  };
 }
 
 const EMPTY_PROMPT_STATS: InstallPromptStats = {
   shown: 0,
   dismissed: 0,
   clicked: 0,
+  byContext: {
+    found: { shown: 0, clicked: 0, dismissed: 0 },
+    notFound: { shown: 0, clicked: 0, dismissed: 0 },
+  },
 };
 
 /** สิ่งที่เกิดกับการ์ดชวนติดตั้งหนึ่งครั้ง — ชุดปิด ตรงกับ constraint ใน 0013 */
@@ -685,6 +702,18 @@ export async function readInstallPromptStats(
       shown: toCount(row.shown),
       dismissed: toCount(row.dismissed),
       clicked: toCount(row.clicked),
+      byContext: {
+        found: {
+          shown: toCount(row.shown_found),
+          clicked: toCount(row.clicked_found),
+          dismissed: toCount(row.dismissed_found),
+        },
+        notFound: {
+          shown: toCount(row.shown_not_found),
+          clicked: toCount(row.clicked_not_found),
+          dismissed: toCount(row.dismissed_not_found),
+        },
+      },
     };
   } catch (cause) {
     warn("อ่านสถิติการ์ดชวนติดตั้ง", reason(cause));
@@ -696,6 +725,8 @@ export async function readInstallPromptStats(
 export async function recordInstallPromptEvent(
   action: InstallPromptAction,
   platform: string,
+  /** ผู้ใช้เพิ่งค้นเจอ หรือค้นไม่เจอ ก่อนการ์ดจะขึ้น (ดู migration 0023) */
+  context: string = "found",
 ): Promise<void> {
   const supabase = getServiceSupabaseClient();
   if (supabase === null) return;
@@ -703,7 +734,7 @@ export async function recordInstallPromptEvent(
   try {
     const { error } = await supabase
       .from("install_prompt_events")
-      .insert({ action, platform });
+      .insert({ action, platform, context });
 
     if (error) warn("บันทึกสถิติการ์ดชวนติดตั้ง", error.message);
   } catch (cause) {

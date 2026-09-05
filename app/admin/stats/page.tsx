@@ -799,7 +799,7 @@ export default async function AdminStatsPage() {
 
           <Section
             title="การ์ดชวนติดตั้ง"
-            note="ปุ่มลอยที่ขึ้นหลังค้นหาสำเร็จบนมือถือ · “แสดง” นับครั้งเดียวต่อเซสชัน จึงเทียบกันได้ระดับบอกทิศทาง ไม่ใช่ตัวเลขบัญชี"
+            note="ปุ่มลอยที่ขึ้นหลังได้คำตอบจากขนส่งบนมือถือ · “แสดง” นับครั้งเดียวต่อเซสชัน จึงเทียบกันได้ระดับบอกทิศทาง ไม่ใช่ตัวเลขบัญชี"
           >
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Tile label="แสดง" value={count(invite.shown)} />
@@ -820,6 +820,28 @@ export default async function AdminStatsPage() {
                   invite.shown,
                 )}
                 hint="เห็นแล้วเลื่อนผ่าน"
+              />
+            </div>
+
+            {/* แยกตามจังหวะที่การ์ดขึ้น — จังหวะ "ค้นไม่เจอ" เพิ่งเพิ่มเข้ามา
+                ถ้าไม่แยก เวลาอัตราการกดขยับจะแยกไม่ออกว่าเป็นเพราะจังหวะใหม่
+                หรือเพราะคนเห็นเยอะขึ้นเฉยๆ */}
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <Tile
+                label="ตอนค้นเจอ"
+                value={percent(
+                  invite.byContext.found.clicked,
+                  invite.byContext.found.shown,
+                )}
+                hint={`แสดง ${count(invite.byContext.found.shown)} · กด ${count(invite.byContext.found.clicked)}`}
+              />
+              <Tile
+                label="ตอนค้นไม่เจอ"
+                value={percent(
+                  invite.byContext.notFound.clicked,
+                  invite.byContext.notFound.shown,
+                )}
+                hint={`แสดง ${count(invite.byContext.notFound.shown)} · กด ${count(invite.byContext.notFound.clicked)}`}
               />
             </div>
           </Section>
