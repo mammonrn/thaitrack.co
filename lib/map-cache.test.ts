@@ -152,8 +152,8 @@ test("เพดานจำนวนรายการต้องไม่ถ�
 
 /* ---------------- ห้ามเก็บของพัง ---------------- */
 
-test("🔴 route ต้องเก็บ cache หลังผ่านด่านตรวจคำตอบครบแล้วเท่านั้น", () => {
-  const route = readFileSync("app/api/map/route.ts", "utf8");
+test("🔴 ต้องเก็บ cache หลังผ่านด่านตรวจคำตอบครบแล้วเท่านั้น", () => {
+  const route = readFileSync("lib/map-image.ts", "utf8");
 
   const remember = route.indexOf("rememberMapImage(");
   const statusCheck = route.indexOf("if (!upstream.ok)");
@@ -172,14 +172,21 @@ test("🔴 route ต้องเก็บ cache หลังผ่านด่�
 
 test("🔴 cache ต้องมาก่อนตัวนับและก่อน fetch — hit ห้ามถูกนับเป็นการจ่ายเงิน", () => {
   const route = readFileSync("app/api/map/route.ts", "utf8");
+  const image = readFileSync("lib/map-image.ts", "utf8");
 
+  // ในตัว route: อ่าน cache ก่อนแตะโควตา และก่อนเรียกขั้นที่ยิงจริง
   const lookup = route.indexOf("lookupMapImage(");
   const load = route.indexOf("await loadProviderUsage()");
-  const count = route.indexOf("await countProviderCall(PROVIDER)");
-  const fetchAt = route.indexOf("await fetch(url");
+  const call = route.indexOf("fetchMapImage(");
 
   assert.ok(lookup > 0 && load > lookup, "อ่าน cache ก่อนแตะโควตา");
-  assert.ok(count > lookup, "ตัวนับต้องอยู่ใต้ cache");
+  assert.ok(call > lookup, "ขั้นที่ยิงจริงต้องอยู่ใต้ cache");
+
+  // ในตัวขั้นที่ยิง: นับก่อน fetch เสมอ
+  const count = image.indexOf("await count()");
+  const fetchAt = image.indexOf("await fetchImpl(");
+
+  assert.ok(count > 0 && fetchAt > 0);
   assert.ok(
     count < fetchAt,
     "ต้องนับก่อนยิง — ยิงแล้ว error ก็จ่ายไปแล้ว การนับเฉพาะครั้งที่สำเร็จคือนับขาด",
