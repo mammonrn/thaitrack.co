@@ -36,6 +36,7 @@
 import { CircuitBreaker } from "../circuit-breaker";
 import { maskPersonName } from "../mask-name";
 import { countProviderCall, readQuota } from "../provider-usage";
+import { recordUpstreamCall } from "../request-trace";
 import {
   buildCourierLookup,
   normalizeCourierCode,
@@ -825,6 +826,10 @@ async function query(
   }
 
   const used = await countProviderCall(PROVIDER, { now: startedAt });
+
+  // ไม่มีคิวฝั่งเรากั้นเจ้านี้ (เพดาน 10 ครั้ง/วินาที ซึ่งเราไม่มีทางไปถึง)
+  // เวลารอคิวจึงเป็นศูนย์เสมอโดยธรรมชาติ ไม่ใช่เพราะวัดไม่ได้
+  recordUpstreamCall({ queueMs: 0 });
 
   let response: Response;
   try {

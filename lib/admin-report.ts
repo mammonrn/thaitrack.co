@@ -50,6 +50,8 @@ export interface ReportData {
     total: number;
     found: number;
     notFound: number;
+    /** ในจำนวน notFound มีกี่ครั้งที่ตอบจาก cache (ดู lib/not-found-cache.ts) */
+    notFoundCached: number;
     error: number;
     fromCache: number;
     fromApi: number;
@@ -148,7 +150,7 @@ export function toMarkdown(data: ReportData): string {
     "## การค้นหา",
     "",
     table(
-      ["ช่วง", "ทั้งหมด", "เจอ", "ไม่เจอ", "ล้มเหลว"],
+      ["ช่วง", "ทั้งหมด", "เจอ", "ไม่เจอ", "ระบบขัดข้อง"],
       [
         [
           "ตลอดกาล",
@@ -169,12 +171,20 @@ export function toMarkdown(data: ReportData): string {
     "",
     `ตอบจาก cache **${n(data.searchWindow.fromCache)}** · ยิง API จริง **${n(data.searchWindow.fromApi)}** · ข้อมูลเก่าที่ใช้แทนตอนขนส่งล่ม ${n(data.searchWindow.stale)}`,
     "",
+    `ในจำนวน "ไม่เจอ" ${n(data.searchWindow.notFound)} ครั้ง มี **${n(data.searchWindow.notFoundCached)}** ครั้งที่ตอบจาก cache โดยไม่ยิงขนส่งเลย`,
+    "",
     "## ค้นหา เทียบ โควตาที่ใช้จริง (รายวัน)",
     "",
     "_ยิ่งสัดส่วน \"ยิง API\" ต่ำ แปลว่า cache ช่วยประหยัดได้มาก_",
     "",
+    // ⚠️ คอลัมน์นี้เคยชื่อ "ล้มเหลว" เหมือนคอลัมน์ในตาราง "การค้นหา" ข้างบน
+    // ทั้งที่นับคนละอย่าง: ข้างบนนับ outcome = 'error' (ระบบขัดข้องจริง)
+    // ส่วนตรงนี้นับ source = 'error' ซึ่งรวม "ไม่พบเลขนี้" เข้าไปด้วย ตัวเลข
+    // จึงต่างกันหลายเท่าทั้งที่ชื่อเหมือนกัน — คนอ่านรายงานเข้าใจผิดแน่นอน
+    "_\"ไม่ได้คำตอบ\" = ค้นแล้วไม่ได้ข้อมูลพัสดุกลับไป **รวมทั้งที่ไม่พบเลขและที่ระบบขัดข้อง** จึงมากกว่าคอลัมน์ \"ระบบขัดข้อง\" ในตารางการค้นหาข้างบนเสมอ_",
+    "",
     table(
-      ["วัน", "ค้นหา", "ยิง API จริง", "จาก cache", "ล้มเหลว", "สัดส่วนที่ยิงจริง"],
+      ["วัน", "ค้นหา", "ยิง API จริง", "จาก cache", "ไม่ได้คำตอบ", "สัดส่วนที่ยิงจริง"],
       data.efficiency.map((row) => [
         row.day,
         n(row.total),

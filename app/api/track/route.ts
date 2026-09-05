@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import {
+  isNotFoundFromCache,
   isUnknownCourierFailure,
   normalizeTrackingNumber,
   resolveTracking,
@@ -14,6 +15,7 @@ import { CARRIER_LANDINGS } from "@/lib/carriers/landing";
 import { canRevealProof } from "@/lib/proof-access";
 import { buildSavedSnapshot } from "@/lib/saved-snapshot";
 import { SupabaseConfigError } from "@/lib/supabase/env";
+import { newTrace, withTrace } from "@/lib/request-trace";
 import { recordSearchEvent } from "@/lib/supabase/search-events";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { logTracking } from "@/lib/track-log";
@@ -32,6 +34,9 @@ const ERROR_HTTP_STATUS: Record<TrackingErrorCode, number> = {
   network_error: 504,
   upstream_error: 502,
   config_error: 500,
+  // 504 เหมือน network_error — ทั้งคู่แปลว่า "ไม่ได้คำตอบภายในเวลา" ต่างกันแค่
+  // ใครเป็นคนตัด ซึ่งเป็นรายละเอียดฝั่งเราที่ HTTP status ไม่ต้องรู้
+  timeout: 504,
 };
 
 /**
@@ -219,12 +224,19 @@ export async function POST(request: Request) {
   const startedAt = Date.now();
   const trackNo = normalizeTrackingNumber(trackingNumber);
 
+  // ที่เก็บว่าคำขอนี้ยิงขนส่งไปกี่ครั้งและรอคิวไปกี่ ms — สร้างที่นี่เพราะ
+  // "หนึ่งการค้นหาของผู้ใช้" คือขอบเขตที่ตัวเลขพวกนี้มีความหมาย และเพราะทั้ง
+  // ขาที่สำเร็จและขาที่ล้มต้องอ่านค่าเดียวกันได้ (ดู lib/request-trace.ts)
+  const trace = newTrace();
+
   // รูปแบบของเลข ไม่ใช่ตัวเลข — แปลงตรงนี้ครั้งเดียวเพื่อให้เห็นชัดว่าค่าที่
   // ไหลต่อไปยังสถิติผ่านการแปลงมาแล้ว ไม่ใช่เลขดิบ (ดู lib/tracking-shape.ts)
   const shape = trackingShape(trackNo);
 
   try {
-    const resolved = await resolveTracking(trackingNumber, { pageCourierHint });
+    const resolved = await withTrace(trace, () =>
+      resolveTracking(trackingNumber, { pageCourierHint }),
+    );
 
     logTracking({
       ts: startedAt,
@@ -246,6 +258,8 @@ export async function POST(request: Request) {
       provider: resolved.provider,
       stale: resolved.stale,
       tookMs: Date.now() - startedAt,
+      upstreamCalls: trace.upstreamCalls,
+      queueMs: trace.queueMs,
     });
 
     // เขียนกลับก่อนตอบ เพื่อให้ผู้ใช้ที่กด back ไปหน้าประวัติเห็นของใหม่ทันที
@@ -278,12 +292,18 @@ export async function POST(request: Request) {
   } catch (error) {
     const code = error instanceof CarrierError ? error.code : "upstream_error";
 
+    // "ไม่พบ" ที่ตอบจากความจำ ไม่ได้ไปถามขนส่งเลยสักเจ้า — ต้องแยกให้ออกจาก
+    // "ไม่พบ" ที่เพิ่งวิ่งครบทั้งสาย ไม่งั้นวัดไม่ได้ว่า cache ช่วยได้แค่ไหน
+    // (ดู lib/not-found-cache.ts) · ใช้ค่า source/provider ชุดเดียวกับขาที่
+    // ค้นเจอแล้วตอบจาก cache จึงไม่ต้องแก้ CHECK constraint ของตาราง
+    const notFoundFromCache = isNotFoundFromCache(error);
+
     logTracking({
       ts: startedAt,
       trackNo,
       route: "track",
-      source: "error",
-      provider: "none",
+      source: notFoundFromCache ? "memory" : "error",
+      provider: notFoundFromCache ? "cache" : "none",
       stale: false,
       shared: false,
       tookMs: Date.now() - startedAt,
@@ -293,8 +313,8 @@ export async function POST(request: Request) {
     await recordSearchEvent({
       carrierCode: null,
       outcome: code === "not_found" ? "not_found" : "error",
-      source: "error",
-      provider: "none",
+      source: notFoundFromCache ? "memory" : "error",
+      provider: notFoundFromCache ? "cache" : "none",
       stale: false,
       // สาเหตุที่แท้จริงต้องอยู่บนหน้าสถิติ ไม่ใช่ต้องไปงมใน pm2 log
       reason: code,
@@ -303,6 +323,8 @@ export async function POST(request: Request) {
       tookMs: Date.now() - startedAt,
       // ล้มตอนที่เหลือผู้ให้บริการเจ้าเดียวหรือเปล่า — ตัวเลขที่ต้องใช้ตัดสินใจ
       // ว่าจะทำกลไกเดาขนส่งตอนจนตรอกไหม (ดู lib/carriers/resolve.ts)
+      upstreamCalls: trace.upstreamCalls,
+      queueMs: trace.queueMs,
       unknownCourier: isUnknownCourierFailure(error),
       // เก็บเฉพาะตอนค้นไม่เจอ ซึ่งเป็นคำถามเดียวที่ค่านี้มีไว้ตอบ —
       // "ทรงไหนที่ระบบตามไม่ได้" ส่วนทรงที่ค้นเจอปกติไม่ต้องรู้

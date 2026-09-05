@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { startScanning, type ScannerControls } from "@/lib/barcode-scan";
-import { normalizeTrackingNumber } from "@/lib/carriers/resolve";
+// นำเข้าจากโมดูลเล็กโดยตรง ไม่ใช่จาก carriers/resolve — resolve ลาก adapter
+// ของขนส่งทุกเจ้าตามมา ซึ่งพึ่งโมดูลฝั่ง Node ที่ประกอบลง client ไม่ได้
+import { normalizeTrackingNumber } from "@/lib/carriers/tracking-number";
 
 interface BarcodeScannerDialogProps {
   onClose: () => void;

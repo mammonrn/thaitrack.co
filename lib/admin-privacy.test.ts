@@ -458,8 +458,14 @@ test("ทุก migration ที่เพิ่มคอลัมน์ให้
     for (const block of sql.matchAll(
       /alter table\s+public\.search_events([\s\S]*?);/g,
     )) {
-      const column = /add column(?:\s+if not exists)?\s+(\w+)/.exec(block[1]);
-      if (column !== null) added.push(column[1]);
+      // ⚠️ ต้องเป็น matchAll ไม่ใช่ exec — คำสั่ง alter table หนึ่งคำสั่งเพิ่ม
+      // ได้หลายคอลัมน์ในคราวเดียว (add column a, add column b) ของเดิมใช้ exec
+      // จึงเห็นแค่ตัวแรกแล้วปล่อยที่เหลือผ่านด่านไปเงียบๆ ทั้งชุด
+      for (const column of block[1].matchAll(
+        /add column(?:\s+if not exists)?\s+(\w+)/g,
+      )) {
+        added.push(column[1]);
+      }
     }
   }
 
@@ -473,8 +479,13 @@ test("ทุก migration ที่เพิ่มคอลัมน์ให้
     // เทสต์ที่พิสูจน์ว่าย้อนกลับไม่ได้อยู่ที่ lib/tracking-shape.test.ts
     "tracking_shape",
     "unknown_courier",
+    // จำนวนครั้งที่ยิงถามขนส่งในคำขอนี้ กับเวลาที่รออยู่ในคิวของเราเอง —
+    // ทั้งคู่เป็นตัวเลขที่บรรยายว่า "ระบบเราทำงานอย่างไร" ไม่ได้บรรยายคนที่ค้น
+    // และไม่ได้ผูกกับคำขออื่นของคนเดียวกัน (ดู supabase/migrations/0022)
+    "queue_ms",
+    "upstream_calls",
     "upstream_code",
-  ]);
+  ].sort());
 });
 
 test("ฝั่งเบราว์เซอร์ต้องส่งได้แค่ platform กับ action เท่านั้น", () => {

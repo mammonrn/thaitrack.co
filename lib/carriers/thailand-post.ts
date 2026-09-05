@@ -14,6 +14,11 @@
 import { CircuitBreaker } from "../circuit-breaker";
 import { countProviderCall } from "../provider-usage";
 import {
+  currentTrace,
+  recordAuthCall,
+  recordUpstreamCall,
+} from "../request-trace";
+import {
   CarrierError,
   TRACKING_STATUS_TEXT,
   type CarrierAdapter,
@@ -243,6 +248,8 @@ async function getToken(forceRefresh = false): Promise<string> {
     cachedToken = null;
   }
 
+  const authStartedAt = Date.now();
+
   pendingAuth ??= authenticate()
     .then((token) => {
       cachedToken = token;
@@ -253,6 +260,11 @@ async function getToken(forceRefresh = false): Promise<string> {
     });
 
   const { token } = await pendingAuth;
+
+  // การขอ token คือการยิงที่ผู้ใช้ไม่เคยเห็น และไม่เคยโผล่ใน log ไหนเลย
+  // คนที่รอคำขอนี้อยู่จ่ายเวลานี้ไปจริง ต่อให้เขาไปเกาะ pendingAuth ของคนอื่น
+  recordAuthCall(Date.now() - authStartedAt);
+
   return token;
 }
 
@@ -459,6 +471,39 @@ async function trackOnce(trackingNumber: string): Promise<TrackingResult> {
 }
 
 /**
+ * log หนึ่งบรรทัดต่อการยิงจริงหนึ่งครั้ง — รูปแบบเดียวกับ [track123] และ [etrackings]
+ *
+ * เจ้านี้เป็นเจ้าเดียวที่ไม่มี log ระดับนี้มาก่อน ทั้งที่เป็นเจ้าที่ถูกยิงบ่อย
+ * ที่สุด (ถามก่อนเสมอเพราะฟรี) ผลคือเวลาไล่ดูว่าคำขอหนึ่งช้าเพราะใคร เราเห็น
+ * บรรทัดของ Track123 กับ ETrackings ครบ แต่ช่วงเวลาของไปรษณีย์ไทยเป็นรูโหว่
+ * ที่ต้องอนุมานเอาจากส่วนต่าง — ซึ่งทำให้แยกไม่ออกว่าเวลาหายไปตรงไหน
+ *
+ * auth= คือเวลาที่หมดไปกับการขอ token ใหม่ในคำขอเดียวกัน แยกออกมาเพราะมันเกิด
+ * เป็นครั้งคราว (token มีอายุ) และเป็นการยิงที่ซ่อนอยู่ ไม่ใช่ต้นทุนของการถาม
+ * สถานะพัสดุเอง · เป็น 0 เกือบทุกบรรทัด และเมื่อไม่ใช่ 0 มันคือคำตอบว่าทำไม
+ * คำขอนั้นช้ากว่าเพื่อน
+ */
+function logCall(fields: {
+  ts: number;
+  trackNo: string;
+  tookMs: number;
+  authMs: number;
+  result: string;
+  upstream?: string;
+}): void {
+  const parts = [
+    `ts=${fields.ts}`,
+    `no=${fields.trackNo}`,
+    `took=${fields.tookMs}ms`,
+    `auth=${fields.authMs}ms`,
+    `result=${fields.result}`,
+  ];
+  if (fields.upstream !== undefined) parts.push(`upstream=${fields.upstream}`);
+
+  console.info(`[thailand-post] ${parts.join(" ")}`);
+}
+
+/**
  * ติดตามพัสดุผ่านไปรษณีย์ไทย พร้อม circuit breaker
  *
  * วงจรถูกตัดอยู่ → ปฏิเสธทันทีโดยไม่ยิงและไม่นับโควตา ผู้เรียก (resolve) จะข้าม
@@ -466,8 +511,19 @@ async function trackOnce(trackingNumber: string): Promise<TrackingResult> {
  * ของเจ้าที่รู้อยู่แล้วว่าไม่ตอบ
  */
 export async function track(trackingNumber: string): Promise<TrackingResult> {
+  const startedAt = Date.now();
+  const trackNo = normalizeTrackingNumber(trackingNumber ?? "");
+
   if (!thailandPostBreaker.allows()) {
     const snapshot = thailandPostBreaker.snapshot();
+    logCall({
+      ts: startedAt,
+      trackNo,
+      tookMs: 0,
+      authMs: 0,
+      result: "breaker_open",
+      upstream: "breaker_open",
+    });
     throw new CarrierError(
       "upstream_error",
       "ระบบไปรษณีย์ไทยขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้ง",
@@ -480,11 +536,39 @@ export async function track(trackingNumber: string): Promise<TrackingResult> {
     );
   }
 
+  // นับตรงนี้ ไม่ใช่ก่อนด่าน breaker — ถึงบรรทัดนี้แปลว่ากำลังจะมี request
+  // ออกจากเครื่องจริง · ไม่มีคิวฝั่งเรากั้นเจ้านี้ เวลารอคิวจึงเป็นศูนย์เสมอ
+  recordUpstreamCall({ queueMs: 0 });
+
+  // อ่านยอดเวลาขอ token ก่อน/หลัง แล้วหักลบ — ได้เฉพาะส่วนที่เกิดในคำขอนี้
+  // ไม่ใช่ยอดสะสมของทั้งคำขอที่อาจมีการยิงเจ้านี้มาก่อนหน้า
+  const authBefore = currentTrace()?.authMs ?? 0;
+  const authOf = () => (currentTrace()?.authMs ?? 0) - authBefore;
+
   try {
     const result = await trackOnce(trackingNumber);
     thailandPostBreaker.recordSuccess();
+    logCall({
+      ts: startedAt,
+      trackNo,
+      tookMs: Date.now() - startedAt,
+      authMs: authOf(),
+      result: "ok",
+    });
     return result;
   } catch (error) {
+    logCall({
+      ts: startedAt,
+      trackNo,
+      tookMs: Date.now() - startedAt,
+      authMs: authOf(),
+      result: error instanceof CarrierError ? error.code : "unknown_error",
+      upstream:
+        error instanceof CarrierError
+          ? (error.upstreamCode ?? undefined)
+          : undefined,
+    });
+
     // "ไม่พบเลขนี้" คือคำตอบของปลายทางที่ทำงานปกติ — และเลขของขนส่งเจ้าอื่นที่
     // ถูกส่งมาถามที่นี่ก็ได้คำตอบนั้นเป็นปกติ ถ้านับเป็นความล้มเหลว วงจรจะถูก
     // ตัดตลอดเวลาทั้งที่ไปรษณีย์ไทยไม่ได้เป็นอะไรเลย
