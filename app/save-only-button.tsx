@@ -98,7 +98,7 @@ export default function SaveOnlyButton({
         type="button"
         onClick={handleClick}
         disabled={isSaving || trimmed === ""}
-        className="h-14 shrink-0 rounded-xl border border-line-strong bg-white px-6 font-display text-base font-semibold text-ink transition-colors hover:bg-ink/5 disabled:cursor-not-allowed disabled:opacity-50 sm:h-15 sm:text-lg"
+        className="h-14 min-w-[9rem] flex-1 basis-40 rounded-xl border border-line-strong bg-white px-4 font-display text-base font-semibold text-ink transition-colors hover:bg-ink/5 disabled:cursor-not-allowed disabled:opacity-50 sm:h-15 sm:text-lg"
       >
         {isSaving ? "กำลังบันทึก…" : "บันทึกไว้"}
       </button>

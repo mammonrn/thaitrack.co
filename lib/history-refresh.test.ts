@@ -40,10 +40,17 @@ function read(path: string): string {
  * ทำให้เทสต์ "ห้ามมีคำนี้" ตกเพราะคำอธิบาย ไม่ใช่เพราะโค้ดจริง
  */
 function code(source: string): string {
-  return source
-    .split("\n")
-    .filter((line) => !/^\s*(\{?\/\*|\*|\/\/)/.test(line))
-    .join("\n");
+  return (
+    source
+      // ตัดคอมเมนต์บล็อกทั้งก้อนก่อน รวมที่กินหลายบรรทัด — ของเดิมกรองทีละ
+      // บรรทัดโดยดูว่าขึ้นต้นด้วยเครื่องหมายคอมเมนต์ไหม ซึ่งพลาดบรรทัดกลางๆ
+      // ของคอมเมนต์ยาว (บรรทัดที่ขึ้นต้นด้วยข้อความธรรมดา) ทำให้เทสต์
+      // "ห้ามมีคำนี้" ไปเจอคำในคำอธิบายของตัวเอง
+      .replace(/\{?\/\*[\s\S]*?\*\/\}?/g, "")
+      .split("\n")
+      .filter((line) => !/^\s*\/\//.test(line))
+      .join("\n")
+  );
 }
 
 test("หน้าประวัติต้องไม่มี useEffect เหลืออยู่เลย", () => {
@@ -203,4 +210,60 @@ test("ช่องตั้งชื่อต้องไม่ไปยุ่�
   const form = code(read(SEARCH_FORM));
   const submit = form.slice(form.indexOf("function handleSubmit"), form.indexOf("function handleSubmit") + 600);
   assert.doesNotMatch(submit, /nickname/, "handleSubmit ต้องไม่อ่านค่าชื่อ");
+});
+
+/* ------------- สวิตช์แผนที่ต้องปิดได้สนิท ------------- *
+ *
+ * บั๊กที่เจอ: ปิดสวิตช์แล้วการ์ดยังโชว์กล่อง "ยังไม่มีพิกัดของจุดนี้ จึงยังแสดง
+ * แผนที่ไม่ได้" เพราะด่านตรวจสวิตช์ถูกวางลึกเกินไป (อยู่ในเงื่อนไข showMap)
+ * ซึ่งครอบแค่กิ่ง "มีพิกัด" ส่วนกิ่ง "ไม่มีพิกัด" หลุดออกมา
+ *
+ * บทเรียน: ด่านที่วางลึกกว่าจุดที่ต้องปิด จะครอบได้ไม่ครบเสมอ
+ */
+
+test("ด่านสวิตช์แผนที่ต้องมีจุดเดียว และอยู่ปากทางเข้าของบล็อกแผนที่", () => {
+  const source = code(read(HISTORY_LIST));
+
+  // นับเฉพาะการ "ใช้ค่า" ไม่รวมการประกาศ prop กับพารามิเตอร์ของฟังก์ชัน
+  const uses = [...source.matchAll(/\bmapEnabled\b/g)].length;
+  assert.equal(
+    uses,
+    3,
+    `mapEnabled ควรปรากฏ 3 ที่ (ประกาศ prop · รับเข้าฟังก์ชัน · ด่านเดียว) แต่เจอ ${uses}`,
+  );
+
+  // ด่านต้องเป็นการครอบทั้งก้อน ไม่ใช่ไปผสมอยู่ในเงื่อนไขอื่น
+  assert.match(source, /\{mapEnabled && \(/, "ด่านต้องครอบบล็อกทั้งก้อน");
+  assert.doesNotMatch(
+    source,
+    /mapEnabled &&\s*item\.last/,
+    "ห้ามเอาสวิตช์ไปผสมกับเงื่อนไขว่ามีพิกัดไหม — ด่านจะครอบไม่ครบ",
+  );
+});
+
+test("showMap ต้องตอบแค่ว่ามีพิกัดไหม ไม่เกี่ยวกับสวิตช์", () => {
+  const source = code(read(HISTORY_LIST));
+  const line = source
+    .split("\n")
+    .find((l) => l.includes("const showMap"));
+
+  assert.ok(line !== undefined, "ต้องมี showMap");
+  assert.doesNotMatch(line, /mapEnabled/, "showMap ต้องไม่รู้จักสวิตช์");
+});
+
+test("ทุกอย่างที่พูดถึงแผนที่/พิกัด ต้องอยู่ในด่านสวิตช์", () => {
+  const source = read(HISTORY_LIST);
+
+  const gateAt = source.indexOf("{mapEnabled && (");
+  assert.ok(gateAt > 0, "ต้องมีด่าน");
+
+  // ทุกที่ที่เอ่ยถึงแผนที่/พิกัดในส่วน JSX ต้องอยู่หลังด่าน
+  // (ยกเว้นคอมเมนต์อธิบายกับ prop ซึ่งไม่ได้ render ออกไป)
+  const beforeGate = code(source.slice(0, gateAt));
+  for (const word of ["/api/map", "ยังไม่มีพิกัด", "แสดงแผนที่ไม่ได้"]) {
+    assert.ok(
+      !beforeGate.includes(word),
+      `"${word}" อยู่นอกด่านสวิตช์ — ปิดสวิตช์แล้วจะยังโผล่`,
+    );
+  }
 });
