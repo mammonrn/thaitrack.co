@@ -17,6 +17,8 @@ import { defaultSettings } from "./app-settings.ts";
 import { mapImageAllowed } from "./map-access.ts";
 
 const ROUTE = readFileSync("app/api/map/route.ts", "utf8");
+/** ตรรกะที่มีต้นทุนย้ายมาอยู่ที่นี่ ด่านจึงต้องตามมาตรวจด้วย */
+const IMAGE = readFileSync("lib/map-image.ts", "utf8");
 
 test("สวิตช์เปิด → ยิงได้", async () => {
   const allowed = await mapImageAllowed({
@@ -78,11 +80,11 @@ test("ค่าที่ไม่ใช่ true เป๊ะๆ → ถือว
  * ก่อนจะยิง Google — สองข้อนี้ต้องแยกกันตรวจ
  * ------------------------------------------------------------------ */
 
-test("route ต้องเช็คด่านก่อนตรวจพิกัด และก่อน fetch", () => {
+test("route ต้องเช็คด่านก่อนตรวจพิกัด และก่อนทุกอย่างที่มีต้นทุน", () => {
   const gate = ROUTE.indexOf("await mapImageAllowed()");
   const coords = ROUTE.indexOf("checkCoordinates(");
-  const fetchAt = ROUTE.indexOf("await fetch(");
   const apiKey = ROUTE.indexOf("process.env.GOOGLE_MAPS_API_KEY");
+  const fetchAt = ROUTE.indexOf("fetchMapImage(");
 
   assert.ok(gate > 0, "route ต้องเรียก mapImageAllowed()");
   assert.ok(
@@ -90,7 +92,14 @@ test("route ต้องเช็คด่านก่อนตรวจพิ�
     "ด่านต้องมาก่อน checkCoordinates — ปิดแล้วต้องไม่ทำงานอะไรเลย",
   );
   assert.ok(gate < apiKey, "ด่านต้องมาก่อนการอ่าน API key");
-  assert.ok(gate < fetchAt, "ด่านต้องมาก่อน fetch ไปหา Google");
+  assert.ok(gate < fetchAt, "ด่านต้องมาก่อนขั้นที่ยิง Google");
+
+  // route ต้องไม่ยิง Google เองอีกแล้ว — ทุกอย่างที่มีต้นทุนอยู่ใน map-image
+  assert.doesNotMatch(
+    ROUTE,
+    /await fetch\(/,
+    "route ต้องไม่ยิงเอง ไม่งั้นจะมีเส้นทางที่เลี่ยงตัวนับกับการกันคำขอซ้ำได้",
+  );
 });
 
 test("ปิดแล้วต้องตอบ 404 ไม่ใช่ 403", () => {
@@ -119,14 +128,20 @@ test("ชั้นที่ 2 ต้องอยู่ครบ — ด่าน
     /roundCoordinate\(/,
     "ต้องปัดพิกัดก่อนส่ง Google ไม่งั้น cache แทบไม่มีทาง hit",
   );
+  // เพดานกับตัวนับย้ายไปอยู่ใน lib/map-image.ts พร้อมกับการกันคำขอซ้ำ
   assert.match(
-    ROUTE,
-    /isExhausted\(PROVIDER\)/,
+    IMAGE,
+    /isExhausted\(MAP_PROVIDER\)/,
     "ต้องมีเพดานรายวัน — เพดานที่หยุดไม่ได้ก็ไม่ใช่เพดาน",
   );
   assert.match(
-    ROUTE,
-    /await countProviderCall\(PROVIDER\)/,
+    IMAGE,
+    /countProviderCall\(MAP_PROVIDER\)/,
     "ต้องนับทุกครั้งที่ยิงจริง",
+  );
+  assert.match(
+    IMAGE,
+    /inflight\.run\(/,
+    "ต้องกันคำขอซ้ำที่บินพร้อมกัน ไม่งั้นหน้าเดียวจ่าย Google หลายครั้งสำหรับภาพเดียวกัน",
   );
 });

@@ -23,14 +23,10 @@ import { mapImageAllowed } from "@/lib/map-access";
 import {
   lookupMapImage,
   mapCacheKey,
-  rememberMapImage,
   roundCoordinate,
 } from "@/lib/map-cache";
-import {
-  countProviderCall,
-  isExhausted,
-  loadProviderUsage,
-} from "@/lib/provider-usage";
+import { MAP_PROVIDER, fetchMapImage } from "@/lib/map-image";
+import { loadProviderUsage } from "@/lib/provider-usage";
 
 /** ต้องรันบน Node.js runtime เพราะอ่าน API key จาก process.env */
 export const runtime = "nodejs";
@@ -91,9 +87,6 @@ const ZOOM_EXACT = "15";
  * จึงปลอดภัย และ stale-while-revalidate ทำให้ผู้ใช้ไม่ต้องรอโหลดใหม่เลย
  */
 const CACHE_CONTROL = "public, max-age=2592000, stale-while-revalidate=86400";
-
-/** ผู้ให้บริการที่คิดเงินสำหรับ endpoint นี้ — นับรวมกับเจ้าอื่นในระบบเดียวกัน */
-const PROVIDER = "google-static-maps" as const;
 
 /** ส่งภาพกลับ — ใช้ร่วมกันทั้งขา cache hit และขาที่เพิ่งยิงมา */
 function imageResponse(body: Uint8Array, contentType: string) {
@@ -158,17 +151,6 @@ export async function GET(request: Request) {
   // โหลดไว้ยังตรงกับรอบปัจจุบัน (ดู state.loaded ใน lib/provider-usage.ts)
   await loadProviderUsage();
 
-  // ชนเพดานรายวัน → หยุดยิง ตอบ 404 เหมือนตอนสวิตช์ปิด
-  //
-  // เพดานที่หยุดไม่ได้ก็ไม่ใช่เพดาน · แผนที่เป็นของประกอบ ไม่ใช่ฟังก์ชันหลัก
-  // หน้าเว็บยังใช้ได้ครบทุกอย่างเมื่อไม่มีภาพ (การ์ดจะแสดงชื่อสถานที่แทน)
-  if (isExhausted(PROVIDER)) {
-    console.warn(
-      `[map] ชนเพดานรายวันแล้ว หยุดยิง Google จนกว่าจะขึ้นรอบใหม่ (${PROVIDER})`,
-    );
-    return errorResponse(404);
-  }
-
   // ปัดพิกัดก่อนส่งไป Google — พิกัดที่ต่างกันไม่ถึง 11 เมตรจะได้ URL เดียวกัน
   // ทำให้ cache ทำงานจริงและปิดช่องหลบ cache ไปพร้อมกัน
   const point = `${roundCoordinate(coordinates.lat)},${roundCoordinate(coordinates.lng)}`;
@@ -182,47 +164,16 @@ export async function GET(request: Request) {
   url.searchParams.set("markers", `color:0xa8342a|${point}`);
   url.searchParams.set("key", apiKey);
 
-  // ⚠️ นับ **ก่อน** ยิง และนับทุกครั้งที่ยิง รวมถึงครั้งที่ล้ม
+  // ⚠️ ทุกอย่างที่มีต้นทุนอยู่ใน fetchMapImage — เช็คโควตา, นับ, ยิง, เขียน cache
   //
-  // ยิงแล้ว error = Google รับ request ไปแล้ว = จ่ายไปแล้ว · การนับเฉพาะครั้งที่
-  // สำเร็จคือการนับขาด ซึ่งเป็นบั๊กชนิดเดียวกับที่เพิ่งแก้ในไปรษณีย์ไทย
-  //
-  // await ไว้โดยตั้งใจ ไม่ยิงทิ้ง — countProviderCall อ่านยอดจากฐานข้อมูลกลับมา
-  // ใช้เป็นตัวจริง ซึ่งเป็นกลไกที่ทำให้หลาย instance นับตรงกัน การยิงทิ้งจะเสีย
-  // คุณสมบัตินั้นไปด้วย ไม่ใช่แค่เสี่ยงตกหล่น · ราคาคือหนึ่ง round-trip ต่อ
-  // cache miss ซึ่งน้อยมากเทียบกับ round-trip ไป Google ที่กำลังจะเกิดถัดไป
-  await countProviderCall(PROVIDER);
+  // และมันกันคำขอซ้ำที่บินพร้อมกันด้วย: หน้าประวัติที่มีพัสดุ 5 ใบผ่านสาขา
+  // เดียวกันจะ cache miss พร้อมกันทั้งห้า ก่อนตัวแรกเขียน cache เสร็จ —
+  // ถ้าไม่กัน จะจ่าย Google 5 ครั้งสำหรับภาพเดียวกันเป๊ะ (ดู lib/map-image.ts)
+  const outcome = await fetchMapImage(cacheKey, url.toString(), {
+    timeoutMs: TIMEOUT_MS,
+  });
 
-  let upstream: Response;
-  try {
-    upstream = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
-  } catch (cause) {
-    // ห้าม log ตัว url เพราะมี API key อยู่ในนั้น
-    console.error(
-      `[map] เรียก Maps Static API ไม่สำเร็จ: ${cause instanceof Error ? cause.message : String(cause)}`,
-    );
-    return errorResponse(504);
-  }
+  if (!outcome.ok) return errorResponse(outcome.status);
 
-  if (!upstream.ok) {
-    console.error(`[map] Maps Static API ตอบ HTTP ${upstream.status}`);
-    return errorResponse(502);
-  }
-
-  const contentType = upstream.headers.get("content-type") ?? "";
-  // Google ตอบข้อความอธิบายปัญหาเป็น text/html มาได้เมื่อคีย์ผิดหรือโควตาหมด
-  // ถ้าส่งต่อไปตรงๆ เบราว์เซอร์จะแสดงเป็นภาพเสีย จับไว้ตรงนี้ให้เป็น 502 แทน
-  if (!contentType.startsWith("image/")) {
-    console.error(`[map] Maps Static API ตอบชนิดข้อมูล "${contentType}" ไม่ใช่รูป`);
-    return errorResponse(502);
-  }
-
-  // ⚠️ อ่านเป็นก้อนก่อน เพราะต้องเก็บลง cache ด้วย — stream ใช้ได้ครั้งเดียว
-  const body = new Uint8Array(await upstream.arrayBuffer());
-
-  // ถึงตรงนี้ได้แปลว่า 200 และเป็นรูปจริง — เก็บได้อย่างปลอดภัย
-  // (error ทุกชนิดถูก return ออกไปหมดแล้วข้างบน จึงไม่มีทางเข้ามาถึงบรรทัดนี้)
-  rememberMapImage(cacheKey, { body, contentType });
-
-  return imageResponse(body, contentType);
+  return imageResponse(outcome.body, outcome.contentType);
 }
